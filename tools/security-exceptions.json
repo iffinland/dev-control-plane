@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "policy": "Each exception suppresses exactly one finding identified by repository-relative path, finding kind, line number and SHA-256 of the complete line. It does not disable file scanning, does not cover another line, and does not cover the same value in another file.",
+  "exceptions": [
+    {
+      "path": "reports/2026-09-13-phase-2-qortal-node-b-tunnel.md",
+      "kind": "public IPv4 address",
+      "line": 12,
+      "line_sha256": "6dc380a3dd90b21e7a18654e8733a58413b92a59332af86bc0d25fb626cf2dce",
+      "reason": "Owner explicitly accepts the single pre-existing historical public IPv4 address in the Phase 2 Qortal node tunnel report. Historical report content must not be rewritten. Any edit to this line, any additional address, any credential, or the same address in another file remains blocking."
+    }
+  ]
+}

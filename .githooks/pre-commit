@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+control_plane="${CONTROL_PLANE_ROOT:-}"
+if [ -z "$control_plane" ]; then
+  if [ -f "$repo_root/../control-plane/tools/git_hooks.py" ]; then
+    control_plane="$repo_root/../control-plane"
+  else
+    control_plane="/home/iffi/dev-workspace/control-plane"
+  fi
+fi
+if [ ! -f "$control_plane/tools/git_hooks.py" ]; then
+  echo "Security hook blocked: shared validator not found at $control_plane/tools/git_hooks.py" >&2
+  exit 1
+fi
+exec python3 "$control_plane/tools/git_hooks.py" "$(basename "$0")" "$@"

@@ -1,0 +1,38 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local runtime caches and logs
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+*.log
+
+# Secrets and owner-local environment (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.kdbx
+id_rsa*
+id_ed25519*
+secrets/
+credentials/
+
+# Local scratch and backups
+*.tmp
+*.bak
+backups/
+
+# Keep active guidance, skills, tasks, historical reports and docs tracked.
+# Do not add rules that hide reports/, tasks/, docs/, skills/, platforms/,
+# adapters/, roles/, templates/ or tools/.

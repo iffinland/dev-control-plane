@@ -1,18 +1,33 @@
-# Qortal / Qortium development coordination
+# Canonical Agent Control Plane
 
-This repository is the shared orchestration and reusable-capability layer for
-AI-assisted Qortal and Qortium development. Application source stays in its own
-repository; platform contracts remain authoritative in the Qortal/Qortium
-workspaces and current platform source/runtime.
+This repository is the canonical, shared control plane for AI-assisted Qortal
+and Qortium development. It owns coordination, roles, reusable skills, task
+templates and project routing. It does not own application source or platform
+implementation truth.
 
 Start with [AGENTS.md](AGENTS.md).
+
+## Current baseline
+
+Phase 1 established this workspace from the validated orchestration commit:
+
+```text
+source repository: https://github.com/iffinland/ai-development-orchestration
+source branch:     agent/shadow-archives/qdn-grouped-publish-outcome-20261001
+source commit:     aef3e1ed45c66ef2382e5cc794665d1720f7ad77
+local branch:      phase1/control-plane
+```
+
+The workspace is intentionally not committed or pushed in Phase 1. Platform
+documentation is not imported yet; Qortal and Qortium are represented by boundary
+packs only.
 
 ## Core model
 
 ```text
 owner outcome
--> shared orchestration contract
--> project context
+-> shared control-plane contract
+-> project registry and platform pack
 -> relevant reusable skills
 -> current platform source/runtime freshness check
 -> bounded implementation
@@ -21,10 +36,38 @@ owner outcome
 -> durable handoff
 ```
 
-The important change from the original bootstrap is the
-[reusable capability library](skills/README.md). Agents must search it before
+Agents must search the [reusable capability library](skills/README.md) before
 redoing platform research. New reusable findings are harvested back into it so
 future applications pay only for the changed/project-specific delta.
+
+## Structure
+
+```text
+control-plane/
+├── AGENTS.md                 canonical agent contract and precedence
+├── WORKFLOW.md               execution and validation workflow
+├── GIT-AND-HANDOFF.md        branch, task, identity and handoff rules
+├── PROJECT-REGISTRY.md       verified project routing
+├── ENVIRONMENT.md            non-secret environment and reference registry
+├── roles/                    thin agent role definitions
+├── templates/                TASK, STATUS, HANDOFF and REPORT shapes
+├── skills/                   canonical reusable capability library
+├── platforms/
+│   ├── qortal/               Qortal boundary and source reference
+│   └── qortium/              Qortium boundary and source reference
+├── adapters/
+│   ├── opencode/             OpenCode discovery and inheritance notes
+│   └── deepseek/             DeepSeek client boundary notes
+├── tools/                    skills/library validators
+├── tasks/                    historical task artifacts and evidence
+├── reports/                  historical orchestration reports
+├── research/                 historical pattern research
+└── docs/                     report-storage policy and migration records
+```
+
+Central report storage is `/home/iffi/dev-workspace/docs/<project>/<category>/`;
+cross-project and control-plane material belongs under `workspace/`. See the
+[Report storage policy](docs/REPORT-STORAGE-POLICY.md).
 
 ## Main documents
 
@@ -32,27 +75,47 @@ future applications pay only for the changed/project-specific delta.
 - [Workflow](WORKFLOW.md)
 - [Reusable capability library](skills/README.md)
 - [Project registry](PROJECT-REGISTRY.md)
-- [Environment and reference freshness](ENVIRONMENT.md)
+- [Environment registry](ENVIRONMENT.md)
+- [Report storage policy](docs/REPORT-STORAGE-POLICY.md)
 - [Git and durable handoff](GIT-AND-HANDOFF.md)
+- [Qortal platform boundary](platforms/qortal/README.md)
+- [Qortium platform boundary](platforms/qortium/README.md)
+- [OpenCode adapter](adapters/opencode/README.md)
+- [DeepSeek adapter](adapters/deepseek/README.md)
+- [Phase 1 migration record](docs/migration/2026-10-30-phase1-control-plane.md)
 - [Agent roles](roles/)
 - [Task and handoff templates](templates/)
-- [2026-09-13 external-pattern research](research/2026-09-13-reusable-development-patterns.md)
-- [Historical Phase 1 audit](reports/2026-09-13-phase-1-audit.md)
-- [Phase 2 skills redesign report](reports/2026-09-13-phase-2-skills-redesign.md)
 
-## Active agent set
+## Clients and roles
 
-Current operating set:
+Current operating roles:
 
 ```text
 ChatGPT -> architecture / controller / review
 Codex    -> local orchestration / bounded independent audit / escalation
 DeepSeek -> primary cost-efficient local implementation
+OpenCode -> CLI harness that loads this control plane and executes assigned work
 ```
 
-Claude is not currently required. [CLAUDE.md](CLAUDE.md) is intentionally only
-a thin future adapter so Claude Code can later join the same canonical rules and
-skills without creating a second knowledge base.
+OpenCode and DeepSeek are clients/execution surfaces, not separate governance
+sources. They read the same canonical contract and skills. Claude remains an
+optional future adapter.
+
+No background agent, polling process, scheduler, notification service, or
+automatic task dispatch is installed by this repository.
+
+## Platform boundary
+
+Qortal and Qortium are separate technical contracts. Never apply one platform's
+bridge, identity, QDN or account semantics to the other merely because names or
+request shapes look similar. The platform packs in Phase 1 are routing and
+source references; current platform source and runtime remain authoritative.
+
+## Historical paths
+
+Historical `reports/`, `tasks/` and source-evidence references retain their
+original workstation paths as provenance. They are not current routing. Active
+files use the actual VPS layout under `/home/iffi/dev-workspace`.
 
 ## UI/product bootstrap decision
 
@@ -62,5 +125,8 @@ primitives. Final branding/layout remains project-specific and is normally
 applied after the important runtime flows work. This does **not** standardize all
 owner applications into one visual design.
 
-Local branch in the supplied package: `agent/orchestration/bootstrap`; no commit
-or remote publication is implied by this package.
+## Phase status
+
+Phase 1 stops at control-plane establishment. Full Qortal and Qortium platform
+documentation import, duplicate reconciliation, project-context migration and
+any automation remain later phases.

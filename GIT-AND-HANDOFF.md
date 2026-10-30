@@ -2,7 +2,7 @@
 
 Each task names an application repository, a verified base SHA and a unique
 `agent/<project>/<task>` branch. Keep owner dirty checkouts intact; use a separate
-worktree under `/home/iffi/VsCodec-Projects` when isolation is needed. Never force
+worktree under `/home/iffi/dev-workspace/projects` when isolation is needed. Never force
 push, rewrite shared history, update parent gitlinks or bundle unrelated changes.
 
 A task records exact commit/push permission for both the application branch and
@@ -13,10 +13,13 @@ Main/default-branch merge/push, tags, releases, deployment, QDN writes, signing,
 transactions and issue mutation require their own explicit scope authorization.
 
 Durable exchange, once a GitHub remote and branch permissions are configured:
-1. Store `tasks/<project>/<task>/TASK.md`, `STATUS.json`, `IMPLEMENTATION.md` and
-   `AUDIT.md` in this orchestration repository on the task branch. Create only
-   artifacts that actually exist; start from `templates/`. TASK/STATUS record
-   the exact skills loaded and their freshness result.
+1. Store `tasks/<project>/<task>/TASK.md`, `STATUS.json`, and the concise
+   `IMPLEMENTATION.md`/`AUDIT.md` handoff files in this orchestration repository
+   on the task branch. Create only artifacts that actually exist; start from
+   `templates/`. TASK/STATUS record the exact skills loaded and their freshness
+   result. Detailed reports and evidence belong in the central
+   `docs/<project>/<category>/` tree defined by
+   [REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md).
 2. Push authorized application changes first; verify the remote branch SHA.
 3. The current writer updates STATUS with that exact application SHA, evidence
    and next actor. Commit and push handoff artifacts; verify their remote SHA.
@@ -47,11 +50,12 @@ notification service, API agent runner or scheduled job is installed by phase 1.
 Dispatch requires a separately verified local DeepSeek client and an authorized
 run. If unavailable, record a blocker; do not silently substitute a costly model.
 
-Detailed platform reports remain canonical at their platform report root.
-Handoff artifacts contain a concise summary, exact source revision and a durable
-remote report link when available. For local-only Qortium reports, publish an
-explicitly approved, sanitized evidence snapshot in the handoff; record its local
-source and SHA-256. A local path alone is not a GitHub-readable handoff.
+Detailed reports are stored centrally under `docs/<project>/<category>/` per
+[REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md). Handoff artifacts
+contain a concise summary, exact source revision and a durable remote report link
+when available. For local-only reports, publish an explicitly approved, sanitized
+evidence snapshot in the handoff; record the canonical local report path and
+SHA-256. A local path alone is not a GitHub-readable handoff.
 Never include credentials, wallet data, secrets or private infrastructure details.
 
 ## Agent identity in reports and handoffs

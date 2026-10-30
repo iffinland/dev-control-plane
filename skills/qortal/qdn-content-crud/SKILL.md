@@ -227,7 +227,8 @@ above remain the real-host-verified ones.
 - Maturity `verified-runtime` on 2026-09-16 from the Qortal Web Builders Phase 4
   owner-runtime run. Report: `docs/qwb-qortal-web-builders/implementations/2026-09-16-qwb-phase-4-owner-runtime-validation.md`
   with evidence in `docs/qwb-qortal-web-builders/implementations/2026-09-16-qwb-phase-4-runtime-evidence/`
-  (workspace `Qortal/qortal-dev-workspace`).
+  (preserved Qortal platform source `projects/qortal-dev-workspace`; evidence on
+  branch `origin/agent/qwb-qortal-web-builders/phase-4-checkpoint-docs-20260916`).
 - Contract 8 (shipped-default baseline) added at the Phase 4 checkpoint,
   2026-09-16, from a production-bootstrap finding on the same app. Harvest level:
   app-side read-path contract, validated by unit/integration tests over the real

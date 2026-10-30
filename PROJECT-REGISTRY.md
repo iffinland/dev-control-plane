@@ -1,24 +1,55 @@
 # Project registry
 
-Verified local routing: 2026-09-16 (originally audited 2026-09-13). Product state remains in the
-linked context.
+Verified local routing: 2026-10-30 (Phase 1 control-plane cutover).
+Product state remains in the linked project context. Phase 1 verifies paths only;
+it does not import full platform documentation or project contexts.
 
-| ID | Platform | Actual local path | Canonical context |
+## Registered projects
+
+| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root |
+| --- | --- | --- | --- | --- | --- |
+| `qortal/shadow-archives-webportal` | Qortal | `/home/iffi/dev-workspace/projects/shadow-archives-webportal-QORTAL` | Yes | Pending Phase 2 import. Source reference: `qortal-dev-workspace` at `b8fd2f6fbfcff88c0ab9bc8fd116d5548679d2d2` | `/home/iffi/dev-workspace/docs/shadow-archives-webportal-QORTAL/` |
+| `qortal/qortal-video-bridge` | Qortal | `/home/iffi/dev-workspace/projects/Qortal-Video-Bridge` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortal-Video-Bridge/` |
+| `qortal/wordpress-to-qortal` | Qortal | `/home/iffi/dev-workspace/projects/wordpress-to-qortal` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/wordpress-to-qortal/` |
+| `qortium/blogs` | Qortium | `/home/iffi/dev-workspace/projects/Blogs` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Blogs/` |
+| `qortium/qortium-united-community` | Qortium | `/home/iffi/dev-workspace/projects/Qortium-United-Community` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortium-United-Community/` |
+| `qortium/nodefm-station` | Qortium | `/home/iffi/dev-workspace/projects/nodefm-station` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/nodefm-station/` |
+
+A project-level `AGENTS.md` may add project-specific constraints. It does not
+override the control-plane safety, authority, identity or handoff rules. See
+[AGENTS.md](AGENTS.md) and
+[REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md). Category subdirectories
+are created when the first report of that category is added.
+
+## Platform source references
+
+These are reference repositories, not projects. Their current source and runtime
+remain authoritative for implemented platform behavior.
+
+| ID | Platform | Verified local path | Role |
 | --- | --- | --- | --- |
-| qortal/qwb-qortal-web-builders | Qortal | `/home/iffi/VsCodec-Projects/QWB-Qortal-Web-Builders/qortal-web-builders` (created 2026-09-15; release candidate `7fd03fc` staging-confirmed 2026-09-16 and production-ready; production publication pending owner authorization) | [qwb-qortal-web-builders](/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/projects/qwb-qortal-web-builders.md) |
-| qortal/shadow-archives-webportal | Qortal | `/home/iffi/VsCodec-Projects/shadow-archives/shadow-archives-webportal/QORTAL` | [shadow-archives-webportal](/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/projects/shadow-archives-webportal.md) |
-| qortium/blogs | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/Blogs` | [blogs](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/blogs.md) |
-| qortium/community-discussion-boards | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/community-discussion-boards` | [community-discussion-boards](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/community-discussion-boards.md) |
-| qortium/discussion-boards | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/Discssion-Boards` | [discussion-boards](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/discussion-boards.md) |
-| qortium/iffi-vaba-mees | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/iffi_vaba_mees` | [iffi-vaba-mees](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/iffi-vaba-mees.md) |
-| qortium/my-private-room | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/my-private-room` | [my-private-room](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/my-private-room.md) |
-| qortium/nodefm-station | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/nodefm-station` | [nodefm-station](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/nodefm-station.md) |
-| qortium/qortium-united-community | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/Qortium-United-Community` | [qortium-united-community](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/qortium-united-community.md) |
-| qortium/video-center | Qortium | `/home/iffi/VsCodec-Projects/Qortium/projects/Video-Center` | [video-center](/home/iffi/VsCodec-Projects/Qortium/qortium-dev-workspace/projects/video-center.md) |
+| `qortal/platform-source` | Qortal | `/home/iffi/dev-workspace/projects/qortal-dev-workspace` | Preserved Qortal platform governance and evidence source at `main` `b8fd2f6fbfcff88c0ab9bc8fd116d5548679d2d2`; not imported into the control plane in Phase 1 |
+| `qortium/home-reference` | Qortium | `/home/iffi/dev-workspace/projects/qortium-home` | Current local Home reference; re-verify branch and SHA per task |
+| `qortium/core-reference` | Qortium | `/home/iffi/dev-workspace/projects/qortium-core` | Current local Core reference; re-verify branch and SHA per task |
 
-`qortium/community-discussion-boards` is an unversioned prototype, distinct from
-`qortium/discussion-boards`. Preserve it; promotion/retirement requires a decision.
-The Qortal Shadow Archives path is intentionally retained. No other projects are
-inferred from unrelated sibling directories. Register additional Qortal/Qortium
-projects after verifying their identity; this is not a claim to cover all owner
-projects outside the audited workspace/context inventory.
+## Deferred registry entries
+
+The original registry also named the following projects. They are not registered
+with a verified local path in Phase 1 because they are either absent from the
+current workspace or represented only by historical evidence. Do not route to
+the old workstation paths. Verify the actual checkout before adding a row.
+
+- `qortal/qwb-qortal-web-builders` — QWB evidence exists in preserved Qortal
+  source branches; the application checkout is not present in Phase 1.
+- `qortium/community-discussion-boards`
+- `qortium/discussion-boards`
+- `qortium/iffi-vaba-mees`
+- `qortium/my-private-room`
+- `qortium/video-center`
+
+## Registration rule
+
+A project is registered only after its local path, platform, remote and current
+branch are verified. Do not infer a project from a similarly named directory.
+Project-specific facts belong in the project context, not in this registry or in
+global guidance.

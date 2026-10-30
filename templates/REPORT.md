@@ -3,9 +3,10 @@
 Executing agent (registered role of the agent that actually produced this work):
 Report/handoff writer (if different from the executing agent):
 Executing-agent evidence (how the real executor was established):
-Report type:
+Report type / category (audit, reports, research, implementation, validation, handoffs):
+Project ID / central report root:
 Exact application repository / branch / SHA:
-Canonical report path / SHA-256 / authorized remote evidence:
+Canonical report path `docs/<project>/<category>/<dated-name>.md` / SHA-256 / authorized remote evidence:
 
 <!--
 Executing-agent field rules. Keep this block with the template.
@@ -27,6 +28,10 @@ Executing-agent field rules. Keep this block with the template.
   guess an identity to complete the field.
 - Record every correction of a prior misattribution here: date, field, prior
   value, corrected value and the evidence that establishes the real executor.
+- Store the report at
+  `/home/iffi/dev-workspace/docs/<project>/<category>/<dated-name>.md` per
+  `control-plane/docs/REPORT-STORAGE-POLICY.md`. Never store it in the `docs/`
+  root, an application repository, or `/tmp/`.
 -->
 
 ## Objective and exit criterion
@@ -45,5 +50,6 @@ Executing-agent field rules. Keep this block with the template.
 
 ## Report saved
 
-- Absolute path:
+- Canonical absolute path:
+- Category:
 - SHA-256 (optional):

@@ -37,6 +37,13 @@ Every skill declares one of:
 
 Never apply a Qortal skill to Qortium, or the reverse, merely because names and
 APIs look similar. Qortal and Qortium source/runtime remain separate authority.
+Platform routing boundaries are defined in
+[`platforms/qortal`](../platforms/qortal/README.md) and
+[`platforms/qortium`](../platforms/qortium/README.md).
+
+Skills are summaries of reusable evidence. Current platform source/runtime
+outranks them. Some historical evidence files cited by skills live on preserved
+Qortal branches; verify the branch and file before citing them.
 
 ## Maturity
 

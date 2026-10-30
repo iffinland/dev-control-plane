@@ -54,7 +54,9 @@ Runtime evidence (why maturity is `verified-runtime`):
   `docs/shadow-archives-webportal/validation/2026-09-13-video-qtube-contract-live-read-only-validation.md`,
   `docs/shadow-archives-webportal/implementation/2026-09-13-video-owner-publishing-implementation-report.md`,
   `docs/shadow-archives-webportal/handoffs/2026-09-13-owner-runtime-checkpoint.md`
-  under `/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/`.
+  under `/home/iffi/dev-workspace/projects/qortal-dev-workspace/`. Some
+  evidence files are on the preserved Qortal evidence branch recorded in
+  `/home/iffi/dev-workspace/control-plane/platforms/qortal/README.md`; verify the exact branch before citing.
 
 ## Scope classification
 

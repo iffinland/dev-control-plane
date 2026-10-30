@@ -1,6 +1,6 @@
 # <project>/<task>: <one outcome>
 
-Contract: /home/iffi/VsCodec-Projects/AI-Orchestration/AGENTS.md
+Contract: /home/iffi/dev-workspace/control-plane/AGENTS.md
 Executing agent (actual executor; never inferred from this template or a role):
 Project ID / exact repo / base SHA / agent branch:
 Platform session router / canonical project context:

@@ -1,16 +1,57 @@
 # Qortal / Qortium orchestration contract
 
 Owner decision: 2026-09-13. Scope is exclusively Qortal and Qortium.
-This directory owns shared development coordination and reusable capability
+This repository owns shared development coordination and reusable capability
 knowledge, not blockchain/platform implementation truth.
+
+## Canonical workspace
+
+The canonical control plane is:
+
+```text
+/home/iffi/dev-workspace/control-plane
+```
+
+Registered projects inherit this contract. Platform boundaries live under
+`platforms/`; platform implementation truth remains in current platform
+source/runtime. Historical reports and task artifacts retain their original
+paths as provenance and are not current routing.
+
+OpenCode loads this root instruction file through the owner's global
+instructions adapter. DeepSeek uses the same canonical files. The adapters under
+`adapters/` are discovery notes, not a second policy. No background agent,
+polling loop, scheduler, or automatic task execution is provided by this
+workspace.
+
+## Instruction precedence and inheritance
+
+When OpenCode, DeepSeek, or another agent works in a registered project, apply
+this order:
+
+1. explicit owner task authorization and task-specific constraints;
+2. this control-plane contract (`AGENTS.md`, `WORKFLOW.md`,
+   `GIT-AND-HANDOFF.md`) for cross-cutting safety, authority, identity and
+   handoff rules;
+3. the matching platform pack under `platforms/` for platform-specific routing;
+4. the project's own `AGENTS.md` or equivalent, which may add project-specific
+   constraints but must not weaken this contract or claim broader authority;
+5. matching skills from `skills/`, after their freshness/compatibility check;
+6. historical reports, task artifacts and donor evidence.
+
+Current platform source and observed runtime outrank every summary for claims
+about platform behavior. Do not overwrite an existing project-level `AGENTS.md`;
+inherit this contract and add only project-specific deltas. If instructions
+conflict and cannot be reconciled, stop and report the conflict.
 
 ## Mandatory session start
 
 Before a new or resumed task:
 
 1. Read [WORKFLOW.md](WORKFLOW.md), resolve the project in
-   [PROJECT-REGISTRY.md](PROJECT-REGISTRY.md), then read its platform session
-   router and canonical project context.
+   [PROJECT-REGISTRY.md](PROJECT-REGISTRY.md), then read its platform pack and
+   canonical project context when imported. In Phase 1 the packs are boundaries
+   and source references; if a project context is not present, use the registry
+   source reference and stop before any platform-dependent work that requires it.
 2. Read your role under `roles/` and
    [GIT-AND-HANDOFF.md](GIT-AND-HANDOFF.md).
 3. Search [skills/](skills/README.md) for capabilities relevant to the requested
@@ -29,8 +70,9 @@ investigate from current authoritative source and working implementations.
 - Owner instructions decide product intent, scope and authorization.
 - This contract owns cross-platform roles, handoff, branch/environment
   coordination and reusable capability lifecycle.
-- Platform workspaces retain Workflow v2 execution, technical guides, project
-  contexts and report-storage policies.
+- Platform packs retain technical guides and project contexts; central report
+  storage is defined by
+  [REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md).
 - Current checked-out authoritative source and observed runtime establish
   implemented platform behavior; skills summarize reusable evidence but never
   override fresher source/runtime.
@@ -40,6 +82,14 @@ investigate from current authoritative source and working implementations.
 
 Never transfer a Qortal contract to Qortium, or the reverse, just because names
 or request shapes are similar. Every skill declares its platform scope.
+
+Platform boundaries:
+
+- [Qortal platform pack](platforms/qortal/README.md)
+- [Qortium platform pack](platforms/qortium/README.md)
+
+In Phase 1 these packs are boundaries and source references only. Full platform
+documentation is intentionally not imported here yet.
 
 ## Reuse-first engineering
 
@@ -74,6 +124,20 @@ neutral functional shell and prove the important platform/runtime flows before
 spending substantial implementation budget on final branding. This is a default,
 not a ban on visual-first tasks when visual design is itself the requested
 outcome.
+
+## Report storage
+
+All substantial reports, audits, research, implementation notes, validation
+evidence and handoffs are stored centrally under
+`/home/iffi/dev-workspace/docs/<project>/<category>/`, with cross-project and
+control-plane material under `workspace/`. The categories are `audit/`,
+`reports/`, `research/`, `implementation/`, `validation/` and `handoffs/`.
+Application technical documentation stays in the project repository.
+
+Never write substantial reports to the `docs/` root, an application repository or
+`/tmp/`. See [REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md). Compact
+task controllers and status files remain under `tasks/` as defined by
+[GIT-AND-HANDOFF.md](GIT-AND-HANDOFF.md).
 
 ## Evidence and safety
 

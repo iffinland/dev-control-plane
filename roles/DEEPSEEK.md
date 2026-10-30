@@ -10,6 +10,9 @@ Primary cost-efficient autonomous implementer for the current workflow.
 - Keep project-specific business logic local instead of inflating global skills.
 - Submit exact source revision, evidence, failed/unavailable runtime layers and
   any reusable capability discovery to Codex Local.
+- Store reports and evidence in the central project/category tree defined by
+  [the report storage policy](../docs/REPORT-STORAGE-POLICY.md); keep the chat
+  and terminal response to a short completion summary.
 - Do not claim completion from mocks/builds or perform unauthorized external
   writes.
 

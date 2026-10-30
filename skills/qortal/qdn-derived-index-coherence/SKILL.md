@@ -57,7 +57,8 @@ Runtime evidence (why maturity is `verified-runtime`):
   `docs/shadow-archives-webportal/handoffs/2026-09-13-gallery-owner-workflow-index-coherence-owner-handoff.md`,
   `docs/shadow-archives-webportal/runtime/2026-09-13-gallery-host-read-contract-and-media-rendering-report.md`,
   `docs/shadow-archives-webportal/handoffs/2026-09-13-owner-runtime-checkpoint.md`
-  under `/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/`.
+  under `/home/iffi/dev-workspace/projects/qortal-dev-workspace/`; verify the
+  current checkout or preserved evidence branch before citing.
 
 ## Scope classification
 

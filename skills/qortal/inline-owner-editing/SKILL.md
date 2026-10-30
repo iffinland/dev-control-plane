@@ -174,6 +174,7 @@ for a partial reload.
   `docs/qwb-qortal-web-builders/implementations/2026-09-16-qwb-phase-4-owner-runtime-validation.md`,
   evidence in
   `docs/qwb-qortal-web-builders/implementations/2026-09-16-qwb-phase-4-runtime-evidence/`
-  (workspace `Qortal/qortal-dev-workspace`).
+  (preserved Qortal platform source `projects/qortal-dev-workspace`; evidence on
+  branch `origin/agent/qwb-qortal-web-builders/phase-4-checkpoint-docs-20260916`).
 - Downgrade to `stale` if the host approval surface or the account-change
   behaviour changes; the bounded decline check above re-promotes it.

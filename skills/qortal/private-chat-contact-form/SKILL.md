@@ -30,8 +30,9 @@ description: Implement or review a Qortal Q-App Contact form that resolves a cur
 | Shadow Archives Contact | owner validation, 2026-09-15 | Real-host owner PASS: current-name recipient, approved send, owner-side arrival once, no duplicate, clean reload. |
 
 The source/read-only evidence is in the Shadow Archives 2026-09-14 Contact reports under
-`Qortal/qortal-dev-workspace/docs/shadow-archives-webportal/`; the owner result is recorded in its
-2026-09-15 phase-closure checkpoint. It is evidence for this Qortal contract, not a reusable UI.
+`projects/qortal-dev-workspace/docs/shadow-archives-webportal/`; verify the preserved Qortal
+evidence branch before citing. The owner result is recorded in its 2026-09-15 phase-closure
+checkpoint. It is evidence for this Qortal contract, not a reusable UI.
 
 ## Reusable contract / procedure
 

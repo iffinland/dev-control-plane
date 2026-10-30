@@ -133,13 +133,16 @@ layer, missing evidence, owner acceptance, external-write state and skill
 harvest result. The handoff must name the agent that actually executed the work;
 identity is never inferred from a template, an orchestration role or the CLI/tool
 profile the work ran inside (see [GIT-AND-HANDOFF.md](GIT-AND-HANDOFF.md)). Author
-every platform report from [templates/REPORT.md](templates/REPORT.md). Only
+every platform report from [templates/REPORT.md](templates/REPORT.md) and store
+it at its canonical project/category path. Only
 verified acceptance permits completion. Publishing/merging/releasing is a
 separate authorized step.
 
-Use [GIT-AND-HANDOFF.md](GIT-AND-HANDOFF.md) for machine-readable state. Platform
-application reports stay in their platform-defined canonical locations;
-universal orchestration research/audits belong under this repository.
+Use [GIT-AND-HANDOFF.md](GIT-AND-HANDOFF.md) for machine-readable state. Store
+substantial reports in the central project/category tree defined by
+[REPORT-STORAGE-POLICY.md](docs/REPORT-STORAGE-POLICY.md); cross-project and
+control-plane material belongs under `workspace/`. Compact task artifacts remain
+under `tasks/`.
 
 ## New application default
 

@@ -79,6 +79,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [Report storage policy](docs/REPORT-STORAGE-POLICY.md)
 - [Git and durable handoff](GIT-AND-HANDOFF.md)
 - [Qortal platform boundary](platforms/qortal/README.md)
+- [Qortal legacy audit reference](platforms/qortal/references/README.md)
 - [Qortium platform boundary](platforms/qortium/README.md)
 - [OpenCode adapter](adapters/opencode/README.md)
 - [DeepSeek adapter](adapters/deepseek/README.md)

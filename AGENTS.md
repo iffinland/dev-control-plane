@@ -88,8 +88,15 @@ Platform boundaries:
 - [Qortal platform pack](platforms/qortal/README.md)
 - [Qortium platform pack](platforms/qortium/README.md)
 
-In Phase 1 these packs are boundaries and source references only. Full platform
-documentation is intentionally not imported here yet.
+For an older Qortal dApp affected by platform evolution, start with the
+[`qortal-legacy-dapp-audit-repair`](skills/qortal/legacy-dapp-audit-repair/SKILL.md)
+skill, then load only the capability-specific skills the inventory requires. Its
+host reference is `candidate` evidence and must be checked against current
+Qortal source/runtime.
+
+The packs are boundaries and source references. Full platform documentation is
+intentionally not imported. The condensed Qortal reference added 2026-10-31
+does not become platform truth.
 
 ## Reuse-first engineering
 

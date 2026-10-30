@@ -1,0 +1,52 @@
+{
+  "schema_version": 2,
+  "project": "orchestration",
+  "task": "qortal-development-knowledge-integration-20261031",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "implementing",
+  "state_revision": 1,
+  "previous_state": "planned",
+  "updated_at_utc": "2026-10-31T00:00:00Z",
+  "next_actor": "deepseek",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/qortal-development-knowledge-20261031",
+    "commit": null
+  },
+  "skills": {
+    "loaded": [
+      "skills/qortal/legacy-dapp-audit-repair/SKILL.md",
+      "skills/shared/capability-harvest/SKILL.md",
+      "skills/qortal/qdn-content-crud/SKILL.md",
+      "skills/qortal/qdn-derived-index-coherence/SKILL.md"
+    ],
+    "freshness": [
+      "legacy-dapp-audit-repair: new candidate, not runtime-validated",
+      "capability-harvest: procedure applied, no platform claim",
+      "qdn-content-crud: existing verified-runtime evidence read for conflict check; not revalidated this task",
+      "qdn-derived-index-coherence: existing verified-runtime evidence read for conflict check; not revalidated this task"
+    ],
+    "created_or_updated": [
+      "skills/qortal/legacy-dapp-audit-repair/SKILL.md"
+    ]
+  },
+  "handoff_sync": "pending",
+  "authorization": {
+    "application_commit_push": true,
+    "handoff_commit_push": true,
+    "source": "Owner task: integrate Qortal development knowledge; commit/push feature branch, open PR, save report in canonical docs."
+  },
+  "evidence": [
+    "Source files located and hashed before work.",
+    "Baseline validators passed before changes.",
+    "Qortal/Qortium boundary checked; no Qortal contract added to Qortium guidance.",
+    "Existing verified Qortal skills checked where the third-party guide conflicted."
+  ],
+  "missing_evidence": [
+    "No real legacy Qortal app audit was executed, so the new skill remains candidate.",
+    "No current Core/Hub/GO source or runtime was queried; third-party version claims remain unverified."
+  ],
+  "owner_acceptance": "not_applicable",
+  "blocker": null
+}

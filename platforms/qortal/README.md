@@ -1,7 +1,8 @@
 # Qortal platform pack
 
-Status: **Phase 1 boundary and source reference only.** Full Qortal platform
-documentation is not imported here yet.
+Status: **boundary and source reference, plus condensed candidate reference
+notes added 2026-10-31.** Full Qortal platform documentation is not imported
+here.
 
 ## Canonical platform source
 
@@ -31,19 +32,41 @@ rewritten. They are evidence sources for a later import phase.
 See `/home/iffi/dev-workspace/docs/workspace/audit/AGENT-WORKSPACE-PHASE0.md` for
 the full comparison. No branch was merged, switched, or imported in Phase 1.
 
+## Condensed reference notes
+
+These notes were added for legacy dApp audit and repair. They are
+**candidate, third-party-derived references**, not platform authority and not a
+full documentation import.
+
+| Document | Use |
+| --- | --- |
+| [`references/q-app-host-compatibility.md`](references/q-app-host-compatibility.md) | Host/bridge/QDN checks for legacy audits, with unverified and conflicting claims called out. |
+| [`references/legacy-app-audit-checklist.md`](references/legacy-app-audit-checklist.md) | Inventory, compatibility matrix, defect reproduction, regression and release-readiness checklist. |
+| [`references/source-adoption-analysis.md`](references/source-adoption-analysis.md) | What was adopted, rejected or left unverified from the supplied sources, and Qortal vs Qortium applicability. |
+
+Load the
+[`qortal-legacy-dapp-audit-repair`](../../skills/qortal/legacy-dapp-audit-repair/SKILL.md)
+skill for the reusable audit procedure. Load the detailed notes only when the
+task needs host-level detail. Check the version pins against current source and
+runtime first.
+
 ## Current routing
 
 - Start with the control-plane [AGENTS.md](../../AGENTS.md) and
   [WORKFLOW.md](../../WORKFLOW.md).
 - Use Qortal skills only for Qortal tasks.
-- Verify current Qortal source/runtime before relying on a skill or historical
-  report.
+- For an older app affected by platform evolution, start with
+  [`qortal-legacy-dapp-audit-repair`](../../skills/qortal/legacy-dapp-audit-repair/SKILL.md),
+  then load only the capability-specific skills the inventory requires.
+- Verify current Qortal source/runtime before relying on a skill, reference note
+  or historical report.
 - Project contexts are not yet imported. The source registry is
   [PROJECT-REGISTRY.md](../../PROJECT-REGISTRY.md).
 
 ## Deferred to a later phase
 
-- Import of the Qortal dApp standard and task guides.
+- Full import of the Qortal dApp standard and task guides.
 - Import of Shadow Archives and QWB project contexts and evidence.
-- Deduplication between Qortal guides and Qortal skills.
+- Promotion of condensed reference notes to verified platform documentation
+  after current source/runtime confirmation.
 - Any commit, push, deployment, QDN write or release action.

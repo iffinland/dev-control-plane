@@ -144,6 +144,41 @@ substantial reports in the central project/category tree defined by
 control-plane material belongs under `workspace/`. Compact task artifacts remain
 under `tasks/`.
 
+## Authorized unattended/overnight sessions
+
+This is a delta to sections 1-8, not a second workflow and not a background
+service. It applies only when the owner explicitly authorizes an unattended or
+overnight session and names the repository, outcome, allowed external actions
+and forbidden actions.
+
+Before starting, record:
+
+- the measurable outcome and phase exit criteria;
+- exact repositories, branches, worktrees and authorized write actions;
+- forbidden actions (for example mainnet payments, QDN publication,
+  deployment, merge to `main`, server changes);
+- a budget or stop condition and the one controller allowed to update shared
+  handoff state.
+
+During the session:
+
+- do not stop for routine implementation decisions; make the smallest
+  reversible choice and record unresolved owner decisions as numbered
+  follow-ups in the handoff;
+- keep money code, the data contract and the compatibility baseline serial
+  before fanning out;
+- parallelize only disjoint files and isolated worktrees; integrate one change
+  at a time with its focused build/lint/tests; allow only one agent to drive a
+  shared host, node or runtime;
+- when the budget or stop condition is reached, stop starting new work and
+  finish validation and handoff;
+- keep the PR or handoff summary current, with a short morning summary at the
+  top, evidence per phase and explicit owner-only or unverified items.
+
+Sections 4-8 still govern validation cadence, review, acceptance, capability
+harvest and durable handoff. Authorization for an overnight session does not
+authorize publication, deployment, signing, transactions or merging.
+
 ## New application default
 
 Use the functional bootstrap skill unless the product requires another proven

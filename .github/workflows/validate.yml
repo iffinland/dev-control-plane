@@ -1,0 +1,45 @@
+name: Validate control plane
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control-plane-validation:
+    name: control-plane-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify Python version
+        run: python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
+      - name: Validate control-plane structure
+        run: python3 tools/validate_control_plane.py
+      - name: Validate skills
+        run: python3 tools/validate_skills.py
+      - name: Run security validator self-test
+        run: python3 tools/validate_security.py --self-test
+      - name: Scan repository for sensitive content
+        run: python3 tools/validate_security.py .
+      - name: Run Git hook regression tests
+        run: python3 tools/test_git_hooks.py
+      - name: Scan reachable Git history
+        run: |
+          zero=0000000000000000000000000000000000000000
+          printf 'refs/heads/main %s refs/heads/main %s\n' "$GITHUB_SHA" "$zero" \
+            | python3 tools/git_hooks.py pre-push --repo .

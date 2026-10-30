@@ -14,4 +14,4 @@ if [ ! -f "$control_plane/tools/git_hooks.py" ]; then
   echo "Security hook blocked: shared validator not found at $control_plane/tools/git_hooks.py" >&2
   exit 1
 fi
-exec python3 "$control_plane/tools/git_hooks.py" "$(basename "$0")" "$@"
+exec python3 "$control_plane/tools/git_hooks.py" "$(basename "$0")"

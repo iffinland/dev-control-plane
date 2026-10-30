@@ -20,6 +20,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
 CONTROL_PLANE = TOOLS.parent
+DOCS = CONTROL_PLANE.parent / "docs"
 DRIVER = TOOLS / "git_hooks.py"
 VALIDATOR = TOOLS / "validate_security.py"
 EXCEPTIONS = TOOLS / "security-exceptions.json"
@@ -111,6 +112,36 @@ def pre_push(
         repo,
         input_text=payload,
     )
+
+
+def hook_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["CONTROL_PLANE_ROOT"] = str(CONTROL_PLANE)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def wrapper_pre_push(
+    wrapper: Path,
+    repo: Path,
+    local_sha: str,
+    remote_sha: str,
+) -> subprocess.CompletedProcess[str]:
+    payload = f"refs/heads/main {local_sha} refs/heads/main {remote_sha}\n"
+    return run(
+        [str(wrapper), "origin", "https://example.invalid/repo.git"],
+        repo,
+        input_text=payload,
+        env=hook_env(),
+    )
+
+
+def git_push_with_hooks(
+    repo: Path,
+    hooks_dir: Path,
+) -> subprocess.CompletedProcess[str]:
+    git(repo, "config", "core.hooksPath", str(hooks_dir))
+    return run(["git", "push", "origin", "main"], repo, env=hook_env())
 
 
 def historical_ip() -> str:
@@ -244,6 +275,70 @@ def main() -> int:
         final = commit(repo, f"leak {PUBLIC_IP}")
         result = pre_push(repo, empty, final, base)
         check("pre-push blocks a secret in a commit message", result.returncode == 1, failures, redact(result.stderr))
+
+        # Pre-push wrappers must accept the two positional arguments Git supplies.
+        hook_dirs = [("control-plane", CONTROL_PLANE / ".githooks")]
+        if (DOCS / ".githooks/pre-push").is_file():
+            hook_dirs.append(("docs", DOCS / ".githooks"))
+
+        for label, hooks_dir in hook_dirs:
+            repo = init_repo(root / f"wrapper-args-{label}")
+            write(repo, "base.md", "clean\n")
+            base = commit(repo, "base")
+            write(repo, "next.md", "clean\n")
+            final = commit(repo, "next")
+            result = wrapper_pre_push(hooks_dir / "pre-push", repo, final, base)
+            check(
+                f"{label} pre-push wrapper accepts Git remote arguments",
+                result.returncode == 0,
+                failures,
+                redact(result.stdout + result.stderr),
+            )
+
+            repo = init_repo(root / f"wrapper-secret-{label}")
+            write(repo, "base.md", "clean\n")
+            base = commit(repo, "base")
+            write(repo, "secret.md", f"token {TOKEN}\n")
+            final = commit(repo, "add secret")
+            result = wrapper_pre_push(hooks_dir / "pre-push", repo, final, base)
+            check(
+                f"{label} pre-push wrapper still blocks with Git remote arguments",
+                result.returncode == 1,
+                failures,
+                redact(result.stdout + result.stderr),
+            )
+
+            repo = init_repo(root / f"real-push-clean-{label}")
+            remote = root / f"real-push-clean-{label}.git"
+            git(root, "init", "-q", "--bare", str(remote))
+            write(repo, "base.md", "clean\n")
+            commit(repo, "base")
+            git(repo, "remote", "add", "origin", str(remote))
+            result = git_push_with_hooks(repo, hooks_dir)
+            output = result.stdout + result.stderr
+            check(
+                f"{label} real Git push passes the pre-push hook",
+                result.returncode == 0 and "Security pre-push passed" in output,
+                failures,
+                redact(output),
+            )
+
+            repo = init_repo(root / f"real-push-secret-{label}")
+            remote = root / f"real-push-secret-{label}.git"
+            git(root, "init", "-q", "--bare", str(remote))
+            write(repo, "base.md", "clean\n")
+            commit(repo, "base")
+            write(repo, "secret.md", f"token {TOKEN}\n")
+            commit(repo, "add secret")
+            git(repo, "remote", "add", "origin", str(remote))
+            result = git_push_with_hooks(repo, hooks_dir)
+            output = result.stdout + result.stderr
+            check(
+                f"{label} real Git push blocks a secret",
+                result.returncode != 0 and "Security pre-push blocked" in output,
+                failures,
+                redact(output),
+            )
 
         # Validator unavailable.
         repo = init_repo(root / "unavailable")

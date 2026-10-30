@@ -94,6 +94,8 @@ pack were not modified.
 - `python3 tools/validate_skills.py` — passed (16 skills indexed exactly once).
 - `python3 tools/validate_security.py .` — passed.
 - `python3 tools/test_git_hooks.py` — passed.
-- GitHub Actions result and PR link: see the central report.
+- GitHub Actions `Validate control plane` run `41137018721` — completed/success
+  for implementation commit `dc3a96aee6d79866bd955849089e86c097d4287f`.
+- PR: https://github.com/iffinland/dev-control-plane/pull/2
 
 No application, platform, server, QDN or transaction action was performed.

@@ -4,15 +4,44 @@
   "task": "qortal-development-knowledge-integration-20261031",
   "executing_agent": "DeepSeek",
   "report_writer": "DeepSeek",
-  "state": "review_pending",
-  "state_revision": 2,
-  "previous_state": "implementing",
-  "updated_at_utc": "2026-10-30T22:17:00Z",
-  "next_actor": "codex-local",
+  "state": "complete",
+  "state_revision": 6,
+  "previous_state": "complete",
+  "updated_at_utc": "2026-10-31T07:22:42Z",
+  "next_actor": "owner",
   "application": {
     "repository": "/home/iffi/dev-workspace/control-plane",
-    "branch": "agent/control-plane/qortal-development-knowledge-20261031",
-    "commit": "dc3a96aee6d79866bd955849089e86c097d4287f"
+    "branch": "main",
+    "commit": "3f4ba4ddcb774087db62a36ba99ae0b1b4302fab"
+  },
+  "merge": {
+    "control_plane_pr": "https://github.com/iffinland/dev-control-plane/pull/2",
+    "control_plane_merge_commit": "3f4ba4ddcb774087db62a36ba99ae0b1b4302fab",
+    "control_plane_merged_at_utc": "2026-10-31T07:11:13Z",
+    "docs_pr": "https://github.com/iffinland/dev-workspace-docs/pull/1",
+    "docs_merge_commit": "e41e7bea7590a81f31b08e03bdd14828a599e28b",
+    "docs_merged_at_utc": "2026-10-31T07:12:06Z",
+    "verification_report": "/home/iffi/dev-workspace/docs/workspace/validation/2026-10-31-post-merge-verification.md"
+  },
+  "finalization": {
+    "control_plane_branch": "agent/control-plane/finalize-post-merge-status-20261031",
+    "docs_branch": "agent/workspace/finalize-pending-reports-20261031",
+    "docs_reports_committed": [
+      "workspace/audit/2026-10-30-GITHUB-CI-BRANCH-PROTECTION-AUDIT.md",
+      "workspace/implementation/2026-10-30-CONTROL-PLANE-CI-IMPLEMENTATION.md",
+      "workspace/implementation/2026-10-30-CONTROL-PLANE-CI-PUBLICATION-RESUME.md",
+      "workspace/implementation/2026-10-30-CONTROL-PLANE-CI-VERIFICATION.md",
+      "workspace/implementation/2026-10-30-CONTROL-PLANE-CI-FINALIZATION.md",
+      "workspace/implementation/2026-10-30-GITHUB-PUBLICATION-COMPLETION.md",
+      "workspace/validation/2026-10-31-post-merge-verification.md"
+    ],
+    "control_plane_pr": "https://github.com/iffinland/dev-control-plane/pull/3",
+    "control_plane_verified_head": "f83ecd8d33c703ea90be61d1b406647d6a534327",
+    "control_plane_ci_run": "41180338958",
+    "note": "Verified head is the last content commit; this STATUS-only follow-up may advance the branch tip.",
+    "docs_pr": "https://github.com/iffinland/dev-workspace-docs/pull/2",
+    "docs_head": "49ebf541147134106ac5f3696a4e1ed616e5ffdb",
+    "owner_merge_required": true
   },
   "skills": {
     "loaded": [
@@ -29,13 +58,14 @@
     ],
     "created_or_updated": [
       "skills/qortal/legacy-dapp-audit-repair/SKILL.md"
-    ]
+    ],
+    "post_merge_verification": "No new skill loaded; post-merge Git/CI verification only."
   },
   "handoff_sync": "pushed",
   "authorization": {
     "application_commit_push": true,
     "handoff_commit_push": true,
-    "source": "Owner task: integrate Qortal development knowledge; commit/push feature branch, open PR, save report in canonical docs."
+    "source": "Owner task: finalize pending workspace documentation; commit the completed status and valid reports on dedicated feature branches, run validators/hooks, push and open PRs. Merge remains owner-only."
   },
   "evidence": [
     "Source files located and hashed before work.",
@@ -43,12 +73,27 @@
     "Qortal/Qortium boundary checked; no Qortal contract added to Qortium guidance.",
     "Existing verified Qortal skills checked where the third-party guide conflicted.",
     "Feature branch pushed; PR https://github.com/iffinland/dev-control-plane/pull/2",
-    "GitHub Actions Validate control plane run 41137018721 completed/success for dc3a96aee6d79866bd955849089e86c097d4287f."
+    "GitHub Actions Validate control plane run 41137018721 completed/success for dc3a96aee6d79866bd955849089e86c097d4287f.",
+    "PR #2 verified merged into main at 2026-10-31T07:11:13Z; merge commit 3f4ba4ddcb774087db62a36ba99ae0b1b4302fab.",
+    "Docs PR #1 verified merged into main at 2026-10-31T07:12:06Z; merge commit e41e7bea7590a81f31b08e03bdd14828a599e28b.",
+    "GitHub Actions 41137188361 completed/success for PR head 8c209c3dd873038c870e7cbb6cd488ac0d40a0e6.",
+    "GitHub Actions 41179599203 completed/success for main push 3f4ba4ddcb774087db62a36ba99ae0b1b4302fab.",
+    "dev-workspace-docs has no workflows; no CI result is applicable.",
+    "Local main fast-forwarded from 8c69e05 to 3f4ba4d (control-plane) and from b188d00 to e41e7be (docs); both are 0/0 diverged from their remotes.",
+    "Remotes, core.hooksPath=.githooks and six pre-existing untracked docs reports were preserved.",
+    "Validators passed: validate_control_plane.py, validate_skills.py, validate_security.py --self-test, validate_security.py ., test_git_hooks.py.",
+    "Post-merge validation report /home/iffi/dev-workspace/docs/workspace/validation/2026-10-31-post-merge-verification.md SHA-256 f36ab7cf36333540c8e75e01a21d7a0398670c2b36fa43b2e96899afd90aa447.",
+    "Finalization audit: seven reports are uniquely filed under workspace/<category>/, are dated, have executing-agent and canonical-path fields, and have no exact-content duplicates among tracked docs reports; all referenced absolute paths resolve.",
+    "Docs security scan passed for all 35 docs files including the seven reports; control-plane, skills, security self-test and Git-hook tests passed before finalization.",
+    "Finalization branch agent/control-plane/finalize-post-merge-status-20261031; PR https://github.com/iffinland/dev-control-plane/pull/3; Actions run 41180316558 success for f89c208 and run 41180338958 success for f83ecd8.",
+    "Docs branch agent/workspace/finalize-pending-reports-20261031 pushed at 49ebf541147134106ac5f3696a4e1ed616e5ffdb; PR https://github.com/iffinland/dev-workspace-docs/pull/2."
   ],
   "missing_evidence": [
     "No real legacy Qortal app audit was executed, so the new skill remains candidate.",
-    "No current Core/Hub/GO source or runtime was queried; third-party version claims remain unverified."
+    "No current Core/Hub/GO source or runtime was queried; third-party version claims remain unverified.",
+    "No docs-repository CI exists.",
+    "Finalization PRs require owner review and merge; no merge was performed by this task."
   ],
-  "owner_acceptance": "not_applicable",
+  "owner_acceptance": "accepted - owner manually merged PR #2 (control-plane) and PR #1 (docs) on 2026-10-31",
   "blocker": null
 }

@@ -86,6 +86,13 @@ next actor = owner. Review and merge. Restart any long-running OpenCode session
 to load the installed development profile. Resume from implementation commit
 `efa9ae4`.
 
+The worker that started this job imported the pre-change detector before this
+commit existed, so this attempt may still be classified by the old in-memory
+code when it scans the session. If it reports `BLOCKED` on the historical
+intermediate permission rejections, run `dev resume <job-id>`: the new worker
+loads the committed detector, and `since_ms` scopes detection to the new
+attempt.
+
 Canonical report path / SHA-256 / authorized remote evidence:
 `/home/iffi/dev-workspace/docs/workspace/implementation/2026-10-31-workflow-v3-permission-overhaul.md`,
 SHA-256 `719952a110f35381969d5c60f23a1a2449a054587ce36074b4838d314eeb80fc`;

@@ -43,6 +43,7 @@
   "missing_evidence": [
     "Owner review and merge are pending; branch is local only.",
     "Long-running OpenCode sessions must be restarted to load the installed profile.",
+    "The worker for this job imported the pre-change detector before the commit existed; this attempt may be classified by the old in-memory code. If so, resume the job to load the committed detector for a new attempt.",
     "No new real model session, Qortium restart, monitor change, QDN write or transaction was performed."
   ],
   "owner_acceptance": "pending",

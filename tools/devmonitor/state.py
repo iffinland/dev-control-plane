@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .redact import redact_text
+from .timings import TimingRecorder, default_recorder
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -92,7 +93,13 @@ def _now() -> int:
 class MonitorState:
     """Single-writer SQLite state used only by the monitor loop."""
 
-    def __init__(self, path: str | Path, *, clock=_now) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        clock=_now,
+        timings: TimingRecorder | None = None,
+    ) -> None:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -100,8 +107,22 @@ class MonitorState:
         except OSError:
             pass
         self.clock = clock
-        self.connection = sqlite3.connect(str(self.path), isolation_level=None)
+        self.timings = timings or default_recorder()
+        self.connection = sqlite3.connect(
+            str(self.path), isolation_level=None, timeout=5.0
+        )
         self.connection.row_factory = sqlite3.Row
+        # WAL lets the owner's read-only ``dev_monitor.py status`` inspect the
+        # database without blocking the single monitor writer. NORMAL keeps
+        # writes durable enough for reconstructable UI state while avoiding an
+        # fsync per autocommit write. Fall back to the default journal if the
+        # filesystem does not support WAL.
+        try:
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass
+        self.connection.execute("PRAGMA busy_timeout=5000")
         self.connection.executescript(SCHEMA)
         try:
             os.chmod(self.path, 0o600)
@@ -122,12 +143,24 @@ class MonitorState:
         row = self.connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
+    def _write_meta_pairs(self, pairs: list[tuple[str, object]]) -> None:
+        """Write several meta keys in one transaction instead of one commit each."""
+
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            for key, value in pairs:
+                self.connection.execute(
+                    "INSERT INTO meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value)),
+                )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
     def set_meta(self, key: str, value: str) -> None:
-        self.connection.execute(
-            "INSERT INTO meta(key, value) VALUES(?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, str(value)),
-        )
+        self._write_meta_pairs([(key, value)])
 
     def next_offset(self) -> int:
         try:
@@ -138,18 +171,23 @@ class MonitorState:
     def set_offset(self, value: int) -> None:
         # Telegram update IDs are ordered. Never let a replayed older update move
         # the durable offset backwards and cause unnecessary re-delivery.
-        self.set_meta("update_offset", str(max(self.next_offset(), max(0, int(value)))))
-        self.set_meta("last_poll_at", str(self.clock()))
+        with self.timings.measure("sqlite:set_offset"):
+            next_value = max(self.next_offset(), max(0, int(value)))
+            self._write_meta_pairs(
+                [("update_offset", next_value), ("last_poll_at", self.clock())]
+            )
 
     def claim_update(self, update_id: int) -> bool:
-        cursor = self.connection.execute(
-            "INSERT OR IGNORE INTO seen_updates(update_id, received_at) VALUES(?, ?)",
-            (int(update_id), self.clock()),
-        )
-        return cursor.rowcount == 1
+        with self.timings.measure("sqlite:claim_update"):
+            cursor = self.connection.execute(
+                "INSERT OR IGNORE INTO seen_updates(update_id, received_at) VALUES(?, ?)",
+                (int(update_id), self.clock()),
+            )
+            return cursor.rowcount == 1
 
     def release_update(self, update_id: int) -> None:
-        self.connection.execute("DELETE FROM seen_updates WHERE update_id = ?", (int(update_id),))
+        with self.timings.measure("sqlite:release_update"):
+            self.connection.execute("DELETE FROM seen_updates WHERE update_id = ?", (int(update_id),))
 
     # ---- opaque references -------------------------------------------------------
     def get_or_create_job_ref(self, job_id: str, chat_id: int) -> str:
@@ -298,61 +336,65 @@ class MonitorState:
         job_id: str | None = None,
         detail: str = "",
     ) -> None:
-        self.connection.execute(
-            "INSERT INTO audit(ts, user_id, chat_id, update_id, action, job_id, result, "
-            "detail_redacted) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock())),
-                user_id,
-                chat_id,
-                update_id,
-                action,
-                job_id,
-                result,
-                redact_text(detail, limit=500),
-            ),
-        )
+        with self.timings.measure("sqlite:record_audit"):
+            self.connection.execute(
+                "INSERT INTO audit(ts, user_id, chat_id, update_id, action, job_id, result, "
+                "detail_redacted) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock())),
+                    user_id,
+                    chat_id,
+                    update_id,
+                    action,
+                    job_id,
+                    result,
+                    redact_text(detail, limit=500),
+                ),
+            )
 
     def hit_rate_limit(self, bucket: str, limit: int, window_seconds: int) -> bool:
         """Return True when the action is allowed, False when limited."""
 
-        now = self.clock()
-        row = self.connection.execute(
-            "SELECT window_start, count FROM rate_limits WHERE bucket = ?", (bucket,)
-        ).fetchone()
-        if not row or now - int(row["window_start"]) >= int(window_seconds):
+        with self.timings.measure("sqlite:hit_rate_limit"):
+            now = self.clock()
+            row = self.connection.execute(
+                "SELECT window_start, count FROM rate_limits WHERE bucket = ?", (bucket,)
+            ).fetchone()
+            if not row or now - int(row["window_start"]) >= int(window_seconds):
+                self.connection.execute(
+                    "INSERT INTO rate_limits(bucket, window_start, count) VALUES(?, ?, 1) "
+                    "ON CONFLICT(bucket) DO UPDATE SET window_start = excluded.window_start, "
+                    "count = 1",
+                    (bucket, now),
+                )
+                return True
+            count = int(row["count"]) + 1
             self.connection.execute(
-                "INSERT INTO rate_limits(bucket, window_start, count) VALUES(?, ?, 1) "
-                "ON CONFLICT(bucket) DO UPDATE SET window_start = excluded.window_start, "
-                "count = 1",
-                (bucket, now),
+                "UPDATE rate_limits SET count = ? WHERE bucket = ?", (count, bucket)
             )
-            return True
-        count = int(row["count"]) + 1
-        self.connection.execute(
-            "UPDATE rate_limits SET count = ? WHERE bucket = ?", (count, bucket)
-        )
-        return count <= int(limit)
+            return count <= int(limit)
 
     def prune(self, *, seen_retention_seconds: int = 7 * 86400) -> None:
-        now = self.clock()
-        self.connection.execute("DELETE FROM browses WHERE expires_at < ?", (now,))
-        self.connection.execute(
-            "DELETE FROM confirmations WHERE expires_at < ?", (now,)
-        )
-        self.connection.execute(
-            "DELETE FROM seen_updates WHERE received_at < ?",
-            (now - int(seen_retention_seconds),),
-        )
+        with self.timings.measure("sqlite:prune"):
+            now = self.clock()
+            self.connection.execute("DELETE FROM browses WHERE expires_at < ?", (now,))
+            self.connection.execute(
+                "DELETE FROM confirmations WHERE expires_at < ?", (now,)
+            )
+            self.connection.execute(
+                "DELETE FROM seen_updates WHERE received_at < ?",
+                (now - int(seen_retention_seconds),),
+            )
 
     def snapshot(self) -> dict[str, Any]:
-        counts: dict[str, int] = {}
-        for table in ("seen_updates", "job_refs", "browses", "confirmations", "audit"):
-            row = self.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
-            counts[table] = int(row["count"]) if row else 0
-        return {
-            "path": str(self.path),
-            "update_offset": self.next_offset(),
-            "last_poll_at": self.get_meta("last_poll_at"),
-            "counts": counts,
-        }
+        with self.timings.measure("sqlite:snapshot"):
+            counts: dict[str, int] = {}
+            for table in ("seen_updates", "job_refs", "browses", "confirmations", "audit"):
+                row = self.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                counts[table] = int(row["count"]) if row else 0
+            return {
+                "path": str(self.path),
+                "update_offset": self.next_offset(),
+                "last_poll_at": self.get_meta("last_poll_at"),
+                "counts": counts,
+            }

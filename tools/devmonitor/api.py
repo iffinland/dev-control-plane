@@ -15,6 +15,7 @@ import uuid
 from typing import Callable, Mapping
 
 from .redact import redact_text
+from .timings import TimingRecorder, default_recorder
 
 JsonTransport = Callable[[str, dict, float], tuple[int, str]]
 DocumentTransport = Callable[[str, dict, str, bytes, float], tuple[int, str]]
@@ -59,6 +60,7 @@ STALE_CALLBACK_MARKERS = (
     "query_id_invalid",
 )
 CALLBACK_ACK_TIMEOUT_SECONDS = 5.0
+DEFAULT_DOCUMENT_TIMEOUT_SECONDS = 60.0
 
 
 def is_stale_callback_error(value: object) -> bool:
@@ -127,14 +129,28 @@ class TelegramApi:
         timeout_seconds: float = 15.0,
         transport: JsonTransport | None = None,
         document_transport: DocumentTransport | None = None,
+        document_timeout_seconds: float | None = None,
+        timings: TimingRecorder | None = None,
     ) -> None:
         if not token:
             raise ValueError("Telegram bot token is required")
         self.token = token
         self.base_url = base_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
+        # ``timeout_seconds`` bounds ordinary Bot API calls (send/edit/ack/
+        # getMe). Long polling adds its own grace period in ``get_updates`` and
+        # document uploads use the separate document timeout below.
+        self.timeout_seconds = max(1.0, float(timeout_seconds))
+        self.document_timeout_seconds = max(
+            self.timeout_seconds,
+            float(
+                DEFAULT_DOCUMENT_TIMEOUT_SECONDS
+                if document_timeout_seconds is None
+                else document_timeout_seconds
+            ),
+        )
         self.transport = transport or _default_transport
         self.document_transport = document_transport or _default_document_transport
+        self.timings = timings or default_recorder()
 
     def __repr__(self) -> str:
         return f"TelegramApi(base_url={self.base_url!r}, token='<set>')"
@@ -143,6 +159,16 @@ class TelegramApi:
         return redact_text(value, self.token, limit)
 
     def _call(
+        self,
+        method: str,
+        payload: Mapping[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> object:
+        with self.timings.measure(f"telegram:{method}"):
+            return self._call_impl(method, payload, timeout=timeout)
+
+    def _call_impl(
         self,
         method: str,
         payload: Mapping[str, object] | None = None,
@@ -299,9 +325,10 @@ class TelegramApi:
         if caption:
             fields["caption"] = caption[:1024]
         try:
-            status, body = self.document_transport(
-                url, fields, filename, data, self.timeout_seconds
-            )
+            with self.timings.measure("telegram:sendDocument"):
+                status, body = self.document_transport(
+                    url, fields, filename, data, self.document_timeout_seconds
+                )
         except TelegramRateLimited as exc:
             raise TelegramRateLimited(self._sanitize(exc), exc.retry_after) from exc
         except TelegramError as exc:

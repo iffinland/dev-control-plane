@@ -20,6 +20,7 @@ from devmonitor.documents import (  # noqa: E402
     DocumentRoot,
     validate_relative,
 )
+from devmonitor.timings import TimingRecorder  # noqa: E402
 
 SECRET = "s3cr3t-" + "value-" + "123456"
 
@@ -58,6 +59,18 @@ class DocumentTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+
+    def test_document_operations_publish_secret_free_timings(self) -> None:
+        recorder = TimingRecorder(slow_seconds=10.0)
+        library = DocumentLibrary(
+            [DocumentRoot("docs", "docs", self.root)], timings=recorder
+        )
+        library.list_dir("docs", "reports", 0)
+        library.preview("docs", "reports/note.md", 4096)
+        labels = {item["label"] for item in recorder.snapshot()["labels"]}
+        self.assertEqual(labels, {"docs:list", "docs:preview"})
+        self.assertNotIn(SECRET, repr(recorder.snapshot()))
 
     def test_validate_relative_rejects_traversal_and_absolute_paths(self) -> None:
         bad = [

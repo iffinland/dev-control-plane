@@ -13,6 +13,7 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 from devmonitor.jobs import JobError, JobFacade, validate_job_id  # noqa: E402
+from devmonitor.timings import TimingRecorder  # noqa: E402
 from devmonitor_test_support import (  # noqa: E402
     install_fake_dev,
     make_job,
@@ -47,6 +48,14 @@ class JobFacadeTests(unittest.TestCase):
         jobs = self.facade.list_jobs()
         self.assertEqual(jobs[0]["state"], "RUNNING")
         self.assertEqual(jobs[1]["state"], "SUCCESS")
+
+
+    def test_cli_calls_are_timed_by_operation_name(self) -> None:
+        recorder = TimingRecorder(slow_seconds=10.0)
+        facade = JobFacade(self.state_root, dev_script=self.dev, timings=recorder)
+        facade.list_jobs()
+        labels = {item["label"] for item in recorder.snapshot()["labels"]}
+        self.assertEqual(labels, {"cli:dev_status"})
 
     def test_job_status(self) -> None:
         payload = self.facade.job_status(self.running["id"])

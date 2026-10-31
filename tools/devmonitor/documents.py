@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .redact import redact_text
+from .timings import TimingRecorder, default_recorder
 
 MAX_COMPONENTS = 32
 MAX_RELATIVE_LENGTH = 1024
@@ -340,7 +341,10 @@ def _root_id(prefix: str, label: str, path: Path) -> str:
 
 
 class DocumentLibrary:
-    def __init__(self, roots: Iterable[DocumentRoot]) -> None:
+    def __init__(
+        self, roots: Iterable[DocumentRoot], *, timings: TimingRecorder | None = None
+    ) -> None:
+        self.timings = timings or default_recorder()
         by_id: dict[str, DocumentRoot] = {}
         seen_paths: set[str] = set()
         for root in roots:
@@ -362,6 +366,8 @@ class DocumentLibrary:
         cls,
         config_roots: Iterable[Path],
         projects: Iterable[object] = (),
+        *,
+        timings: TimingRecorder | None = None,
     ) -> "DocumentLibrary":
         roots: list[DocumentRoot] = [
             DocumentRoot(
@@ -384,7 +390,7 @@ class DocumentLibrary:
                     Path(docs_real),
                 )
             )
-        return cls(roots)
+        return cls(roots, timings=timings)
 
     def get_root(self, root_id: str) -> DocumentRoot:
         for root in self.roots:
@@ -396,46 +402,48 @@ class DocumentLibrary:
         return root.available()
 
     def list_dir(self, root_id: str, rel_dir: str = "", page: int = 0) -> Listing:
-        root = self.get_root(root_id)
-        components = validate_relative(rel_dir, allow_empty=True)
-        fd = _walk_dir(root.path, components)
-        try:
-            entries = _list_fd(fd, rel_dir)
-        finally:
-            os.close(fd)
-        total = len(entries)
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(int(page), total_pages - 1))
-        start = page * PAGE_SIZE
-        return Listing(
-            root_id=root_id,
-            rel_dir=rel_dir,
-            entries=tuple(entries[start : start + PAGE_SIZE]),
-            page=page,
-            page_size=PAGE_SIZE,
-            total_entries=total,
-            total_pages=total_pages,
-        )
+        with self.timings.measure("docs:list"):
+            root = self.get_root(root_id)
+            components = validate_relative(rel_dir, allow_empty=True)
+            fd = _walk_dir(root.path, components)
+            try:
+                entries = _list_fd(fd, rel_dir)
+            finally:
+                os.close(fd)
+            total = len(entries)
+            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(0, min(int(page), total_pages - 1))
+            start = page * PAGE_SIZE
+            return Listing(
+                root_id=root_id,
+                rel_dir=rel_dir,
+                entries=tuple(entries[start : start + PAGE_SIZE]),
+                page=page,
+                page_size=PAGE_SIZE,
+                total_entries=total,
+                total_pages=total_pages,
+            )
 
     def preview(self, root_id: str, rel_file: str, max_bytes: int, secrets: Iterable[str] = ()) -> Preview:
-        root = self.get_root(root_id)
-        components = validate_relative(rel_file)
-        name = components[-1]
-        if _denied_name(name, is_dir=False):
-            raise DocumentError("this document type is not previewable")
-        parent_fd, final = _walk_parent(root.path, components)
-        try:
-            file_fd, info = _open_file_from(parent_fd, final)
-        finally:
-            os.close(parent_fd)
-        try:
-            data = _read_fd(file_fd, info, max_bytes)
-        finally:
-            os.close(file_fd)
-        if not _looks_text(name, data):
-            raise DocumentError("binary documents are download-only")
-        text = data.decode("utf-8", "replace")
-        return Preview(name=name, rel_path=rel_file, size=len(data), text=redact_text(text, secrets))
+        with self.timings.measure("docs:preview"):
+            root = self.get_root(root_id)
+            components = validate_relative(rel_file)
+            name = components[-1]
+            if _denied_name(name, is_dir=False):
+                raise DocumentError("this document type is not previewable")
+            parent_fd, final = _walk_parent(root.path, components)
+            try:
+                file_fd, info = _open_file_from(parent_fd, final)
+            finally:
+                os.close(parent_fd)
+            try:
+                data = _read_fd(file_fd, info, max_bytes)
+            finally:
+                os.close(file_fd)
+            if not _looks_text(name, data):
+                raise DocumentError("binary documents are download-only")
+            text = data.decode("utf-8", "replace")
+            return Preview(name=name, rel_path=rel_file, size=len(data), text=redact_text(text, secrets))
 
     def open_download(
         self,
@@ -446,44 +454,45 @@ class DocumentLibrary:
         allow_binary: bool = False,
         secrets: Iterable[str] = (),
     ) -> Download:
-        root = self.get_root(root_id)
-        components = validate_relative(rel_file)
-        name = components[-1]
-        if _denied_name(name, is_dir=False):
-            raise DocumentError("this document type is not downloadable")
-        parent_fd, final = _walk_parent(root.path, components)
-        try:
-            file_fd, info = _open_file_from(parent_fd, final)
-        finally:
-            os.close(parent_fd)
-        try:
-            data = _read_fd(file_fd, info, max_bytes)
-        finally:
-            os.close(file_fd)
-        is_text = _looks_text(name, data)
-        if not is_text and not allow_binary:
-            raise DocumentError("binary downloads are disabled")
-        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        if is_text:
-            redacted = redact_text(data.decode("utf-8", "replace"), secrets)
+        with self.timings.measure("docs:download"):
+            root = self.get_root(root_id)
+            components = validate_relative(rel_file)
+            name = components[-1]
+            if _denied_name(name, is_dir=False):
+                raise DocumentError("this document type is not downloadable")
+            parent_fd, final = _walk_parent(root.path, components)
+            try:
+                file_fd, info = _open_file_from(parent_fd, final)
+            finally:
+                os.close(parent_fd)
+            try:
+                data = _read_fd(file_fd, info, max_bytes)
+            finally:
+                os.close(file_fd)
+            is_text = _looks_text(name, data)
+            if not is_text and not allow_binary:
+                raise DocumentError("binary downloads are disabled")
+            media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            if is_text:
+                redacted = redact_text(data.decode("utf-8", "replace"), secrets)
+                return Download(
+                    name=_text_name(name),
+                    rel_path=rel_file,
+                    data=redacted.encode("utf-8"),
+                    media_type="text/plain",
+                    is_text=True,
+                    size=len(data),
+                    redacted=True,
+                )
             return Download(
-                name=_text_name(name),
+                name=safe_filename(name),
                 rel_path=rel_file,
-                data=redacted.encode("utf-8"),
-                media_type="text/plain",
-                is_text=True,
+                data=data,
+                media_type=media_type,
+                is_text=False,
                 size=len(data),
-                redacted=True,
+                redacted=False,
             )
-        return Download(
-            name=safe_filename(name),
-            rel_path=rel_file,
-            data=data,
-            media_type=media_type,
-            is_text=False,
-            size=len(data),
-            redacted=False,
-        )
 
 
 def self_test(root_id: str, library: DocumentLibrary) -> None:

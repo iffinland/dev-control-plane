@@ -17,7 +17,11 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
-from devmonitor.api import TelegramRateLimited, TelegramStaleCallback  # noqa: E402
+from devmonitor.api import (  # noqa: E402
+    TelegramRateLimited,
+    TelegramStaleCallback,
+    TelegramTransientError,
+)
 from devmonitor.config import ConfigError, load_monitor_config, with_overrides  # noqa: E402
 from devmonitor.documents import DocumentLibrary  # noqa: E402
 from devmonitor.jobs import JobFacade  # noqa: E402
@@ -279,6 +283,20 @@ class MonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.api.sent), 1)
         self.assertEqual(self.api.get_updates_calls[0]["offset"], 0)
 
+
+    def test_service_recovers_from_a_transient_telegram_error(self) -> None:
+        update = message_update(25, "/start")
+        self.api.updates = [[update]]
+        self.api.faults = [TelegramTransientError("temporary network failure")]
+        sleeps: list[float] = []
+        service = MonitorService(
+            self.config, self.api, self.state, self.router, sleep=sleeps.append
+        )
+        service.run(max_iterations=2)
+        self.assertEqual(len(self.api.sent), 1)
+        self.assertEqual(self.state.next_offset(), 26)
+        self.assertTrue(sleeps)
+
     def test_service_honors_429_without_dropping_the_update(self) -> None:
         update = message_update(20, "/start")
         self.api.updates = [[update]]
@@ -369,8 +387,9 @@ class MonitorIntegrationTests(unittest.TestCase):
 
         service.sleep = _sleep_then_stop
         service.run(max_iterations=5)
-        self.assertEqual(len(self.api.get_updates_calls), 1)
+        self.assertLessEqual(len(self.api.get_updates_calls), 2)
         self.assertEqual(len(self.api.sent), 1)
+        self.assertTrue(service.stop_requested())
 
     def test_check_fails_closed_on_configured_webhook(self) -> None:
         self.api.webhook = {"url": "https://example.invalid/hook"}

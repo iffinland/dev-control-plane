@@ -1,7 +1,8 @@
 # Qortium Dev Monitor — Telegram remote control architecture
 
-Status: **P1 read-only observer implemented; P2-P5 remain proposed.** P1
-activation is manual; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
+Status: **P1 read-only observer implemented with an optional systemd user unit;
+P2-P5 remain proposed.** Activation remains manual; see
+[QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 
 | Field | Value |
 | --- | --- |
@@ -14,7 +15,7 @@ activation is manual; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | P1 read-only observer implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. No Workflow v3 file, job, service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
+| Implementation state | P1 read-only observer implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. A P1 stabilization pass added bounded timing diagnostics, separated Bot API timeouts, WAL state, graceful signal shutdown and an optional systemd user unit stored under `deploy/systemd/user/`. The unit was not installed, enabled or started by the repository. No Workflow v3 file, job, Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 
@@ -458,8 +459,10 @@ Phases 0-2. Phase 3's additive cancel command is a separate authorized change.
 
 ### 4.4 Runtime topology and long polling
 
-- One owner-started foreground process. It is not a service, scheduler or daemon
-  installed by this repository.
+- One owner-started process, either in a foreground terminal or through the
+  optional systemd user unit stored in `deploy/systemd/user/`. It is not a
+  repository-installed system service, scheduler or daemon; installing the user
+  unit is an explicit owner action.
 - The process acquires a single-instance lock under the monitor state directory.
   If the lock is held, it refuses to start rather than creating a second poller.
 - It calls `getUpdates` with a long-poll timeout (default 20-30 seconds). It does

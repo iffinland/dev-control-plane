@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Callable
@@ -24,10 +25,41 @@ from .api import (
 from .config import MonitorConfig, ensure_state_dir
 from .redact import redact_error, redact_text
 from .state import MonitorState
+from .timings import TimingRecorder, default_recorder
 
 
 class AlreadyRunning(RuntimeError):
     """Another monitor instance holds the state lock."""
+
+
+class MonitorShutdown(BaseException):
+    """Raised by the signal handler to interrupt a blocking poll safely."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
+
+def install_shutdown_handlers(service: "MonitorService") -> dict[int, object]:
+    """Install SIGTERM/SIGINT handlers that end the loop without a traceback."""
+
+    previous: dict[int, object] = {}
+
+    def _handle(signum: int, _frame: object) -> None:
+        service.mark_shutdown(signum)
+        raise MonitorShutdown(signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous[signum] = signal.signal(signum, _handle)
+    return previous
+
+
+def restore_signal_handlers(previous: dict[int, object]) -> None:
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)  # type: ignore[arg-type]
+        except (OSError, ValueError):
+            pass
 
 
 class MonitorService:
@@ -40,6 +72,7 @@ class MonitorService:
         *,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] | None = None,
+        timings: TimingRecorder | None = None,
     ) -> None:
         self.config = config
         self.api = api
@@ -47,6 +80,8 @@ class MonitorService:
         self.router = router
         self.sleep = sleep
         self.log = log or (lambda _message: None)
+        self.timings = timings or default_recorder()
+        self._shutdown_requested = False
         self.state_dir = ensure_state_dir(config.state_dir)
         self.lock_path = self.state_dir / "monitor.lock"
         self.stop_path = self.state_dir / "monitor.stop"
@@ -81,7 +116,15 @@ class MonitorService:
             handle.close()
 
     def stop_requested(self) -> bool:
-        return self.stop_path.exists()
+        return self._shutdown_requested or self.stop_path.exists()
+
+    def mark_shutdown(self, signum: int) -> None:
+        self._shutdown_requested = True
+        self.log(f"shutdown requested by signal {signum}")
+
+    def _emit_timings(self) -> None:
+        for line in self.timings.drain_log_lines():
+            self.log(line)
 
     def request_stop(self) -> None:
         ensure_state_dir(self.state_dir)
@@ -108,19 +151,28 @@ class MonitorService:
                 if max_iterations is not None and iterations >= max_iterations:
                     break
                 iterations += 1
+                self._emit_timings()
+                updates: list[dict] = []
                 try:
-                    updates = self.api.get_updates(
-                        self.state.next_offset(), self.config.poll_timeout_seconds
-                    )
+                    with self.timings.measure("poll:getUpdates"):
+                        updates = self.api.get_updates(
+                            self.state.next_offset(), self.config.poll_timeout_seconds
+                        )
                     transient_attempt = 0
                     # Answer all queued callbacks before any handler can block the
                     # loop. Otherwise a slow first action expires the rest.
-                    self.router.acknowledge_updates(updates)
+                    with self.timings.measure("ack:batch"):
+                        self.router.acknowledge_updates(updates)
+                    self._emit_timings()
                     for update in updates:
                         if self.stop_requested():
                             break
-                        self.process_update(update)
-                    self.state.prune()
+                        kind = _update_kind(update)
+                        with self.timings.measure(f"update:{kind}"):
+                            self.process_update(update)
+                        self._emit_timings()
+                    with self.timings.measure("sqlite:prune"):
+                        self.state.prune()
                 except TelegramRateLimited as exc:
                     delay = max(1.0, exc.retry_after)
                     self.log(f"rate limited; waiting {delay:.0f}s")
@@ -132,8 +184,12 @@ class MonitorService:
                     self.sleep(delay)
                 except TelegramFatalError:
                     raise
-                self.sleep(0.1)
+                # A long poll normally already waited; only add an idle pause when
+                # Telegram returned an empty batch immediately.
+                if not updates:
+                    self.sleep(0.1)
         finally:
+            self._emit_timings()
             self._release_lock()
 
     def process_update(self, update: dict) -> None:
@@ -166,6 +222,16 @@ class MonitorService:
             self.state.set_offset(update_id + 1)
             return
         self.state.set_offset(update_id + 1)
+
+
+def _update_kind(update: object) -> str:
+    if not isinstance(update, dict):
+        return "unsupported"
+    if isinstance(update.get("callback_query"), dict):
+        return "callback_query"
+    if isinstance(update.get("message"), dict):
+        return "message"
+    return "unsupported"
 
 
 def monitor_running(state_dir: str | Path) -> bool:

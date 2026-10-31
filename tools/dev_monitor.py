@@ -2,14 +2,16 @@
 """Qortium Dev Monitor (P1 read-only observer).
 
 Commands:
-    run     start the owner-started foreground long-polling monitor
+    run     run the long-polling monitor (foreground or systemd user service)
     check   validate configuration, Telegram access, registry and docs roots
     status  show monitor state and whether an instance is running
     stop    request a graceful stop through the monitor's flag file
 
-The monitor is not a service or scheduler. It never opens an inbound listener,
-never creates or mutates Workflow v3 jobs in P1, and never touches Qortium or the
-VPS system configuration.
+The monitor is an outbound-only observer. It never creates or mutates Workflow v3
+jobs in P1 and never touches Qortium or the VPS system configuration.
+
+Run exit codes: 0 graceful stop, 1 unexpected/transient failure, 2 configuration
+error, 75 another instance owns the lock, 78 fatal Telegram conflict/auth error.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from devmonitor import __version__  # noqa: E402
-from devmonitor.api import TelegramApi, TelegramError  # noqa: E402
+from devmonitor.api import TelegramApi, TelegramError, TelegramFatalError  # noqa: E402
 from devmonitor.config import (  # noqa: E402
     ConfigError,
     ensure_state_dir,
@@ -39,10 +41,14 @@ from devmonitor.router import Router  # noqa: E402
 from devmonitor.service import (  # noqa: E402
     AlreadyRunning,
     MonitorService,
+    MonitorShutdown,
     check_monitor,
+    install_shutdown_handlers,
     monitor_running,
+    restore_signal_handlers,
 )
 from devmonitor.state import MonitorState  # noqa: E402
+from devmonitor.timings import TimingRecorder  # noqa: E402
 
 
 def _build_config(args: argparse.Namespace):
@@ -53,40 +59,59 @@ def _build_config(args: argparse.Namespace):
     )
 
 
-def _build_components(config):
-    state = MonitorState(config.state_dir / "monitor.db")
+def _build_components(config, timings=None):
+    timings = timings or TimingRecorder(slow_seconds=config.slow_timing_seconds)
+    state = MonitorState(config.state_dir / "monitor.db", timings=timings)
     api = TelegramApi(
         config.bot_token,
         base_url=config.api_base,
-        timeout_seconds=config.poll_timeout_seconds + 10,
+        # Ordinary Bot API calls must not inherit the long-poll timeout.
+        timeout_seconds=config.request_timeout_seconds,
+        document_timeout_seconds=config.document_timeout_seconds,
+        timings=timings,
     )
     registry = Registry(config.registry_path, config.allowed_repo_roots)
     try:
         projects = registry.load(force=True)
     except RegistryError:
         projects = []
-    documents = DocumentLibrary.from_sources(config.docs_roots, projects)
-    jobs = JobFacade(config.job_state_root)
-    router = Router(config, state, api, jobs, registry, documents)
-    return state, api, registry, documents, jobs, router
+    documents = DocumentLibrary.from_sources(config.docs_roots, projects, timings=timings)
+    jobs = JobFacade(config.job_state_root, timings=timings)
+    router = Router(config, state, api, jobs, registry, documents, timings=timings)
+    return state, api, registry, documents, jobs, router, timings
 
 
 def command_run(args: argparse.Namespace) -> int:
     config = _build_config(args)
-    state, api, _registry, _documents, _jobs, router = _build_components(config)
-    service = MonitorService(config, api, state, router, log=lambda message: print(f"monitor: {message}", file=sys.stderr))
+    state, api, _registry, _documents, _jobs, router, timings = _build_components(config)
+    service = MonitorService(
+        config,
+        api,
+        state,
+        router,
+        log=lambda message: print(f"monitor: {message}", file=sys.stderr),
+        timings=timings,
+    )
+    previous = install_shutdown_handlers(service)
     try:
         service.run()
+    except MonitorShutdown:
+        print("dev-monitor: stopped gracefully; running jobs are unaffected", file=sys.stderr)
+        return 0
     except AlreadyRunning as exc:
         print(f"dev-monitor: {exc}", file=sys.stderr)
-        return 1
+        return 75
     except KeyboardInterrupt:
         print("dev-monitor: interrupted; running jobs are unaffected", file=sys.stderr)
         return 130
+    except TelegramFatalError as exc:
+        print(f"dev-monitor: stopped: {exc}", file=sys.stderr)
+        return 78
     except TelegramError as exc:
         print(f"dev-monitor: stopped: {exc}", file=sys.stderr)
         return 1
     finally:
+        restore_signal_handlers(previous)
         state.close()
     return 0
 
@@ -99,7 +124,12 @@ def command_check(args: argparse.Namespace) -> int:
         return 1
     state = MonitorState(config.state_dir / "monitor.db")
     try:
-        api = TelegramApi(config.bot_token, base_url=config.api_base, timeout_seconds=15)
+        api = TelegramApi(
+            config.bot_token,
+            base_url=config.api_base,
+            timeout_seconds=config.request_timeout_seconds,
+            document_timeout_seconds=config.document_timeout_seconds,
+        )
         registry = Registry(config.registry_path, config.allowed_repo_roots)
         try:
             projects = registry.load(force=True)

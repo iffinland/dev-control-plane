@@ -51,6 +51,8 @@ jobs:
           python3 tools/test_dev_monitor_jobs.py
           python3 tools/test_dev_monitor_api.py
           python3 tools/test_dev_monitor_state.py
+          python3 tools/test_dev_monitor_timings.py
+          python3 tools/test_dev_monitor_service_unit.py
           python3 tools/test_dev_monitor_integration.py
       - name: Scan reachable Git history
         run: |

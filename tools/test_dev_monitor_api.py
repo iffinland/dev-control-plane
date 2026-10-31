@@ -148,6 +148,46 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(calls[0][2], "report.redacted.md")
         self.assertEqual(calls[0][3], b"# report")
 
+
+    def test_non_poll_calls_use_the_request_timeout(self) -> None:
+        transport = FakeTransport(
+            [
+                (200, response({"id": 1})),
+                (200, response([])),
+                (200, response(True)),
+            ]
+        )
+        api = TelegramApi(
+            BOT_TOKEN,
+            transport=transport,
+            timeout_seconds=8,
+            document_timeout_seconds=45,
+        )
+        api.get_me()
+        self.assertEqual(transport.calls[-1]["timeout"], 8)
+        api.get_updates(0, 25)
+        self.assertGreaterEqual(transport.calls[-1]["timeout"], 25)
+        self.assertTrue(api.answer_callback_query("cb-1"))
+        self.assertLessEqual(transport.calls[-1]["timeout"], 5)
+        self.assertEqual(api.document_timeout_seconds, 45)
+
+    def test_document_upload_uses_the_document_timeout(self) -> None:
+        calls = []
+
+        def document_transport(url, fields, filename, data, timeout):
+            calls.append(timeout)
+            return 200, response({"message_id": 9})
+
+        api = TelegramApi(
+            BOT_TOKEN,
+            transport=FakeTransport([]),
+            document_transport=document_transport,
+            timeout_seconds=7,
+            document_timeout_seconds=55,
+        )
+        api.send_document(2002, "report.redacted.md", b"# report")
+        self.assertEqual(calls, [55])
+
     def test_api_has_no_webhook_setter(self) -> None:
         api = TelegramApi(BOT_TOKEN, transport=FakeTransport())
         self.assertFalse(hasattr(api, "set_webhook"))

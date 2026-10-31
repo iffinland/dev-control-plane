@@ -12,6 +12,7 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 from devmonitor.state import MonitorState  # noqa: E402
+from devmonitor.timings import TimingRecorder  # noqa: E402
 
 
 class StateTests(unittest.TestCase):
@@ -91,6 +92,23 @@ class StateTests(unittest.TestCase):
             self.assertFalse(state.hit_rate_limit("user:1", 2, 60))
             now[0] = 200
             self.assertTrue(state.hit_rate_limit("user:1", 2, 60))
+        finally:
+            state.close()
+
+
+    def test_journal_mode_is_wal_for_concurrent_status_readers(self) -> None:
+        row = self.state.connection.execute("PRAGMA journal_mode").fetchone()
+        self.assertEqual(str(row[0]).lower(), "wal")
+
+    def test_offset_update_is_atomic_and_recorded_in_timings(self) -> None:
+        recorder = TimingRecorder(slow_seconds=10.0)
+        state = MonitorState(self.root / "timed.db", timings=recorder)
+        try:
+            state.set_offset(64)
+            self.assertEqual(state.next_offset(), 64)
+            self.assertIsNotNone(state.get_meta("last_poll_at"))
+            labels = {item["label"] for item in recorder.snapshot()["labels"]}
+            self.assertIn("sqlite:set_offset", labels)
         finally:
             state.close()
 

@@ -143,6 +143,9 @@ class MonitorConfig:
     bot_token: str
     chat_id: str | None
     poll_timeout_seconds: float
+    request_timeout_seconds: float
+    document_timeout_seconds: float
+    slow_timing_seconds: float
     status_refresh_seconds: float
     max_inline_chars: int
     max_text_download_bytes: int
@@ -262,6 +265,15 @@ def load_monitor_config(
         chat_id=chat_id,
         poll_timeout_seconds=_as_number(
             monitor.get("poll_timeout_seconds"), 25.0, 1.0, 50.0
+        ),
+        request_timeout_seconds=_as_number(
+            monitor.get("request_timeout_seconds"), 10.0, 2.0, 30.0
+        ),
+        document_timeout_seconds=_as_number(
+            monitor.get("document_timeout_seconds"), 60.0, 10.0, 300.0
+        ),
+        slow_timing_seconds=_as_number(
+            monitor.get("slow_timing_seconds"), 1.0, 0.1, 30.0
         ),
         status_refresh_seconds=_as_number(
             monitor.get("status_refresh_seconds"), 30.0, 10.0, 600.0

@@ -17,11 +17,31 @@ from .jobs import JobError, JobFacade, validate_job_id
 from .projects import Registry, RegistryError
 from .redact import redact_text
 from .state import MonitorState
+from .timings import TimingRecorder, default_recorder
 
 JOBS_PAGE_SIZE = 6
 PREVIEW_BYTES = 20000
 RATE_LIMIT_ACTIONS = 30
 RATE_LIMIT_WINDOW = 60
+SAFE_COMMAND_LABELS = frozenset(
+    {
+        "start",
+        "menu",
+        "help",
+        "jobs",
+        "job",
+        "status",
+        "projects",
+        "docs",
+        "start_job",
+        "resume",
+        "cancel",
+        "accept",
+        "lock",
+        "unlock",
+    }
+)
+SAFE_CALLBACK_LABELS = frozenset({"m", "h", "p", "d", "jl", "j", "b", "x"})
 
 
 class Router:
@@ -33,6 +53,8 @@ class Router:
         jobs: JobFacade,
         registry: Registry,
         documents: DocumentLibrary,
+        *,
+        timings: TimingRecorder | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -40,6 +62,7 @@ class Router:
         self.jobs = jobs
         self.registry = registry
         self.documents = documents
+        self.timings = timings or default_recorder()
         self._acked_callbacks: set[str] = set()
 
     # ---- callback acknowledgements -----------------------------------------------
@@ -125,11 +148,13 @@ class Router:
         tokens = text.split()
         command = tokens[0][1:].split("@", 1)[0].lower()
         args = tokens[1:]
-        try:
-            self._dispatch_command(command, args, decision)
-        except (JobError, RegistryError, DocumentError, ValueError) as exc:
-            self._audit(decision, f"command:{command}", "error", str(exc))
-            self._send(chat_id, self._safe(f"Request failed: {exc}"), menus.back_to_main())
+        label = command if command in SAFE_COMMAND_LABELS else "other"
+        with self.timings.measure(f"action:command:{label}"):
+            try:
+                self._dispatch_command(command, args, decision)
+            except (JobError, RegistryError, DocumentError, ValueError) as exc:
+                self._audit(decision, f"command:{command}", "error", str(exc))
+                self._send(chat_id, self._safe(f"Request failed: {exc}"), menus.back_to_main())
 
     def _dispatch_command(self, command: str, args: list[str], decision: auth.AuthDecision) -> None:
         chat_id = decision.chat_id or 0
@@ -180,16 +205,19 @@ class Router:
         if not isinstance(data, str) or not data:
             self._audit(decision, "callback", "ignored", "missing data")
             return
-        try:
-            self._dispatch_callback(callback, decision, data)
-        except (JobError, RegistryError, DocumentError, ValueError) as exc:
-            self._audit(decision, f"callback:{data.split(':', 1)[0]}", "error", str(exc))
-            self._edit(
-                callback,
-                decision,
-                self._safe(f"Request failed: {exc}"),
-                menus.back_to_main(),
-            )
+        head = data.split(":", 1)[0]
+        label = head if head in SAFE_CALLBACK_LABELS else "other"
+        with self.timings.measure(f"action:callback:{label}"):
+            try:
+                self._dispatch_callback(callback, decision, data)
+            except (JobError, RegistryError, DocumentError, ValueError) as exc:
+                self._audit(decision, f"callback:{head}", "error", str(exc))
+                self._edit(
+                    callback,
+                    decision,
+                    self._safe(f"Request failed: {exc}"),
+                    menus.back_to_main(),
+                )
 
     def _dispatch_callback(self, callback: dict, decision: auth.AuthDecision, data: str) -> None:
         parts = data.split(":")

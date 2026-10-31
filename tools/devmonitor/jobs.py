@@ -21,6 +21,7 @@ from typing import Mapping
 from devjob import store
 
 from .redact import redact_text, sanitize_control
+from .timings import TimingRecorder, default_recorder
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DEV = PACKAGE_ROOT / "dev.py"
@@ -66,6 +67,7 @@ class JobFacade:
         python: str | None = None,
         timeout_seconds: float = 30.0,
         env: Mapping[str, str] | None = None,
+        timings: TimingRecorder | None = None,
     ) -> None:
         self.state_root = Path(state_root).expanduser() if state_root else store.state_root()
         self.dev_script = Path(dev_script).expanduser() if dev_script else DEFAULT_DEV
@@ -73,30 +75,33 @@ class JobFacade:
         self.timeout_seconds = timeout_seconds
         self.environ = dict(os.environ if env is None else env)
         self.environ["DEV_CONTROL_PLANE_STATE"] = str(self.state_root)
+        self.timings = timings or default_recorder()
 
     # ---- subprocess boundary -----------------------------------------------------
     def _run(self, args: list[str], *, input_text: str | None = None) -> str:
         command = [self.python, str(self.dev_script)] + args
-        try:
-            completed = subprocess.run(
-                command,
-                input=input_text,
-                text=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-                check=False,
-                shell=False,
-                env=self.environ,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise JobError("Workflow v3 CLI timed out") from exc
-        except OSError as exc:
-            raise JobError(f"Workflow v3 CLI could not start: {exc.__class__.__name__}") from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
-            detail = redact_text(detail, limit=500)
-            raise JobError(detail or f"Workflow v3 CLI exited {completed.returncode}")
-        return completed.stdout
+        label = f"cli:dev_{args[0] if args else 'unknown'}"
+        with self.timings.measure(label):
+            try:
+                completed = subprocess.run(
+                    command,
+                    input=input_text,
+                    text=True,
+                    capture_output=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                    shell=False,
+                    env=self.environ,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise JobError("Workflow v3 CLI timed out") from exc
+            except OSError as exc:
+                raise JobError(f"Workflow v3 CLI could not start: {exc.__class__.__name__}") from exc
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "").strip()
+                detail = redact_text(detail, limit=500)
+                raise JobError(detail or f"Workflow v3 CLI exited {completed.returncode}")
+            return completed.stdout
 
     def _json(self, args: list[str]) -> object:
         output = self._run(args)

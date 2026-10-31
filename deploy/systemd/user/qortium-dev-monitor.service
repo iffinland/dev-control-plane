@@ -1,0 +1,30 @@
+[Unit]
+Description=Qortium Dev Monitor (read-only Telegram observer)
+Documentation=file:///home/iffi/dev-workspace/control-plane/docs/operations/QORTIUM-DEV-MONITOR.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/iffi/dev-workspace/control-plane
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py run
+Restart=on-failure
+RestartSec=5
+# Configuration errors and fatal Telegram auth/conflict errors must not spin.
+# 75 is the documented duplicate-instance exit code.
+RestartPreventExitStatus=2 75 78
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=40
+SendSIGKILL=yes
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+SyslogIdentifier=qortium-dev-monitor
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,662 @@
+"""Authorized P2 start/resume control flows.
+
+The manager owns wizard state transitions, input validation, confirmation
+payloads and the fixed-shape ``dev start`` / ``dev resume`` invocations. It never
+uses a shell, never accepts an arbitrary repository, agent, model or timeout, and
+never starts jobs in tests by itself.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+from . import menus, render
+from .admission import (
+    AdmissionError,
+    AdmissionLockTimeout,
+    GlobalGuardBusy,
+    ProjectBusy,
+)
+from .config import MonitorConfig
+from .jobs import JobError, JobFacade, validate_job_id
+from .projects import Registry, RegistryError, ValidatedProject, project_by_id
+from .redact import sanitize_control
+from .state import MonitorState
+
+MAX_TITLE = 120
+MAX_PROMPT = 20000
+MAX_CRITERIA = 12
+MAX_COMMAND = 1000
+MAX_LABEL = 80
+MAX_MANUAL = 300
+MAX_BRANCH = 120
+MIN_TIMEOUT = 60
+MAX_TIMEOUT = 8 * 3600
+WIZARD_TTL = 3600
+SKIP_VALUES = frozenset({"", "-", "skip", "/skip", "auto", "none", "default"})
+
+
+class ControlError(RuntimeError):
+    """A user-correctable control-flow error."""
+
+
+@dataclass(frozen=True)
+class StartRequest:
+    project_id: str
+    repo: str
+    title: str
+    prompt: str
+    command_criteria: tuple[tuple[str, str], ...]
+    manual_criteria: tuple[str, ...]
+    timeout_seconds: int
+    branch: str | None
+    agent: str
+    model: str
+
+    def payload(self, wizard_id: str) -> dict[str, Any]:
+        return {
+            "wizard_id": wizard_id,
+            "project_id": self.project_id,
+            "repo": self.repo,
+            "title": self.title,
+            "prompt": self.prompt,
+            "command_criteria": [list(item) for item in self.command_criteria],
+            "manual_criteria": list(self.manual_criteria),
+            "timeout_seconds": int(self.timeout_seconds),
+            "branch": self.branch,
+            "agent": self.agent,
+            "model": self.model,
+        }
+
+
+@dataclass(frozen=True)
+class ResumeRequest:
+    job_id: str
+    prompt: str | None
+    timeout_seconds: int | None
+    new_session: bool
+    force: bool
+
+    def payload(self, wizard_id: str) -> dict[str, Any]:
+        return {
+            "wizard_id": wizard_id,
+            "job_id": self.job_id,
+            "prompt": self.prompt,
+            "timeout_seconds": self.timeout_seconds,
+            "new_session": bool(self.new_session),
+            "force": bool(self.force),
+        }
+
+
+@dataclass
+class ControlResult:
+    text: str
+    markup: dict | None = None
+    job_id: str | None = None
+    project_id: str | None = None
+    notification: str | None = None
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def validate_text(value: str, *, limit: int, field: str, allow_newlines: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ControlError(f"{field} must be text")
+    if "\x00" in value:
+        raise ControlError(f"{field} contains a NUL character")
+    cleaned = sanitize_control(value).strip()
+    if not cleaned:
+        raise ControlError(f"{field} must not be empty")
+    if not allow_newlines:
+        cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        raise ControlError(f"{field} is longer than {limit} characters")
+    return cleaned
+
+
+def parse_timeout(value: str) -> int:
+    raw = _text(value).strip().lower()
+    if not raw:
+        raise ControlError("timeout is required, for example 8h or 90m")
+    unit = raw[-1]
+    number_text = raw[:-1] if unit in "smhd" else raw
+    try:
+        number = int(number_text)
+    except ValueError as exc:
+        raise ControlError("timeout must be an integer with s, m, h or d") from exc
+    multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 1)
+    seconds = number * multiplier
+    if seconds < MIN_TIMEOUT:
+        raise ControlError(f"timeout must be at least {MIN_TIMEOUT} seconds")
+    if seconds > MAX_TIMEOUT:
+        raise ControlError("timeout exceeds the eight-hour maximum")
+    return seconds
+
+
+def parse_criteria(value: str) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    if not isinstance(value, str):
+        raise ControlError("acceptance criteria must be text")
+    lines = [line.strip() for line in sanitize_control(value).splitlines() if line.strip()]
+    if not lines:
+        raise ControlError(
+            "at least one acceptance criterion is required; one criterion per line"
+        )
+    if len(lines) > MAX_CRITERIA:
+        raise ControlError(f"at most {MAX_CRITERIA} acceptance criteria are allowed")
+    commands: list[tuple[str, str]] = []
+    manuals: list[str] = []
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith("manual:"):
+            manual = validate_text(
+                line.split(":", 1)[1], limit=MAX_MANUAL, field="manual criterion"
+            )
+            manuals.append(manual)
+            continue
+        if "::" in line:
+            label, command = line.split("::", 1)
+            label = validate_text(label, limit=MAX_LABEL, field="criterion label")
+            command = line.split("::", 1)[1].strip()
+        else:
+            label = "Acceptance"
+            command = line
+        if not command:
+            raise ControlError("an acceptance command must not be empty")
+        command = validate_text(command, limit=MAX_COMMAND, field="acceptance command")
+        commands.append((label, command))
+    if not commands and not manuals:
+        raise ControlError("at least one acceptance criterion is required")
+    return tuple(commands), tuple(manuals)
+
+
+def _skip(value: str) -> bool:
+    return _text(value).strip().lower() in SKIP_VALUES
+
+
+class ControlManager:
+    def __init__(
+        self,
+        config: MonitorConfig,
+        state: MonitorState,
+        jobs: JobFacade,
+        registry: Registry,
+        admission,
+        notifier=None,
+    ) -> None:
+        self.config = config
+        self.state = state
+        self.jobs = jobs
+        self.registry = registry
+        self.admission = admission
+        self.notifier = notifier
+
+    # ---- shared helpers ----------------------------------------------------------
+    def _projects(self) -> list[ValidatedProject]:
+        try:
+            return list(self.registry.load())
+        except RegistryError as exc:
+            raise ControlError(f"project registry is unavailable: {exc}") from exc
+
+    def _eligible(self) -> list[ValidatedProject]:
+        return [item for item in self._projects() if item.job_eligible]
+
+    def _default_agent(self) -> str:
+        return self.config.agent_allowlist[0] if self.config.agent_allowlist else ""
+
+    def _default_model(self) -> str:
+        return self.config.model_allowlist[0] if self.config.model_allowlist else ""
+
+    def _wizard(self, wizard_id: str, user_id: int, chat_id: int) -> dict[str, Any]:
+        wizard = self.state.get_wizard(wizard_id, user_id, chat_id)
+        if not wizard:
+            raise ControlError("this wizard has expired or belongs to another chat")
+        return wizard
+
+    def _cancel(self, wizard: dict[str, Any], user_id: int, chat_id: int) -> ControlResult:
+        self.state.delete_wizard(str(wizard["wizard_id"]), user_id, chat_id)
+        return ControlResult("Wizard cancelled. No job was started or resumed.", menus.back_to_main())
+
+    # ---- start wizard ------------------------------------------------------------
+    def begin_start(self, user_id: int, chat_id: int) -> ControlResult:
+        projects = self._eligible()
+        if not projects:
+            return ControlResult(
+                "No registered project has an available repository, so a job cannot be started.",
+                menus.back_to_main(),
+            )
+        data = {
+            "project_ids": [project.project_id for project in projects],
+            "step_count": 0,
+        }
+        wizard_id = self.state.create_wizard(
+            user_id, chat_id, "start", "project", data, ttl_seconds=WIZARD_TTL
+        )
+        wizard = {"wizard_id": wizard_id, "kind": "start", "step": "project", "data": data}
+        return ControlResult(
+            render.start_project_text(),
+            menus.start_project_menu(wizard_id, projects),
+        )
+
+    def start_callback(
+        self, wizard: dict[str, Any], action: str, parts: Sequence[str], decision
+    ) -> ControlResult:
+        wizard_id = str(wizard["wizard_id"])
+        chat_id = int(decision.chat_id or 0)
+        user_id = int(decision.user_id or 0)
+        if action == "cancel":
+            return self._cancel(wizard, user_id, chat_id)
+        if action == "p":
+            if len(parts) < 1:
+                raise ControlError("missing project selection")
+            try:
+                index = int(parts[0])
+            except (TypeError, ValueError) as exc:
+                raise ControlError("invalid project selection") from exc
+            projects = self._eligible()
+            project_ids = list(wizard["data"].get("project_ids") or [])
+            if index < 0 or index >= len(project_ids):
+                raise ControlError("project selection is no longer available")
+            project_id = project_ids[index]
+            project = project_by_id(projects, project_id)
+            if project is None or not project.job_eligible or project.repo_real is None:
+                raise ControlError("the selected project is no longer job-eligible")
+            data = dict(wizard["data"])
+            data.update(
+                {
+                    "project_id": project.project_id,
+                    "repo": str(project.repo_real),
+                    "step_count": int(data.get("step_count") or 0) + 1,
+                }
+            )
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="title", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_title_text(project),
+                menus.wizard_cancel_menu(wizard_id),
+            )
+        raise ControlError("unknown start-wizard action")
+
+    def start_text(self, wizard: dict[str, Any], text: str, decision) -> ControlResult:
+        wizard_id = str(wizard["wizard_id"])
+        chat_id = int(decision.chat_id or 0)
+        user_id = int(decision.user_id or 0)
+        data = dict(wizard["data"])
+        step = str(wizard["step"])
+
+        if step == "title":
+            data["title"] = validate_text(text, limit=MAX_TITLE, field="title")
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="prompt", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_prompt_text(), menus.wizard_cancel_menu(wizard_id)
+            )
+        if step == "prompt":
+            data["prompt"] = validate_text(
+                text, limit=MAX_PROMPT, field="prompt", allow_newlines=True
+            )
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="criteria", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_criteria_text(), menus.wizard_cancel_menu(wizard_id)
+            )
+        if step == "criteria":
+            commands, manuals = parse_criteria(text)
+            data["command_criteria"] = [list(item) for item in commands]
+            data["manual_criteria"] = list(manuals)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="timeout", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_timeout_text(), menus.wizard_cancel_menu(wizard_id)
+            )
+        if step == "timeout":
+            data["timeout_seconds"] = parse_timeout(text)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="branch", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_branch_text(), menus.wizard_cancel_menu(wizard_id)
+            )
+        if step == "branch":
+            if _skip(text):
+                data["branch"] = None
+            else:
+                data["branch"] = validate_text(
+                    text, limit=MAX_BRANCH, field="branch label"
+                )
+            request = self._start_request(data)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return self._start_preview(wizard_id, request, user_id, chat_id)
+        raise ControlError("this wizard is waiting for a button, not text")
+
+    def _start_request(self, data: dict[str, Any]) -> StartRequest:
+        project_id = validate_text(data.get("project_id"), limit=200, field="project")
+        repo = validate_text(data.get("repo"), limit=4096, field="repository")
+        title = validate_text(data.get("title"), limit=MAX_TITLE, field="title")
+        prompt = validate_text(
+            data.get("prompt"), limit=MAX_PROMPT, field="prompt", allow_newlines=True
+        )
+        commands_raw = data.get("command_criteria") or []
+        manuals_raw = data.get("manual_criteria") or []
+        commands: list[tuple[str, str]] = []
+        for item in commands_raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ControlError("stored acceptance commands are malformed")
+            label = validate_text(item[0], limit=MAX_LABEL, field="criterion label")
+            command = validate_text(item[1], limit=MAX_COMMAND, field="acceptance command")
+            commands.append((label, command))
+        manuals = [
+            validate_text(item, limit=MAX_MANUAL, field="manual criterion")
+            for item in manuals_raw
+        ]
+        if not commands and not manuals:
+            raise ControlError("at least one acceptance criterion is required")
+        if len(commands) + len(manuals) > MAX_CRITERIA:
+            raise ControlError(f"at most {MAX_CRITERIA} acceptance criteria are allowed")
+        timeout_seconds = int(data.get("timeout_seconds") or 0)
+        if not MIN_TIMEOUT <= timeout_seconds <= MAX_TIMEOUT:
+            raise ControlError("timeout is outside the supported range")
+        branch = data.get("branch")
+        if branch is not None:
+            branch = validate_text(branch, limit=MAX_BRANCH, field="branch label")
+        agent = validate_text(data.get("agent") or self._default_agent(), limit=120, field="agent")
+        model = validate_text(data.get("model") or self._default_model(), limit=200, field="model")
+        if agent not in self.config.agent_allowlist:
+            raise ControlError("agent is not in the configured allowlist")
+        if model not in self.config.model_allowlist:
+            raise ControlError("model is not in the configured allowlist")
+        # Revalidate against the registry on every preview and confirmation.
+        project = project_by_id(self._projects(), project_id)
+        if project is None or not project.job_eligible or project.repo_real is None:
+            raise ControlError("the selected project is no longer job-eligible")
+        if str(project.repo_real) != str(Path(repo).resolve()):
+            raise ControlError("the selected repository does not match the registry")
+        return StartRequest(
+            project_id=project.project_id,
+            repo=str(project.repo_real),
+            title=title,
+            prompt=prompt,
+            command_criteria=tuple(commands),
+            manual_criteria=tuple(manuals),
+            timeout_seconds=timeout_seconds,
+            branch=branch,
+            agent=agent,
+            model=model,
+        )
+
+    def _start_preview(
+        self, wizard_id: str, request: StartRequest, user_id: int, chat_id: int
+    ) -> ControlResult:
+        nonce = self.state.create_confirmation(
+            user_id, chat_id, "start_job", request.payload(wizard_id)
+        )
+        return ControlResult(
+            render.start_preview_text(request),
+            menus.control_confirmation_menu(nonce, "Create job"),
+            project_id=request.project_id,
+        )
+
+    def perform_start(self, payload: dict[str, Any], decision) -> ControlResult:
+        wizard_id = _text(payload.get("wizard_id"))
+        data = {
+            "project_id": payload.get("project_id"),
+            "repo": payload.get("repo"),
+            "title": payload.get("title"),
+            "prompt": payload.get("prompt"),
+            "command_criteria": payload.get("command_criteria"),
+            "manual_criteria": payload.get("manual_criteria"),
+            "timeout_seconds": payload.get("timeout_seconds"),
+            "branch": payload.get("branch"),
+            "agent": payload.get("agent"),
+            "model": payload.get("model"),
+        }
+        request = self._start_request(data)
+        key = request.project_id
+        try:
+            with self.admission.reserve(key):
+                self.admission.check_project(key)
+                job = self.jobs.start_job(
+                    repo=request.repo,
+                    title=request.title,
+                    prompt=request.prompt,
+                    command_criteria=request.command_criteria,
+                    manual_criteria=request.manual_criteria,
+                    timeout_seconds=request.timeout_seconds,
+                    agent=request.agent,
+                    model=request.model,
+                    branch=request.branch,
+                )
+        except (ProjectBusy, GlobalGuardBusy, AdmissionLockTimeout) as exc:
+            raise ControlError(str(exc)) from exc
+        except AdmissionError as exc:
+            raise ControlError(str(exc)) from exc
+        if wizard_id:
+            self.state.delete_wizard(
+                wizard_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+        job_id = str(job.get("id"))
+        state = str(job.get("state") or "UNKNOWN")
+        if state == "RUNNING":
+            if self.notifier is not None:
+                self.notifier.notify_started(job, project_id=request.project_id)
+            return ControlResult(
+                render.job_started_text(job, request.project_id),
+                self._job_menu(job_id, decision),
+                job_id=job_id,
+                project_id=request.project_id,
+                notification="STARTED",
+            )
+        return ControlResult(
+            render.job_refused_text(job, request.project_id),
+            self._job_menu(job_id, decision),
+            job_id=job_id,
+            project_id=request.project_id,
+        )
+
+    # ---- resume wizard -----------------------------------------------------------
+    def begin_resume(self, job_id: str, user_id: int, chat_id: int) -> ControlResult:
+        job_id = validate_job_id(job_id)
+        job = self.jobs.job_status(job_id)
+        if str(job.get("state")) == "RUNNING" and job.get("worker_alive"):
+            raise ControlError("this job is RUNNING with a live worker; it cannot be resumed")
+        data = {
+            "job_id": job_id,
+            "prompt": None,
+            "timeout_seconds": None,
+            "new_session": False,
+            "force": False,
+        }
+        wizard_id = self.state.create_wizard(
+            user_id, chat_id, "resume", "preview", data, ttl_seconds=WIZARD_TTL
+        )
+        wizard = {"wizard_id": wizard_id, "kind": "resume", "step": "preview", "data": data}
+        return self._resume_preview(wizard, job, user_id, chat_id)
+
+    def resume_callback(
+        self, wizard: dict[str, Any], action: str, parts: Sequence[str], decision
+    ) -> ControlResult:
+        wizard_id = str(wizard["wizard_id"])
+        user_id = int(decision.user_id or 0)
+        chat_id = int(decision.chat_id or 0)
+        if action == "cancel":
+            return self._cancel(wizard, user_id, chat_id)
+        data = dict(wizard["data"])
+        job_id = _text(data.get("job_id"))
+        if action == "i":
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="prompt", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.resume_prompt_text(), menus.wizard_cancel_menu(wizard_id)
+            )
+        if action in {"ns", "force"}:
+            if action == "ns":
+                data["new_session"] = not bool(data.get("new_session"))
+            else:
+                data["force"] = not bool(data.get("force"))
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+            )
+            job = self.jobs.job_status(validate_job_id(job_id))
+            return self._resume_preview(wizard | {"data": data}, job, user_id, chat_id)
+        if action == "confirm":
+            job = self.jobs.job_status(validate_job_id(job_id))
+            request = self._resume_request(data)
+            self._resume_preconditions(job, request)
+            nonce = self.state.create_confirmation(
+                user_id, chat_id, "resume_job", request.payload(wizard_id)
+            )
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="confirm", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.resume_confirmation_text(job, request),
+                menus.control_confirmation_menu(nonce, "Resume job"),
+                job_id=job_id,
+            )
+        raise ControlError("unknown resume-wizard action")
+
+    def resume_text(self, wizard: dict[str, Any], text: str, decision) -> ControlResult:
+        if str(wizard["step"]) != "prompt":
+            raise ControlError("this wizard is waiting for a button, not text")
+        wizard_id = str(wizard["wizard_id"])
+        user_id = int(decision.user_id or 0)
+        chat_id = int(decision.chat_id or 0)
+        data = dict(wizard["data"])
+        if _skip(text):
+            data["prompt"] = None
+        else:
+            data["prompt"] = validate_text(
+                text, limit=MAX_PROMPT, field="resume instruction", allow_newlines=True
+            )
+        self.state.update_wizard(
+            wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+        )
+        job = self.jobs.job_status(validate_job_id(_text(data.get("job_id"))))
+        return self._resume_preview(wizard | {"data": data}, job, user_id, chat_id)
+
+    def _resume_preview(
+        self, wizard: dict[str, Any], job: dict, user_id: int, chat_id: int
+    ) -> ControlResult:
+        data = dict(wizard["data"])
+        return ControlResult(
+            render.resume_preview_text(job, data),
+            menus.resume_preview_menu(
+                str(wizard["wizard_id"]),
+                job_ref=self.state.get_or_create_job_ref(str(job["id"]), chat_id),
+                new_session=bool(data.get("new_session")),
+                force=bool(data.get("force")),
+            ),
+            job_id=str(job.get("id")),
+        )
+
+    def _resume_request(self, data: dict[str, Any]) -> ResumeRequest:
+        job_id = validate_job_id(_text(data.get("job_id")))
+        prompt = data.get("prompt")
+        if prompt is not None:
+            prompt = validate_text(
+                prompt, limit=MAX_PROMPT, field="resume instruction", allow_newlines=True
+            )
+        timeout = data.get("timeout_seconds")
+        if timeout is not None:
+            timeout = int(timeout)
+            if not MIN_TIMEOUT <= timeout <= MAX_TIMEOUT:
+                raise ControlError("timeout is outside the supported range")
+        return ResumeRequest(
+            job_id=job_id,
+            prompt=prompt,
+            timeout_seconds=timeout,
+            new_session=bool(data.get("new_session")),
+            force=bool(data.get("force")),
+        )
+
+    def _resume_preconditions(self, job: dict, request: ResumeRequest) -> None:
+        state = str(job.get("state"))
+        if state == "RUNNING" and job.get("worker_alive"):
+            raise ControlError("this job is RUNNING with a live worker; it cannot be resumed")
+        if state == "SUCCESS" and not request.force:
+            raise ControlError(
+                "this job already succeeded; enable Force rerun only if another attempt is intended"
+            )
+        attempts = job.get("attempts") or 0
+        attempt_count = len(attempts) if isinstance(attempts, list) else int(attempts)
+        if (
+            not request.new_session
+            and attempt_count > 0
+            and not job.get("session_id")
+        ):
+            raise ControlError(
+                "the OpenCode session id is unknown; enable New session to continue safely"
+            )
+
+    def perform_resume(self, payload: dict[str, Any], decision) -> ControlResult:
+        wizard_id = _text(payload.get("wizard_id"))
+        data = {
+            "job_id": payload.get("job_id"),
+            "prompt": payload.get("prompt"),
+            "timeout_seconds": payload.get("timeout_seconds"),
+            "new_session": payload.get("new_session"),
+            "force": payload.get("force"),
+        }
+        request = self._resume_request(data)
+        job = self.jobs.job_status(request.job_id)
+        self._resume_preconditions(job, request)
+        key = self.admission.project_key_for_job(job)
+        try:
+            with self.admission.reserve(key):
+                self.admission.check_project(
+                    key, exclude_job_id=request.job_id
+                )
+                resumed = self.jobs.resume_job(
+                    request.job_id,
+                    prompt=request.prompt,
+                    timeout_seconds=request.timeout_seconds,
+                    new_session=request.new_session,
+                    force=request.force,
+                )
+        except (ProjectBusy, GlobalGuardBusy, AdmissionLockTimeout) as exc:
+            raise ControlError(str(exc)) from exc
+        except AdmissionError as exc:
+            raise ControlError(str(exc)) from exc
+        if wizard_id:
+            self.state.delete_wizard(
+                wizard_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+        if not isinstance(resumed, dict) or not resumed.get("id"):
+            raise ControlError("Workflow v3 returned an unexpected resume result")
+        job_id = str(resumed.get("id"))
+        if str(resumed.get("state")) != "RUNNING":
+            return ControlResult(
+                render.job_refused_text(resumed, resumed=True),
+                self._job_menu(job_id, decision),
+                job_id=job_id,
+            )
+        if self.notifier is not None:
+            self.notifier.notify_resumed(resumed)
+        return ControlResult(
+            render.job_resumed_text(resumed),
+            self._job_menu(job_id, decision),
+            job_id=job_id,
+            notification="RESUMED",
+        )
+
+    def _job_menu(self, job_id: str, decision) -> dict:
+        ref = self.state.get_or_create_job_ref(job_id, int(decision.chat_id or 0))
+        resumable = True
+        try:
+            job = self.jobs.job_status(job_id)
+            resumable = not (
+                str(job.get("state")) == "RUNNING" and job.get("worker_alive")
+            )
+        except JobError:
+            pass
+        return menus.job_menu(ref, control=True, resumable=resumable)

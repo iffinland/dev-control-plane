@@ -17,6 +17,8 @@ from typing import Any, Mapping
 
 from devjob import notify, store
 
+from .passphrase import is_valid_hash
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_PLANE_ROOT = PACKAGE_ROOT.parent
 MODES = ("read_only", "control")
@@ -154,6 +156,11 @@ class MonitorConfig:
     relay_external_final: bool
     queue_owner_messages: bool
     auto_start_queued: bool
+    control_passphrase_hash: str | None
+    unlock_ttl_seconds: int
+    admission_lock_timeout_seconds: float
+    lifecycle_poll_seconds: float
+    terminal_grace_seconds: int
     allowed_repo_roots: tuple[Path, ...]
     docs_roots: tuple[Path, ...]
     agent_allowlist: tuple[str, ...]
@@ -172,6 +179,22 @@ class MonitorConfig:
     @property
     def read_only(self) -> bool:
         return self.mode == "read_only"
+
+    @property
+    def control_enabled(self) -> bool:
+        """Control actions require an explicit owner-configured control mode."""
+
+        return self.mode == "control"
+
+    @property
+    def notification_chat_id(self) -> int:
+        try:
+            configured = int(self.chat_id) if self.chat_id is not None else None
+        except (TypeError, ValueError):
+            configured = None
+        if configured is not None and configured in self.allowed_chat_ids:
+            return configured
+        return self.allowed_chat_ids[0]
 
     def __repr__(self) -> str:
         return (
@@ -242,6 +265,22 @@ def load_monitor_config(
     model_allowlist = monitor.get("model_allowlist") or []
     if not isinstance(agent_allowlist, list) or not isinstance(model_allowlist, list):
         raise ConfigError("monitor.agent_allowlist and monitor.model_allowlist must be lists")
+    agent_allowlist = tuple(str(item).strip() for item in agent_allowlist if str(item).strip())
+    model_allowlist = tuple(str(item).strip() for item in model_allowlist if str(item).strip())
+
+    passphrase_hash = monitor.get("control_passphrase_hash")
+    if passphrase_hash in (None, ""):
+        passphrase_hash = None
+    elif not isinstance(passphrase_hash, str) or not is_valid_hash(passphrase_hash):
+        raise ConfigError(
+            "monitor.control_passphrase_hash must be a scrypt$n$r$p$salt$hash value"
+        )
+
+    if mode == "control":
+        if not agent_allowlist:
+            raise ConfigError("monitor.agent_allowlist must not be empty in control mode")
+        if not model_allowlist:
+            raise ConfigError("monitor.model_allowlist must not be empty in control mode")
 
     api_base = validate_api_base(
         env.get("DEV_MONITOR_API_BASE") or str(monitor.get("api_base", DEFAULT_API_BASE))
@@ -253,8 +292,13 @@ def load_monitor_config(
     ).expanduser()
 
     warnings: list[str] = []
-    if mode == "control":
-        warnings.append("control mode is configured but P1 exposes read-only actions only")
+    if mode == "read_only" and passphrase_hash:
+        warnings.append("control_passphrase_hash is configured but control mode is disabled")
+    if mode == "control" and not passphrase_hash:
+        warnings.append(
+            "control mode relies on the Telegram user/chat allowlist only; "
+            "consider control_passphrase_hash"
+        )
 
     return MonitorConfig(
         mode=mode,
@@ -289,10 +333,21 @@ def load_monitor_config(
         relay_external_final=_as_bool(monitor.get("relay_external_final", True), True),
         queue_owner_messages=_as_bool(monitor.get("queue_owner_messages", True), True),
         auto_start_queued=_as_bool(monitor.get("auto_start_queued", False), False),
+        control_passphrase_hash=passphrase_hash,
+        unlock_ttl_seconds=_as_int(monitor.get("unlock_ttl_seconds"), 900, 60, 3600),
+        admission_lock_timeout_seconds=_as_number(
+            monitor.get("admission_lock_timeout_seconds"), 5.0, 1.0, 30.0
+        ),
+        lifecycle_poll_seconds=_as_number(
+            monitor.get("lifecycle_poll_seconds"), 30.0, 5.0, 600.0
+        ),
+        terminal_grace_seconds=_as_int(
+            monitor.get("terminal_grace_seconds"), 20, 0, 3600
+        ),
         allowed_repo_roots=allowed_repo_roots,
         docs_roots=docs_roots,
-        agent_allowlist=tuple(str(item) for item in agent_allowlist),
-        model_allowlist=tuple(str(item) for item in model_allowlist),
+        agent_allowlist=agent_allowlist,
+        model_allowlist=model_allowlist,
         api_base=api_base,
         state_dir=monitor_state,
         job_state_root=job_state_root,

@@ -109,6 +109,36 @@ class JobFacadeTests(unittest.TestCase):
             (self.state_root / "jobs" / self.running["id"] / "report.md").is_file()
         )
 
+    def test_job_record_is_bounded_and_validated(self) -> None:
+        record = self.facade.job_record(self.running["id"])
+        self.assertEqual(record["id"], self.running["id"])
+        self.assertTrue(record.get("notifications_enabled"))
+
+    def test_job_events_advance_and_reset_cursors(self) -> None:
+        events = self.state_root / "jobs" / self.running["id"] / "events.jsonl"
+        events.write_text(
+            '{"ts":"2026-10-31T12:00:00Z","event":"worker_started","detail":"pid=1"}\n'
+            '{"ts":"2026-10-31T12:00:01Z","event":"attempt_started","detail":"attempt=1 resume=False"}\n',
+            encoding="utf-8",
+        )
+        first = self.facade.job_events(self.running["id"])
+        self.assertEqual([item["event"] for item in first.events], ["worker_started", "attempt_started"])
+        self.assertGreater(first.offset, 0)
+        self.assertEqual(self.facade.job_events(self.running["id"], inode=first.inode, offset=first.offset).events, ())
+        # Replacing the file changes the inode; the caller resets from zero.
+        events.write_text('{"ts":"x","event":"finished","detail":""}\n', encoding="utf-8")
+        reset = self.facade.job_events(self.running["id"], inode=first.inode, offset=first.offset)
+        self.assertTrue(reset.reset)
+        self.assertEqual([item["event"] for item in reset.events], ["finished"])
+
+    def test_job_events_can_start_at_end_for_terminal_history(self) -> None:
+        events = self.state_root / "jobs" / self.running["id"] / "events.jsonl"
+        events.write_text('{"ts":"x","event":"finished","detail":""}\n', encoding="utf-8")
+        batch = self.facade.job_events(self.running["id"], start_at_end=True)
+        self.assertTrue(batch.skipped_existing)
+        self.assertEqual(batch.events, ())
+        self.assertEqual(batch.offset, events.stat().st_size)
+
     def test_report_is_bounded(self) -> None:
         (self.state_root / "jobs" / self.running["id"] / "report.md").write_text(
             "y" * 1000, encoding="utf-8"

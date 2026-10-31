@@ -83,6 +83,22 @@ CREATE TABLE IF NOT EXISTS event_cursors (
     offset INTEGER NOT NULL,
     last_event_hash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wizards (
+    wizard_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    step TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notification_log (
+    key TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -227,6 +243,140 @@ class MonitorState:
         ).fetchone()
         return int(row["message_id"]) if row else None
 
+    # ---- lifecycle event cursors -------------------------------------------------
+    def get_event_cursor(self, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT inode, offset, last_event_hash FROM event_cursors WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_event_cursor(
+        self, job_id: str, inode: int, offset: int, last_event_hash: str
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO event_cursors(job_id, inode, offset, last_event_hash) "
+            "VALUES(?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET "
+            "inode = excluded.inode, offset = excluded.offset, "
+            "last_event_hash = excluded.last_event_hash",
+            (job_id, int(inode), int(offset), last_event_hash or ""),
+        )
+
+    # ---- wizards -----------------------------------------------------------------
+    def create_wizard(
+        self,
+        user_id: int,
+        chat_id: int,
+        kind: str,
+        step: str,
+        data: dict[str, Any],
+        ttl_seconds: int = 3600,
+    ) -> str:
+        wizard_id = uuid.uuid4().hex[:12]
+        now = self.clock()
+        self.connection.execute(
+            "INSERT INTO wizards(wizard_id, user_id, chat_id, kind, step, state_json, "
+            "created_at, expires_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                wizard_id,
+                int(user_id),
+                int(chat_id),
+                kind,
+                step,
+                json.dumps(data, sort_keys=True),
+                now,
+                now + int(ttl_seconds),
+            ),
+        )
+        return wizard_id
+
+    def get_wizard(self, wizard_id: str, user_id: int, chat_id: int) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM wizards WHERE wizard_id = ? AND user_id = ? AND chat_id = ?",
+            (wizard_id, int(user_id), int(chat_id)),
+        ).fetchone()
+        if not row:
+            return None
+        if int(row["expires_at"]) < self.clock():
+            self.connection.execute("DELETE FROM wizards WHERE wizard_id = ?", (wizard_id,))
+            return None
+        result = dict(row)
+        try:
+            data = json.loads(result.pop("state_json"))
+        except json.JSONDecodeError:
+            self.connection.execute("DELETE FROM wizards WHERE wizard_id = ?", (wizard_id,))
+            return None
+        result["data"] = data if isinstance(data, dict) else {}
+        return result
+
+    def get_active_wizard(self, user_id: int, chat_id: int) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT wizard_id FROM wizards WHERE user_id = ? AND chat_id = ? "
+            "AND expires_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (int(user_id), int(chat_id), self.clock()),
+        ).fetchone()
+        if not row:
+            return None
+        return self.get_wizard(str(row["wizard_id"]), user_id, chat_id)
+
+    def update_wizard(
+        self,
+        wizard_id: str,
+        user_id: int,
+        chat_id: int,
+        *,
+        step: str | None = None,
+        data: dict[str, Any] | None = None,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        row = self.connection.execute(
+            "SELECT state_json FROM wizards WHERE wizard_id = ? AND user_id = ? AND chat_id = ?",
+            (wizard_id, int(user_id), int(chat_id)),
+        ).fetchone()
+        if not row:
+            return False
+        assignments = ["step = COALESCE(?, step)", "state_json = COALESCE(?, state_json)"]
+        values: list[Any] = [
+            step,
+            json.dumps(data, sort_keys=True) if data is not None else None,
+        ]
+        if ttl_seconds is not None:
+            assignments.append("expires_at = ?")
+            values.append(self.clock() + int(ttl_seconds))
+        values.extend([wizard_id, int(user_id), int(chat_id)])
+        self.connection.execute(
+            f"UPDATE wizards SET {', '.join(assignments)} "
+            "WHERE wizard_id = ? AND user_id = ? AND chat_id = ?",
+            tuple(values),
+        )
+        return True
+
+    def delete_wizard(self, wizard_id: str, user_id: int | None = None, chat_id: int | None = None) -> None:
+        if user_id is None or chat_id is None:
+            self.connection.execute("DELETE FROM wizards WHERE wizard_id = ?", (wizard_id,))
+        else:
+            self.connection.execute(
+                "DELETE FROM wizards WHERE wizard_id = ? AND user_id = ? AND chat_id = ?",
+                (wizard_id, int(user_id), int(chat_id)),
+            )
+
+    # ---- notification deduplication ---------------------------------------------
+    def claim_notification(self, key: str, job_id: str, kind: str) -> bool:
+        """Atomically claim one lifecycle/terminal notification key."""
+
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO notification_log(key, job_id, kind, created_at) "
+            "VALUES(?, ?, ?, ?)",
+            (key, job_id, kind, self.clock()),
+        )
+        return cursor.rowcount == 1
+
+    def has_notification(self, key: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM notification_log WHERE key = ?", (key,)
+        ).fetchone()
+        return row is not None
+
     # ---- browser and confirmation state -----------------------------------------
     def create_browse(
         self,
@@ -324,6 +474,20 @@ class MonitorState:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def confirmation_action(self, nonce: str, user_id: int, chat_id: int) -> str | None:
+        """Return the action of an unused, unexpired confirmation nonce."""
+
+        row = self.connection.execute(
+            "SELECT action, used_at, expires_at FROM confirmations "
+            "WHERE nonce = ? AND user_id = ? AND chat_id = ?",
+            (nonce, int(user_id), int(chat_id)),
+        ).fetchone()
+        if not row or row["used_at"] is not None:
+            return None
+        if int(row["expires_at"]) < self.clock():
+            return None
+        return str(row["action"])
+
     # ---- audit and rate limiting -------------------------------------------------
     def record_audit(
         self,
@@ -378,6 +542,7 @@ class MonitorState:
         with self.timings.measure("sqlite:prune"):
             now = self.clock()
             self.connection.execute("DELETE FROM browses WHERE expires_at < ?", (now,))
+            self.connection.execute("DELETE FROM wizards WHERE expires_at < ?", (now,))
             self.connection.execute(
                 "DELETE FROM confirmations WHERE expires_at < ?", (now,)
             )
@@ -389,7 +554,15 @@ class MonitorState:
     def snapshot(self) -> dict[str, Any]:
         with self.timings.measure("sqlite:snapshot"):
             counts: dict[str, int] = {}
-            for table in ("seen_updates", "job_refs", "browses", "confirmations", "audit"):
+            for table in (
+                "seen_updates",
+                "job_refs",
+                "browses",
+                "confirmations",
+                "wizards",
+                "notification_log",
+                "audit",
+            ):
                 row = self.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
                 counts[table] = int(row["count"]) if row else 0
             return {

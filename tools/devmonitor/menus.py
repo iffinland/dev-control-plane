@@ -22,13 +22,14 @@ def keyboard(rows: Iterable[Sequence[dict]]) -> dict:
     return {"inline_keyboard": [list(row) for row in rows if row]}
 
 
-def main_menu() -> dict:
-    return keyboard(
-        [
-            [button("Jobs", "jl:0"), button("Projects", "p")],
-            [button("Documents", "d"), button("Help", "h")],
-        ]
-    )
+def main_menu(*, control: bool = False) -> dict:
+    rows = [
+        [button("Jobs", "jl:0"), button("Projects", "p")],
+        [button("Documents", "d"), button("Help", "h")],
+    ]
+    if control:
+        rows.insert(0, [button("Start job", "w:new")])
+    return keyboard(rows)
 
 
 def back_to_main() -> dict:
@@ -55,15 +56,16 @@ def jobs_menu(
     return keyboard(rows)
 
 
-def job_menu(ref: str) -> dict:
-    return keyboard(
-        [
-            [button("Refresh", f"j:{ref}:r"), button("Report", f"j:{ref}:p")],
-            [button("Run log", f"j:{ref}:lr"), button("Worker log", f"j:{ref}:lw")],
-            [button("Download report", f"j:{ref}:dr")],
-            [button("Jobs", "jl:0"), button("Main menu", "m")],
-        ]
-    )
+def job_menu(ref: str, *, control: bool = False, resumable: bool = False) -> dict:
+    rows = [
+        [button("Refresh", f"j:{ref}:r"), button("Report", f"j:{ref}:p")],
+        [button("Run log", f"j:{ref}:lr"), button("Worker log", f"j:{ref}:lw")],
+        [button("Download report", f"j:{ref}:dr")],
+    ]
+    if control and resumable:
+        rows.append([button("Resume job", f"j:{ref}:s")])
+    rows.append([button("Jobs", "jl:0"), button("Main menu", "m")])
+    return keyboard(rows)
 
 
 def log_menu(ref: str, kind: str) -> dict:
@@ -85,8 +87,12 @@ def report_menu(ref: str) -> dict:
     )
 
 
-def projects_menu() -> dict:
-    return keyboard([[button("Documents", "d"), button("Main menu", "m")]])
+def projects_menu(*, control: bool = False) -> dict:
+    rows = []
+    if control:
+        rows.append([button("Start job", "w:new")])
+    rows.append([button("Documents", "d"), button("Main menu", "m")])
+    return keyboard(rows)
 
 
 def document_roots_menu(root_browses: Sequence[tuple[str, str]]) -> dict:
@@ -131,6 +137,53 @@ def confirmation_menu(nonce: str) -> dict:
     return keyboard(
         [[button("Download", f"x:{nonce}:y"), button("Cancel", f"x:{nonce}:n")]]
     )
+
+
+def start_project_menu(wizard_id: str, projects: Sequence[object]) -> dict:
+    rows: list[list[dict]] = []
+    for index, project in enumerate(projects):
+        rows.append(
+            [button(f"{project.project_id} [{project.project.platform}]", f"w:{wizard_id}:p:{index}")]
+        )
+    rows.append([button("Cancel", f"w:{wizard_id}:cancel")])
+    return keyboard(rows)
+
+
+def wizard_cancel_menu(wizard_id: str) -> dict:
+    return keyboard(
+        [[button("Cancel wizard", f"w:{wizard_id}:cancel"), button("Main menu", "m")]]
+    )
+
+
+def control_confirmation_menu(nonce: str, action_label: str) -> dict:
+    return keyboard(
+        [
+            [button(f"Confirm: {action_label}", f"x:{nonce}:y")],
+            [button("Cancel", f"x:{nonce}:n")],
+        ]
+    )
+
+
+def resume_preview_menu(
+    wizard_id: str,
+    *,
+    job_ref: str,
+    new_session: bool,
+    force: bool,
+) -> dict:
+    rows = [
+        [button("Confirm resume", f"w:{wizard_id}:confirm")],
+        [button("Add instruction", f"w:{wizard_id}:i")],
+        [
+            button(
+                f"New session: {'on' if new_session else 'off'}",
+                f"w:{wizard_id}:ns",
+            ),
+            button(f"Force rerun: {'on' if force else 'off'}", f"w:{wizard_id}:force"),
+        ],
+        [button("Back to job", f"j:{job_ref}"), button("Cancel", f"w:{wizard_id}:cancel")],
+    ]
+    return keyboard(rows)
 
 
 def error_menu(callback_data: str = "m", label: str = "Main menu") -> dict:

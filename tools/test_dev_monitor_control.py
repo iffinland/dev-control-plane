@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""P2 interactive start/resume control tests using fake Telegram and fake dev."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+TOOLS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS))
+
+from devmonitor.admission import AdmissionManager  # noqa: E402
+from devmonitor.config import with_overrides  # noqa: E402
+from devmonitor.control import ControlManager  # noqa: E402
+from devmonitor.documents import DocumentLibrary  # noqa: E402
+from devmonitor.jobs import JobFacade  # noqa: E402
+from devmonitor.lifecycle import LifecycleNotifier  # noqa: E402
+from devmonitor.passphrase import hash_passphrase  # noqa: E402
+from devmonitor.projects import Registry  # noqa: E402
+from devmonitor.router import Router  # noqa: E402
+from devmonitor.state import MonitorState  # noqa: E402
+from devmonitor_test_support import (  # noqa: E402
+    CHAT_ID,
+    OTHER_USER,
+    USER_ID,
+    FakeApi,
+    callback_update,
+    install_fake_dev,
+    make_config,
+    make_job,
+    message_update,
+    write_fake_jobs,
+)
+
+PROMPT = "Implement the requested P2 behavior exactly."
+CRITERIA = "Build::python3 -m pytest -q\nmanual: Owner reviews the UI"
+
+
+def find_button(markup, text_fragment: str) -> str:
+    for row in (markup or {}).get("inline_keyboard", []):
+        for item in row:
+            if text_fragment.lower() in item.get("text", "").lower():
+                return item["callback_data"]
+    raise AssertionError(f"button not found: {text_fragment}")
+
+
+class ControlBase(unittest.TestCase):
+    mode = "control"
+    monitor_extra: dict | None = None
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="qdm-control-")
+        self.root = Path(self.temporary.name)
+        self.projects = self.root / "projects"
+        self.projects.mkdir()
+        self.project_repo = self.projects / "Demo"
+        self.project_repo.mkdir()
+        self.other_repo = self.projects / "Other"
+        self.other_repo.mkdir()
+        self.docs = self.root / "docs"
+        self.docs.mkdir()
+        self.registry_file = self.root / "PROJECT-REGISTRY.md"
+        self.registry_file.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` |\n",
+            encoding="utf-8",
+        )
+        self.state_root = self.root / "state"
+        self.fake_dev = install_fake_dev(self.root)
+        self.config = make_config(
+            self.root,
+            mode=self.mode,
+            docs_roots=[self.docs],
+            repo_roots=[self.projects],
+            monitor_extra=self.monitor_extra,
+        )
+        self.config = with_overrides(self.config, registry_path=self.registry_file)
+        self.state = MonitorState(self.root / "monitor" / "monitor.db")
+        self.api = FakeApi()
+        self.registry = Registry(self.registry_file, (self.projects,))
+        self.documents = DocumentLibrary.from_sources(
+            self.config.docs_roots, self.registry.load(force=True)
+        )
+        self.jobs = JobFacade(self.state_root, dev_script=self.fake_dev)
+        self.admission = AdmissionManager(
+            self.config.state_dir, self.jobs, self.registry
+        )
+        self.notifier = LifecycleNotifier(
+            self.config, self.state, self.jobs, self.api, self.registry
+        )
+        self.control = ControlManager(
+            self.config,
+            self.state,
+            self.jobs,
+            self.registry,
+            self.admission,
+            notifier=self.notifier,
+        )
+        self.router = Router(
+            self.config,
+            self.state,
+            self.api,
+            self.jobs,
+            self.registry,
+            self.documents,
+            control=self.control,
+            admission=self.admission,
+            notifier=self.notifier,
+        )
+        self.update_id = 1
+
+    def tearDown(self) -> None:
+        self.state.close()
+        self.temporary.cleanup()
+
+    def next_id(self) -> int:
+        self.update_id += 1
+        return self.update_id
+
+    def invocations(self) -> list[dict]:
+        path = self.state_root / "fake_invocations.jsonl"
+        if not path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def begin_start(self) -> str:
+        self.router.handle(message_update(self.next_id(), "/start_job"))
+        markup = self.api.sent[-1]["markup"]
+        callback = find_button(markup, "demo/project")
+        self.router.handle(callback_update(self.next_id(), callback))
+        return callback.split(":")[1]
+
+    def send_text(self, value: str) -> None:
+        self.router.handle(message_update(self.next_id(), value))
+
+    def advance_to_preview(self, criteria: str = CRITERIA) -> str:
+        self.begin_start()
+        self.send_text("P2 control job")
+        self.send_text(PROMPT)
+        self.send_text(criteria)
+        self.send_text("2h")
+        self.send_text("/skip")
+        return find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+
+    def confirm(self, callback_data: str) -> None:
+        self.router.handle(callback_update(self.next_id(), callback_data))
+
+
+class ReadOnlyControlTests(ControlBase):
+    mode = "read_only"
+
+    def test_start_is_refused_and_cli_is_never_invoked(self) -> None:
+        self.router.handle(message_update(1, "/start_job"))
+        self.assertIn("read-only mode", self.api.sent[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+
+class StartWizardTests(ControlBase):
+    def test_full_start_wizard_invokes_fixed_argv_and_sends_started(self) -> None:
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        records = self.invocations()
+        self.assertEqual(len(records), 1)
+        args = records[0]["args"]
+        self.assertEqual(args[0], "start")
+        self.assertIn("--repo", args)
+        self.assertEqual(args[args.index("--repo") + 1], str(self.project_repo.resolve()))
+        self.assertEqual(args[args.index("--title") + 1], "P2 control job")
+        self.assertEqual(args[args.index("--prompt-file") + 1], "-")
+        self.assertIn("--no-notify", args)
+        self.assertIn("--json", args)
+        self.assertEqual(
+            [args[index + 1] for index, item in enumerate(args) if item == "--criterion"],
+            ["Build::python3 -m pytest -q"],
+        )
+        self.assertEqual(
+            [args[index + 1] for index, item in enumerate(args) if item == "--manual-criterion"],
+            ["Owner reviews the UI"],
+        )
+        self.assertEqual(args[args.index("--timeout") + 1], "7200s")
+        self.assertEqual(args[args.index("--agent") + 1], "opencode-development")
+        self.assertEqual(args[args.index("--model") + 1], "deepseek/deepseek-flash")
+        self.assertEqual(records[0]["stdin"], PROMPT)
+        self.assertTrue(any("STARTED" in item["text"] for item in self.api.sent))
+        self.assertTrue(any("Job started" in item["text"] for item in self.api.edited))
+
+    def test_duplicate_confirmation_callback_creates_one_job(self) -> None:
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        self.confirm(confirm)
+        self.assertEqual(len(self.invocations()), 1)
+        self.assertIn("expired or already used", self.api.edited[-1]["text"])
+
+    def test_missing_acceptance_criteria_is_refused_before_cli(self) -> None:
+        self.begin_start()
+        self.send_text("Title")
+        self.send_text(PROMPT)
+        self.send_text("   ")
+        self.assertIn("Input rejected", self.api.sent[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+    def test_tampered_project_index_is_refused(self) -> None:
+        self.router.handle(message_update(1, "/start_job"))
+        wizard = find_button(self.api.sent[-1]["markup"], "demo/project").split(":")[1]
+        self.router.handle(callback_update(2, f"w:{wizard}:p:9"))
+        self.assertIn("Request failed", self.api.edited[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+    def test_blocked_preflight_sends_no_started(self) -> None:
+        (self.state_root).mkdir(parents=True, exist_ok=True)
+        (self.state_root / "fake_start_state").write_text("BLOCKED", encoding="utf-8")
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        self.assertFalse(any("STARTED" in item["text"] for item in self.api.sent))
+        self.assertIn("did not enter RUNNING", self.api.edited[-1]["text"])
+        self.assertIn("BLOCKED", self.api.edited[-1]["text"])
+
+    def test_same_project_active_job_blocks_second_start(self) -> None:
+        write_fake_jobs(
+            self.state_root,
+            [
+                make_job(
+                    "20261031T120000Z-existing-job-11111111",
+                    repo=str(self.project_repo),
+                    title="Existing",
+                )
+            ],
+        )
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        self.assertIn("already has an active job", self.api.edited[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+    def test_global_guard_blocks_start_in_another_project(self) -> None:
+        write_fake_jobs(
+            self.state_root,
+            [
+                make_job(
+                    "20261031T120000Z-other-job-22222222",
+                    repo=str(self.other_repo),
+                    title="Other project job",
+                )
+            ],
+        )
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        self.assertIn("global execution guard is busy", self.api.edited[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+
+class ResumeTests(ControlBase):
+    def _terminal_job(self) -> dict:
+        job = make_job(
+            "20261031T120000Z-terminal-job-33333333",
+            state="FAILED",
+            title="Terminal job",
+            repo=str(self.project_repo),
+            notifications_enabled=True,
+            notifications=[{"state": "FAILED", "sent": True, "reason": "sent"}],
+        )
+        write_fake_jobs(self.state_root, [job])
+        return job
+
+    def test_resume_wizard_invokes_resume_and_sends_resumed(self) -> None:
+        job = self._terminal_job()
+        self.router.handle(message_update(1, f"/resume {job['id']}"))
+        self.assertIn("Resume job", self.api.sent[-1]["text"])
+        confirm_preview = find_button(self.api.sent[-1]["markup"], "Confirm resume")
+        self.confirm(confirm_preview)
+        self.assertIn("Confirm resume", self.api.edited[-1]["text"])
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Resume job")
+        self.confirm(confirm)
+        records = self.invocations()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["args"][0], "resume")
+        self.assertEqual(records[0]["args"][1], job["id"])
+        self.assertIn("--json", records[0]["args"])
+        self.assertTrue(any("RESUMED" in item["text"] for item in self.api.sent))
+        self.assertTrue(any("Job resumed" in item["text"] for item in self.api.edited))
+
+    def test_running_live_job_resume_is_refused(self) -> None:
+        job = make_job(
+            "20261031T120000Z-running-job-44444444",
+            repo=str(self.project_repo),
+            title="Running job",
+        )
+        write_fake_jobs(self.state_root, [job])
+        self.router.handle(message_update(1, f"/resume {job['id']}"))
+        self.assertIn("RUNNING", self.api.sent[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+    def test_success_without_force_is_refused(self) -> None:
+        job = make_job(
+            "20261031T120000Z-success-job-55555555",
+            state="SUCCESS",
+            repo=str(self.project_repo),
+            notifications_enabled=True,
+            notifications=[{"state": "SUCCESS", "sent": True, "reason": "sent"}],
+        )
+        write_fake_jobs(self.state_root, [job])
+        self.router.handle(message_update(1, f"/resume {job['id']}"))
+        confirm_preview = find_button(self.api.sent[-1]["markup"], "Confirm resume")
+        self.confirm(confirm_preview)
+        self.assertIn("already succeeded", self.api.edited[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+
+class PassphraseTests(ControlBase):
+    def setUp(self) -> None:
+        self.passphrase = "correct horse battery staple"
+        self.monitor_extra = {
+            "control_passphrase_hash": hash_passphrase(self.passphrase, salt=b"0123456789abcdef")
+        }
+        super().setUp()
+
+    def test_control_requires_unlock_and_lock_relocks(self) -> None:
+        self.router.handle(message_update(1, "/start_job"))
+        self.assertIn("locked", self.api.sent[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+        self.router.handle(message_update(2, "/unlock wrong passphrase"))
+        self.assertIn("Unlock failed", self.api.sent[-1]["text"])
+
+        self.router.handle(message_update(3, f"/unlock {self.passphrase}"))
+        self.assertIn("Control unlocked", self.api.sent[-1]["text"])
+
+        self.router.handle(message_update(4, "/start_job"))
+        self.assertIn("Start a development job", self.api.sent[-1]["text"])
+
+        self.router.handle(message_update(5, "/lock"))
+        self.router.handle(message_update(6, "/start_job"))
+        self.assertIn("locked", self.api.sent[-1]["text"])
+
+    def test_passphrase_never_appears_in_audit(self) -> None:
+        self.router.handle(message_update(1, f"/unlock {self.passphrase}"))
+        rows = self.state.connection.execute("SELECT detail_redacted FROM audit").fetchall()
+        for row in rows:
+            self.assertNotIn(self.passphrase, row["detail_redacted"])
+
+
+class ConfirmationOwnershipTests(ControlBase):
+    def test_confirmation_from_another_user_cannot_trigger_a_job(self) -> None:
+        confirm = self.advance_to_preview()
+        nonce = confirm.split(":")[1]
+        self.router.handle(callback_update(self.next_id(), f"x:{nonce}:y", user_id=OTHER_USER))
+        self.assertEqual(self.invocations(), [])
+        self.assertIn("Access denied", self.api.answered[-1]["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

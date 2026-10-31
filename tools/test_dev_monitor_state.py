@@ -112,6 +112,52 @@ class StateTests(unittest.TestCase):
         finally:
             state.close()
 
+    def test_wizard_state_is_scoped_and_expires(self) -> None:
+        wizard_id = self.state.create_wizard(1, 2, "start", "title", {"project_id": "demo"})
+        wizard = self.state.get_wizard(wizard_id, 1, 2)
+        self.assertEqual(wizard["step"], "title")
+        self.assertEqual(wizard["data"]["project_id"], "demo")
+        self.assertIsNone(self.state.get_wizard(wizard_id, 9, 2))
+        self.assertTrue(
+            self.state.update_wizard(wizard_id, 1, 2, step="prompt", data={"prompt": "x"})
+        )
+        updated = self.state.get_wizard(wizard_id, 1, 2)
+        self.assertEqual(updated["step"], "prompt")
+        self.assertEqual(updated["data"]["prompt"], "x")
+        self.state.delete_wizard(wizard_id, 1, 2)
+        self.assertIsNone(self.state.get_wizard(wizard_id, 1, 2))
+
+    def test_active_wizard_expires(self) -> None:
+        now = [1000]
+        state = MonitorState(self.root / "wizard-clock.db", clock=lambda: now[0])
+        try:
+            state.create_wizard(1, 2, "start", "title", {}, ttl_seconds=10)
+            self.assertIsNotNone(state.get_active_wizard(1, 2))
+            now[0] = 1011
+            self.assertIsNone(state.get_active_wizard(1, 2))
+        finally:
+            state.close()
+
+    def test_notification_claim_is_at_most_once(self) -> None:
+        self.assertTrue(self.state.claim_notification("started:job-1", "job-1", "STARTED"))
+        self.assertFalse(self.state.claim_notification("started:job-1", "job-1", "STARTED"))
+        self.assertTrue(self.state.has_notification("started:job-1"))
+
+    def test_event_cursor_round_trip(self) -> None:
+        self.assertIsNone(self.state.get_event_cursor("job-1"))
+        self.state.set_event_cursor("job-1", 123, 456, "abc")
+        cursor = self.state.get_event_cursor("job-1")
+        self.assertEqual(cursor["inode"], 123)
+        self.assertEqual(cursor["offset"], 456)
+        self.assertEqual(cursor["last_event_hash"], "abc")
+
+    def test_confirmation_action_is_scoped_and_single_use(self) -> None:
+        nonce = self.state.create_confirmation(1, 2, "start_job", {"x": 1})
+        self.assertEqual(self.state.confirmation_action(nonce, 1, 2), "start_job")
+        self.assertIsNone(self.state.confirmation_action(nonce, 9, 2))
+        self.state.consume_confirmation(nonce, 1, 2, "start_job")
+        self.assertIsNone(self.state.confirmation_action(nonce, 1, 2))
+
     def test_audit_redacts_credentials(self) -> None:
         secret = "audit-" + "secret-" + "123"
         self.state.record_audit(

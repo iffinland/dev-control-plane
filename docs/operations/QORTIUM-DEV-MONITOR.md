@@ -1,15 +1,19 @@
-# Qortium Dev Monitor — P1 operations and activation
+# Qortium Dev Monitor — P2 operations and activation
 
-Status: **P1 read-only observer implemented. Owner activation is manual.** A
-production systemd user unit is stored in this repository. This task did not
-install, enable or start it.
+Status: **P1 read-only observer and P2 authorized control implemented. Default
+mode remains `read_only`; owner activation is manual.** A production systemd
+user unit is stored in this repository. This task did not install, enable,
+restart or start it, and it did not modify the owner-local `telegram.json`.
 
-This runbook covers the Phase P1 read-only Telegram observer described in the
-[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P1 does
-not start, resume, cancel or accept jobs, and it does not modify Workflow v3,
-Qortium, the running node or VPS system configuration.
+This runbook covers the Phase P2 Telegram control surface described in the
+[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P2 adds
+a start wizard, resume flow, per-project admission, global guard awareness,
+STARTED/RESUMED notifications and terminal-notification deduplication. It does
+not implement P3 job cancellation or queued two-way owner/agent messaging.
 
-## 1. What P1 provides
+## 1. What the monitor provides
+
+Read-only mode (the default):
 
 - Authorized private-chat Telegram access using numeric user and chat IDs.
 - Main menu, job list, job status, project list and document browser.
@@ -17,16 +21,26 @@ Qortium, the running node or VPS system configuration.
 - Read-only report/log downloads and allowlisted document downloads.
 - Persistent polling offsets, update deduplication, opaque callback references,
   rate limiting and a sanitized SQLite audit trail.
-- Outbound-only Telegram long polling. There is no webhook, public port or HTTP
-  server.
-- Bounded timing diagnostics for polling, callback acknowledgement, Telegram
-  calls, the Workflow v3 CLI, SQLite and document browsing. Diagnostics contain
-  operation labels and durations only, never message bodies or credentials.
-- An optional systemd user unit with automatic restart, duplicate-instance
-  protection, a fixed working directory and graceful `SIGTERM` shutdown.
 
-It reuses the existing Workflow v3 job store and CLI plus the existing owner-local
-Telegram configuration. It is not a second job manager.
+Control mode (explicit owner configuration only):
+
+- Registered-project selection for job start.
+- Start wizard: title, prompt, mandatory acceptance criteria, timeout, optional
+  branch label, exact confirmation preview and one-time confirmation.
+- Fixed-shape `dev start` invocation with `--no-notify --json` and the prompt on
+  standard input.
+- Resume wizard with optional instruction, explicit `--new-session`/`--force`
+  toggles and one-time confirmation.
+- Per-project admission locking plus global execution-guard awareness. Only one
+  active monitor-managed job is admitted per project, and a running job anywhere
+  is reported as global-guard busy rather than starting a doomed attempt.
+- STARTED and RESUMED notifications, plus terminal relays for monitor-started
+  jobs, with durable at-most-once deduplication.
+- Optional local unlock passphrase using a salted scrypt hash.
+
+The monitor reuses the existing Workflow v3 job store and CLI plus the existing
+owner-local Telegram configuration. It is not a second job manager, scheduler or
+job engine.
 
 ## 2. Safety boundaries
 
@@ -35,7 +49,11 @@ The monitor:
 - runs as an owner-controlled foreground process or an owner-installed systemd
   user service and refuses a second instance through an exclusive state lock;
 - never calls `setWebhook`, opens a listener or exposes an inbound API;
-- never creates or mutates Workflow v3 jobs in P1;
+- in P2 only invokes existing allowlisted Workflow v3 commands:
+  `dev start`, `dev resume`, `dev status`, `dev report` and `dev logs`;
+- never implements a cancel action; `/cancel` only cancels an active wizard.
+  Job cancellation remains P3;
+- never implements live prompt injection or queued owner-to-agent messaging;
 - never runs `sudo`, a service manager, a package manager or a mount command;
 - never restarts, stops, reconfigures, signals or writes the Qortium node, its
   service, data or logs;
@@ -46,7 +64,8 @@ The monitor:
 - applies credential redaction before every outbound message, text download and
   audit detail;
 - records timing labels and durations only. It never writes message text, prompts,
-  paths, user/chat IDs, tokens or exception messages into timing diagnostics.
+  passphrases, paths, user/chat IDs, tokens or exception messages into timing
+  diagnostics.
 
 ## 3. Prerequisites
 
@@ -56,6 +75,7 @@ The monitor:
 - The owner's numeric Telegram user ID and private chat ID.
 - Existing Workflow v3 state, normally under
   `$DEV_CONTROL_PLANE_STATE` or `~/.local/state/dev-control-plane`.
+- Registered project repositories under an allowed repository root.
 - Read access to the central docs tree.
 - For the systemd user service: login linger is already enabled by the owner
   (`Linger=yes`). Verify with `loginctl show-user "$USER" -p Linger` if needed.
@@ -92,6 +112,12 @@ Example shape (placeholders only; never commit real values):
     "max_text_download_bytes": 2097152,
     "max_binary_download_bytes": 10485760,
     "allow_binary_downloads": false,
+    "relay_external_final": true,
+    "unlock_ttl_seconds": 900,
+    "admission_lock_timeout_seconds": 5,
+    "lifecycle_poll_seconds": 30,
+    "terminal_grace_seconds": 20,
+    "control_passphrase_hash": "<optional owner-local scrypt hash>",
     "allowed_repo_roots": [
       "/home/iffi/dev-workspace/projects",
       "/home/iffi/dev-workspace/control-plane"
@@ -107,14 +133,33 @@ Example shape (placeholders only; never commit real values):
 }
 ```
 
-Timeouts are deliberately separate:
+To enable control, change only `mode` to `"control"`. Control mode additionally
+requires non-empty `agent_allowlist` and `model_allowlist`. The monitor refuses
+to start with an invalid control configuration.
+
+Generate the optional passphrase hash locally without echo:
+
+```bash
+python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py hash-passphrase
+```
+
+Paste only the printed `scrypt$...` value into `control_passphrase_hash`. The
+passphrase itself must never appear in Git, monitor state, audit rows or chat.
+Unlock state is held in memory for `unlock_ttl_seconds` and is cleared on monitor
+restart or `/lock`.
+
+Timeouts and control limits:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `poll_timeout_seconds` | `25` | Telegram `getUpdates` long-poll timeout. |
-| `request_timeout_seconds` | `10` | Ordinary Bot API calls (`sendMessage`, `editMessageText`, `answerCallbackQuery`, `getMe`). It no longer inherits the long-poll timeout. |
-| `document_timeout_seconds` | `60` | `sendDocument` uploads, which may be larger than a text update. |
+| `request_timeout_seconds` | `10` | Ordinary Bot API calls, separate from long polling. |
+| `document_timeout_seconds` | `60` | `sendDocument` uploads. |
 | `slow_timing_seconds` | `1.0` | A measured operation at or above this duration is logged as `timing slow`. |
+| `unlock_ttl_seconds` | `900` | In-process control unlock window. |
+| `admission_lock_timeout_seconds` | `5` | Per-project check-and-invoke lock wait. |
+| `lifecycle_poll_seconds` | `30` | Minimum interval between lifecycle event scans. |
+| `terminal_grace_seconds` | `20` | Wait before relaying an external terminal state with no notification record. |
 
 Permissions:
 
@@ -128,8 +173,8 @@ nested `monitor` object, token, numeric user allowlist or numeric chat allowlist
 missing. `require_private_chat` must remain `true`.
 
 `docs_roots` is an explicit allowlist. Registered project report roots are added
-automatically from `PROJECT-REGISTRY.md` when they exist. The whole central docs
-directory is never exposed as a generic root.
+automatically from [PROJECT-REGISTRY.md](../../PROJECT-REGISTRY.md) when they
+exist. The whole central docs directory is never exposed as a generic root.
 
 ## 5. Activation
 
@@ -137,7 +182,7 @@ These steps are intentionally manual. Choose either the systemd user service
 (recommended for normal use) or an owner-controlled foreground terminal. Do not
 run both at the same time; the single-instance lock refuses the second process.
 
-### 5.1 Read-only preflight
+### 5.1 Preflight
 
 Run the read-only check first:
 
@@ -145,11 +190,24 @@ Run the read-only check first:
 python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py check
 ```
 
-This validates config permissions, numeric allowlists, `getMe`, the webhook
-state, the project registry, document roots and monitor state permissions. It
-does not start polling and it never clears a webhook silently.
+This validates config permissions, numeric allowlists, control configuration,
+`getMe`, the webhook state, the project registry, document roots and monitor
+state permissions. It does not start polling and it never clears a webhook
+silently.
 
-### 5.2 Install and activate the systemd user service
+### 5.2 Switch to control (only when intended)
+
+1. Back up the owner-local config outside Git and keep it mode `0600`.
+2. Set `monitor.mode` to `"control"`.
+3. Confirm `agent_allowlist` and `model_allowlist` contain only intended values.
+4. Optionally add `control_passphrase_hash` from `hash-passphrase`.
+5. Run `dev_monitor.py check` again.
+6. Restart the monitor so the new configuration is loaded.
+
+To return to a pure observer, set `mode` back to `"read_only"` and restart the
+monitor. Running jobs are unaffected.
+
+### 5.3 Install and activate the systemd user service
 
 The unit is stored in this repository as
 `deploy/systemd/user/qortium-dev-monitor.service`. It is not installed by the
@@ -192,7 +250,7 @@ The monitor handles `SIGTERM`/`SIGINT` by stopping the polling loop, releasing t
 single-instance lock and exiting with status `0`. Running Workflow v3 jobs are
 detached and are not affected.
 
-### 5.3 Foreground alternative
+### 5.4 Foreground alternative
 
 If the service is not used, start the monitor in an owner-controlled terminal:
 
@@ -206,7 +264,7 @@ Stop it with `Ctrl-C`, or from another terminal:
 python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py stop
 ```
 
-### 5.4 Service status, logs and lifecycle
+### 5.5 Service status, logs and lifecycle
 
 ```bash
 # Current service state.
@@ -235,14 +293,25 @@ python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py status --jso
 `stop` command remains available for foreground operation. Both paths are
 graceful; neither signals the Qortium node or Workflow v3 workers.
 
-### 5.5 First owner verification
+### 5.6 First owner verification
 
 From the authorized private chat, send `/start`, `/jobs`, `/projects` and
 `/docs`. Verify that unauthorized accounts receive only a generic denial. Open a
-job, preview a report and browse a document. Running jobs remain independent of
-the monitor lifecycle.
+job, preview a report and browse a document.
 
-### 5.6 Run exit codes
+If control mode is enabled:
+
+1. Send `/start_job` and select a registered project.
+2. Complete the wizard with a small prompt and at least one acceptance criterion.
+3. Inspect the confirmation preview; press Confirm.
+4. Verify that STARTED arrives once and the job appears in `/jobs`.
+5. Open the job, choose Resume after it reaches a terminal state, inspect the
+   preview, press Confirm resume and then Confirm.
+6. Verify RESUMED arrives once and the same job ID/session is used.
+
+Running jobs remain independent of the monitor lifecycle.
+
+### 5.7 Run exit codes
 
 | Code | Meaning | Service restart |
 | --- | --- | --- |
@@ -252,36 +321,106 @@ the monitor lifecycle.
 | `75` | Another monitor instance owns the single-instance lock. | No |
 | `78` | Fatal Telegram auth/conflict error (`401`, `403`, `409`). | No |
 
-## 6. Commands and menus
+## 6. Commands, menus and control flows
 
 | Command | Result |
 | --- | --- |
-| `/start`, `/menu` | Main menu |
+| `/start`, `/menu` | Main menu (Start job is shown only in control mode) |
+| `/start_job`, `/newjob` | Start wizard for a registered, job-eligible project |
 | `/jobs` | Active jobs first, then recent terminal jobs |
 | `/job <reference>` | Open a job by server-side reference |
 | `/status [job]` | Compact status view; latest job when omitted |
-| `/projects` | Registered projects, repository and docs availability |
+| `/resume [job]` | Resume wizard (control mode) |
+| `/cancel` | Cancel the active wizard only; never cancels a job |
+| `/projects` | Registered projects, repository/docs availability and eligibility |
 | `/docs` | Allowlisted document roots |
+| `/unlock <passphrase>` | Unlock control actions when a passphrase hash is configured |
+| `/lock` | Re-lock control actions |
 | `/help` | Commands, active mode and safety notes |
 
-Job actions are Refresh, Run log, Worker log, Report, Download report and Download
-log. Document actions are open directory, preview text, download a redacted text
-copy and, only when explicitly enabled, a confirmed binary download. Callback data
-contains opaque server-side references, never paths, job IDs, prompts or user IDs.
+Job actions are Refresh, Run log, Worker log, Report, Download report and, in
+control mode for a resumable job, Resume. Document actions are open directory,
+preview text, download a redacted text copy and, only when explicitly enabled, a
+confirmed binary download. Callback data contains opaque server-side references,
+never paths, job IDs, prompts or user IDs.
+
+### 6.1 Start flow
+
+```text
+/start_job
+-> select registered project (server-side index)
+-> title
+-> prompt
+-> at least one criterion: "Label::command" or "manual: text"
+-> timeout (8h maximum)
+-> optional branch label or /skip
+-> exact confirmation preview
+-> one-time Confirm
+-> per-project admission lock
+-> project-active and global-guard check
+-> dev start --no-notify --json (prompt over stdin)
+-> RUNNING: STARTED notification and job actions
+-> BLOCKED/refusal: sanitized reason, no STARTED
+```
+
+The monitor uses only the configured agent/model allowlists, a registered
+repository realpath, an integer timeout capped at eight hours and argument arrays
+with `shell=False`. Acceptance commands remain the one intentional shell surface:
+Workflow v3 runs them with `bash` in the selected repository, and the preview
+shows them before confirmation.
+
+### 6.2 Resume flow
+
+```text
+job view -> Resume
+-> preview: current state, attempt, session, blocker, options
+-> optional instruction (passed as one argv element)
+-> optional explicit New session or Force rerun toggle
+-> one-time Confirm
+-> per-project admission and global-guard check
+-> dev resume <job-id> --json
+-> RUNNING: RESUMED notification and the same job view
+```
+
+A live RUNNING job is refused. A SUCCESS job requires the explicit Force rerun
+toggle. An unknown session requires the explicit New session toggle. `--force`
+and `--new-session` are never added silently. P3 may add `dev resume
+--prompt-file -` for long instructions.
+
+### 6.3 Notifications and deduplication
+
+- STARTED is sent on the first worker/attempt start.
+- RESUMED is sent on `resume_requested` or a resumed attempt, once per resume
+  count.
+- Terminal notifications are sent once per job/state/attempt.
+- Monitor-started jobs use `--no-notify`; the monitor sends their terminal relay.
+- CLI-started jobs keep the existing Workflow v3 terminal notification as
+  authoritative. The monitor does not duplicate a sent notification and does not
+  silently retry a failed one.
+- Notification keys are claimed in durable monitor state before sending, so a
+  restart, replayed event or duplicate callback cannot resend the same message.
+- Historical terminal jobs older than one hour are not replayed when the monitor
+  state is first initialized.
 
 ## 7. State and diagnostics
 
 Monitor state is private and separate from job state:
 
 ```text
-<Workflow state root>/monitor/monitor.db   # SQLite, mode 0600, WAL mode
-<Workflow state root>/monitor/monitor.lock # single-instance lock
-<Workflow state root>/monitor/monitor.stop # graceful stop flag
+<Workflow state root>/monitor/monitor.db          # SQLite, mode 0600, WAL mode
+<Workflow state root>/monitor/monitor.lock        # single-instance lock
+<Workflow state root>/monitor/monitor.stop        # graceful stop flag
+<Workflow state root>/monitor/locks/              # per-project admission locks
 ```
+
+P2 adds durable tables for wizards, notification deduplication and lifecycle
+event cursors. Wizard prompts and resume instructions are private monitor state;
+they are deleted when the wizard completes or expires and are never written to
+the audit table.
 
 Use `DEV_MONITOR_STATE` to override the monitor state directory and
 `--state-dir` on the CLI for a one-off override. Deleting monitor state resets UI
-state and polling offsets only; Workflow v3 jobs are unaffected.
+state, wizards and notification cursors only; Workflow v3 jobs are unaffected.
 
 Diagnostics:
 
@@ -293,7 +432,7 @@ python3 tools/dev_monitor.py check
 
 The audit table stores the timestamp, numeric user/chat/update IDs, action, job
 ID, result and a short redacted detail. It never stores message bodies, prompts,
-logs, tokens or environment variables.
+passphrases, logs, tokens or environment variables.
 
 ### 7.1 Timing diagnostics
 
@@ -307,12 +446,15 @@ Labels describe stable operations, not user content:
 | --- | --- |
 | `poll:getUpdates` | Long-poll request and wait |
 | `ack:batch` | Callback acknowledgement pass for a polling batch |
-| `telegram:getUpdates`, `telegram:sendMessage`, `telegram:editMessageText`, `telegram:answerCallbackQuery`, `telegram:sendDocument` | Individual Bot API calls |
+| `telegram:*` | Individual Bot API calls |
 | `update:message`, `update:callback_query` | Per-update dispatch |
 | `action:command:<name>`, `action:callback:<head>` | Menu action handling, using a fixed allowlist of command/button names |
-| `cli:dev_status`, `cli:dev_report` | Synchronous Workflow v3 CLI subprocess |
+| `action:wizard:text` | Wizard text-step validation |
+| `cli:dev_status`, `cli:dev_report`, `cli:dev_start`, `cli:dev_resume` | Synchronous Workflow v3 CLI subprocess |
+| `admission:check_and_invoke` | Per-project check-and-invoke critical section |
+| `lifecycle:poll` | STARTED/RESUMED/terminal event scan |
 | `docs:list`, `docs:preview`, `docs:download` | Descriptor-based document access |
-| `sqlite:set_offset`, `sqlite:claim_update`, `sqlite:record_audit`, `sqlite:hit_rate_limit`, `sqlite:prune`, `sqlite:snapshot` | Monitor state writes and reads |
+| `sqlite:*` | Monitor state writes and reads |
 
 A sample slow-event line:
 
@@ -331,18 +473,13 @@ These lines contain no token, chat ID, message content, path or exception text.
 Use them to distinguish the actual bottleneck:
 
 - `telegram:*` slow points at network/API latency.
-- `cli:dev_status` or `cli:dev_report` slow points at synchronous Workflow v3
-  subprocess cost.
+- `cli:*` slow points at synchronous Workflow v3 subprocess cost.
+- `admission:*` slow points at lock contention.
+- `lifecycle:*` slow points at job event-store reads.
 - `docs:*` slow points at a large or slow document directory.
 - `sqlite:*` slow points at state storage.
 - `poll:getUpdates` near the configured long-poll timeout is normal when no
   update arrived.
-
-Ordinary Telegram calls are bounded by `request_timeout_seconds` rather than the
-long-poll timeout. The previous implementation reused `poll_timeout + 10` for
-every call, which could stall a menu edit for up to 35 seconds. Callback
-acknowledgements remain capped at 5 seconds and the whole batch is acknowledged
-before any read-only action runs.
 
 SQLite uses WAL mode and `synchronous=NORMAL` so the owner's read-only `status`
 command does not block the monitor writer. The polling offset and last-poll time
@@ -354,21 +491,27 @@ are written in one transaction instead of two separate commits.
 | --- | --- |
 | `409 Conflict` | Another poller or webhook is active. Stop the other poller or clear the webhook explicitly; never leave two pollers running. |
 | `401 Unauthorized` | Correct the owner-local token; never print it into chat, logs or Git. The service does not restart on this exit code. |
-| Config refused | Set mode `0600` and add non-empty numeric user/chat allowlists. |
+| Config refused | Set mode `0600`, add non-empty numeric user/chat allowlists, and in control mode add non-empty agent/model allowlists. |
+| Control action refused | The monitor is read-only, or a passphrase is configured and the chat has not run `/unlock`. |
+| Start refused: project busy | A job is running in that project. Wait for it to finish and start again; queued starts are not implemented in P2. |
+| Start refused: global guard busy | Another heavyweight execution is running. The existing guard allows one at a time; wait for it to finish. |
+| Start refused: BLOCKED | Workflow v3 guard preflight refused. Read the sanitized blocker; no STARTED is sent. |
+| Resume refused: live RUNNING | The job has a live worker. Inspect it instead of starting a duplicate attempt. |
+| Resume refused: unknown session | Enable the explicit New session toggle after confirming session continuity is being abandoned. |
+| Resume refused: already SUCCESS | Enable the explicit Force rerun toggle only if another attempt is intended. |
+| Duplicate STARTED/RESUMED | Inspect `event_cursors` and `notification_log`; delete monitor state only, never job state. |
 | Service does not start | Run `systemctl --user status ...` and `journalctl --user -u ... -n 100 --no-pager`; then run `dev_monitor.py check`. |
-| Service restart loop | The unit refuses restart for exit codes `2`, `75` and `78`. Check `systemctl --user status`; repeated other failures hit `StartLimitBurst=5` in 5 minutes. |
 | `75` duplicate instance | Stop the foreground monitor or the other service instance first. Only one process may hold the lock. |
 | No updates | Check `dev_monitor.py check`, confirm the bot was started, and inspect the stored offset with `dev_monitor.py status`. |
-| Menu feels slow | Search the journal for `timing slow` and read the label. Compare `telegram:*`, `cli:*`, `docs:*` and `sqlite:*` lines before changing anything. |
+| Menu feels slow | Search the journal for `timing slow` and read the label. Compare `telegram:*`, `cli:*`, `admission:*`, `lifecycle:*`, `docs:*` and `sqlite:*` lines before changing anything. |
 | Status is stale | Workflow v3 status reconciles a missing worker; refresh the job view. |
 | Document refused | Absolute paths, `..`, backslashes, percent encodings, hidden names, symlinks and sensitive names are refused by design. |
-| Binary download refused | Keep `allow_binary_downloads` false unless the owner explicitly needs binary documents; enabled binary downloads require per-file confirmation. |
-| Duplicate lifecycle messages | P1 does not send lifecycle notifications; final-only Workflow v3 behaviour is unchanged. |
+| Cancel requested | Job cancellation is P3 and is not available. `/cancel` only discards an active wizard. |
 
 ## 9. Validation
 
-The P1 tests use fake Telegram transports and isolated fixtures. They never
-contact production Telegram and never start a real OpenCode session:
+The P2 tests use fake Telegram transports and an isolated fake `dev` CLI. They
+never contact production Telegram and never start a real OpenCode session:
 
 ```bash
 python3 tools/test_dev_monitor_redact.py
@@ -380,6 +523,9 @@ python3 tools/test_dev_monitor_api.py
 python3 tools/test_dev_monitor_state.py
 python3 tools/test_dev_monitor_timings.py
 python3 tools/test_dev_monitor_service_unit.py
+python3 tools/test_dev_monitor_admission.py
+python3 tools/test_dev_monitor_lifecycle.py
+python3 tools/test_dev_monitor_control.py
 python3 tools/test_dev_monitor_integration.py
 ```
 
@@ -401,11 +547,12 @@ python3 tools/validate_agent_permissions.py --check
 
 ## 10. Deferred to later phases
 
-- P2: start/resume wizards, per-project admission, STARTED/RESUMED notifications,
-  optional local unlock.
 - P3: additive `dev cancel`, additive `dev resume --prompt-file -` and queued
   owner instructions.
-- P4: real-runtime acceptance matrix, incident runbook hardening and any binary
+- P4: real-runtime acceptance matrix, incident-runbook hardening and any binary
   document policy change.
+- P5: optional read-only latest assistant message, richer queues and search.
 
-P1 deliberately exposes no start, resume, cancel, accept or owner-message action.
+P2 deliberately exposes no job cancel, manual acceptance, live prompt injection or
+queued two-way messaging. OpenCode exit code 0 is never treated as acceptance;
+Workflow v3 criteria remain authoritative.

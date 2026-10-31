@@ -1,8 +1,8 @@
 # Qortium Dev Monitor — Telegram remote control architecture
 
-Status: **P1 read-only observer implemented with an optional systemd user unit;
-P2-P5 remain proposed.** Activation remains manual; see
-[QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
+Status: **P1 read-only observer and P2 authorized control implemented with an
+optional systemd user unit; P3-P5 remain proposed.** Activation remains manual;
+see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 
 | Field | Value |
 | --- | --- |
@@ -15,7 +15,7 @@ P2-P5 remain proposed.** Activation remains manual; see
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | P1 read-only observer implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. A P1 stabilization pass added bounded timing diagnostics, separated Bot API timeouts, WAL state, graceful signal shutdown and an optional systemd user unit stored under `deploy/systemd/user/`. The unit was not installed, enabled or started by the repository. No Workflow v3 file, job, Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
+| Implementation state | P1 read-only observer and P2 authorized control implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. P2 adds the registered-project start wizard, mandatory acceptance criteria, confirmation previews, fixed-shape `dev start`/`dev resume` calls, per-project admission, global guard awareness, STARTED/RESUMED and terminal notifications with durable deduplication, optional local unlock and idempotent one-time confirmations. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. P3 cancel/two-way messaging is not implemented. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Workflow v3 file, job, Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 
@@ -1346,7 +1346,7 @@ it owns for that job. Name-based `kill`, `pkill`, `killall` and
 | --- | --- | --- | --- | --- |
 | P0 | Audit and architecture (this document) | No | No | Document reviewed; no code changes; validators pass |
 | P1 | Read-only observer: config, auth, long polling, state, redaction, menus, job list/status/logs/report, project list, doc browser | No | No | Unauthorized users denied; read-only flows pass; no listener; no secrets |
-| P2 | Control: start wizard, resume, per-project admission, STARTED/RESUMED, final relay, confirmations, optional unlock | Yes, through existing CLI | No | Start/resume acceptance passes; concurrency tests pass; no duplicate notifications |
+| P2 (implemented) | Control: start wizard, resume, per-project admission, STARTED/RESUMED, final relay, confirmations, optional unlock | Yes, through existing CLI | No | Start/resume acceptance passes; concurrency tests pass; no duplicate notifications |
 | P3 | Cancel and owner messaging: additive `dev cancel`, optional `dev resume --prompt-file -`, queued instructions | Yes | Additive only | Separate authorization; v3 regression tests; cancel safety tests; queue exactly-once |
 | P4 | Hardening and operations: docs download policy, rate limits, incident runbook, real-runtime acceptance | No new semantics | No | Security acceptance matrix passes; owner accepts real bot flow |
 | P5 (optional) | Advanced: latest assistant message view, richer queues, multi-chat, search | Maybe | Additive | Separate owner decision and scope |
@@ -1378,6 +1378,33 @@ P2 — control:
 - `dev start --no-notify` for monitor-started jobs.
 - Tests: start via fake CLI, resume, concurrency, duplicate confirms, notification
   dedupe, real-runtime owner acceptance.
+
+#### P2 implementation notes (2026-10-31)
+
+The implemented P2 surface is deliberately smaller than a general job console:
+
+- `mode: "control"` is required; `read_only` remains the default and exposes no
+  start or resume action.
+- Control mode must also configure non-empty `agent_allowlist` and
+  `model_allowlist`. The wizard uses only those values.
+- The start wizard selects a registered, job-eligible project by server-side
+  index, then collects title, prompt, at least one command or manual criterion,
+  timeout and optional branch label before a one-time confirmation nonce.
+- `dev start` is invoked with `--no-notify --json`, the exact fixed argument
+  shape from section 5.5, and the prompt over stdin. `dev resume` uses
+  `--prompt` as one argv element; P3 may add `--prompt-file -`.
+- Per-project admission uses `monitor/locks/project-<sha256>.lock` held only for
+  the check-and-invoke section. A running job in another project is reported as
+  global-guard busy rather than creating a doomed attempt.
+- STARTED/RESUMED and terminal notifications are claimed in durable
+  `notification_log` rows before sending. Existing Workflow v3 terminal
+  notifications remain authoritative for CLI-started jobs; monitor-started jobs
+  (`--no-notify`) get exactly one terminal relay.
+- The optional local passphrase uses a salted scrypt hash in owner-local config,
+  an in-process unlock window and `/unlock`/`/lock`. Passphrases are never stored
+  in monitor state or audit rows. Restarting the monitor re-locks control.
+- P3 cancel and owner-to-agent queued messaging are intentionally absent. The
+  `/cancel` command only cancels an active wizard.
 
 P3 — cancel and messaging:
 
@@ -1593,6 +1620,10 @@ Example shape (all values are placeholders; never commit real credentials):
     "relay_external_final": true,
     "queue_owner_messages": true,
     "auto_start_queued": false,
+    "unlock_ttl_seconds": 900,
+    "admission_lock_timeout_seconds": 5,
+    "lifecycle_poll_seconds": 30,
+    "terminal_grace_seconds": 20,
     "allowed_repo_roots": [
       "/home/iffi/dev-workspace/projects",
       "/home/iffi/dev-workspace/control-plane"
@@ -1619,6 +1650,19 @@ chmod 600 ~/.config/dev-control-plane/telegram.json
 The monitor must refuse to start if the config is group/world readable. The
 existing notification module only warns; the monitor is stricter because it
 handles inbound interactive control.
+
+`read_only` is the safe default. To enable P2 control, the owner must explicitly
+set `mode: "control"`, keep the numeric private-chat allowlist, configure at
+least one agent and model in the allowlists, and preferably add a passphrase
+hash. Generate the hash locally without echo and place only the printed hash in
+the `0600` config:
+
+```bash
+python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py hash-passphrase
+```
+
+The passphrase itself never belongs in Git, monitor state, audit rows or chat.
+Restarting the monitor clears any unlocked control session.
 
 Registry-derived project roots are added automatically at runtime. The explicit
 `docs_roots` list above covers cross-project material and runbooks; it does not

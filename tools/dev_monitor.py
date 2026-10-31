@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Qortium Dev Monitor (P1 read-only observer).
+"""Qortium Dev Monitor (P2 observer plus authorized control).
 
 Commands:
-    run     run the long-polling monitor (foreground or systemd user service)
-    check   validate configuration, Telegram access, registry and docs roots
-    status  show monitor state and whether an instance is running
-    stop    request a graceful stop through the monitor's flag file
+    run              run the long-polling monitor (foreground or systemd user service)
+    check            validate configuration, Telegram access, registry and docs roots
+    status           show monitor state and whether an instance is running
+    stop             request a graceful stop through the monitor's flag file
+    hash-passphrase  create a control_passphrase_hash without echoing it
 
-The monitor is an outbound-only observer. It never creates or mutates Workflow v3
-jobs in P1 and never touches Qortium or the VPS system configuration.
+Read-only mode is the default. Start and resume are available only when the
+owner explicitly configures ``monitor.mode = "control"``. Every mutating action
+goes through the existing Workflow v3 CLI with fixed arguments and an explicit
+confirmation. The monitor never touches Qortium or VPS system configuration.
 
 Run exit codes: 0 graceful stop, 1 unexpected/transient failure, 2 configuration
 error, 75 another instance owns the lock, 78 fatal Telegram conflict/auth error.
@@ -26,6 +29,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from devmonitor import __version__  # noqa: E402
+from devmonitor.admission import AdmissionManager  # noqa: E402
 from devmonitor.api import TelegramApi, TelegramError, TelegramFatalError  # noqa: E402
 from devmonitor.config import (  # noqa: E402
     ConfigError,
@@ -33,8 +37,11 @@ from devmonitor.config import (  # noqa: E402
     load_monitor_config,
     resolve_state_dir,
 )
+from devmonitor.control import ControlManager  # noqa: E402
 from devmonitor.documents import DocumentLibrary, DocumentError  # noqa: E402
 from devmonitor.jobs import JobFacade  # noqa: E402
+from devmonitor.lifecycle import LifecycleNotifier  # noqa: E402
+from devmonitor.passphrase import PassphraseError, hash_passphrase  # noqa: E402
 from devmonitor.projects import Registry, RegistryError  # noqa: E402
 from devmonitor.render import service_status_text  # noqa: E402
 from devmonitor.router import Router  # noqa: E402
@@ -77,7 +84,29 @@ def _build_components(config, timings=None):
         projects = []
     documents = DocumentLibrary.from_sources(config.docs_roots, projects, timings=timings)
     jobs = JobFacade(config.job_state_root, timings=timings)
-    router = Router(config, state, api, jobs, registry, documents, timings=timings)
+    admission = AdmissionManager(
+        config.state_dir,
+        jobs,
+        registry,
+        lock_timeout=config.admission_lock_timeout_seconds,
+        timings=timings,
+    )
+    lifecycle = LifecycleNotifier(config, state, jobs, api, registry)
+    control = ControlManager(
+        config, state, jobs, registry, admission, notifier=lifecycle
+    )
+    router = Router(
+        config,
+        state,
+        api,
+        jobs,
+        registry,
+        documents,
+        control=control,
+        admission=admission,
+        notifier=lifecycle,
+        timings=timings,
+    )
     return state, api, registry, documents, jobs, router, timings
 
 
@@ -89,6 +118,7 @@ def command_run(args: argparse.Namespace) -> int:
         api,
         state,
         router,
+        lifecycle=getattr(router, "lifecycle", None),
         log=lambda message: print(f"monitor: {message}", file=sys.stderr),
         timings=timings,
     )
@@ -168,6 +198,22 @@ def command_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_hash_passphrase(args: argparse.Namespace) -> int:
+    import getpass
+
+    first = getpass.getpass("Control passphrase: ")
+    second = getpass.getpass("Repeat passphrase: ")
+    if first != second:
+        print("dev-monitor: passphrases did not match", file=sys.stderr)
+        return 2
+    try:
+        print(hash_passphrase(first))
+    except PassphraseError as exc:
+        print(f"dev-monitor: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def command_stop(args: argparse.Namespace) -> int:
     state_dir = ensure_state_dir(resolve_state_dir(args.state_dir))
     stop_path = state_dir / "monitor.stop"
@@ -187,7 +233,7 @@ def command_stop(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev-monitor",
-        description="Qortium Dev Monitor P1 (read-only Telegram observer).",
+        description="Qortium Dev Monitor P2 (Telegram observer with explicit control mode).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"dev-monitor {__version__}")
@@ -211,6 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop = subparsers.add_parser("stop", help="request a graceful monitor stop")
     stop.set_defaults(func=command_stop)
+
+    hashing = subparsers.add_parser(
+        "hash-passphrase", help="create a control_passphrase_hash without echoing it"
+    )
+    hashing.set_defaults(func=command_hash_passphrase)
     return parser
 
 

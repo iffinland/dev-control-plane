@@ -1,11 +1,13 @@
-"""Qortium Dev Monitor P1: read-only Telegram observer for Workflow v3.
+"""Qortium Dev Monitor P2: Telegram observer plus authorized job control.
 
-The package reuses the existing Workflow v3 job store and CLI. It never creates
-or mutates jobs in Phase 1 and never opens an inbound network listener.
+The package reuses the existing Workflow v3 job store and CLI. Read-only mode is
+the default. Control mode must be explicitly configured by the owner and is
+restricted to the authorized private chat. The monitor never opens an inbound
+network listener and never implements its own job engine.
 """
 
 from __future__ import annotations
 
-__version__ = "0.1.0-p1"
+__version__ = "0.2.0-p2"
 
 __all__ = ["__version__"]

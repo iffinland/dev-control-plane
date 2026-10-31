@@ -70,7 +70,9 @@ class MonitorService:
         state: MonitorState,
         router,
         *,
+        lifecycle=None,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] | None = None,
         timings: TimingRecorder | None = None,
     ) -> None:
@@ -78,9 +80,12 @@ class MonitorService:
         self.api = api
         self.state = state
         self.router = router
+        self.lifecycle = lifecycle
         self.sleep = sleep
+        self.clock = clock
         self.log = log or (lambda _message: None)
         self.timings = timings or default_recorder()
+        self._last_lifecycle: float | None = None
         self._shutdown_requested = False
         self.state_dir = ensure_state_dir(config.state_dir)
         self.lock_path = self.state_dir / "monitor.lock"
@@ -173,6 +178,7 @@ class MonitorService:
                         self._emit_timings()
                     with self.timings.measure("sqlite:prune"):
                         self.state.prune()
+                    self._poll_lifecycle()
                 except TelegramRateLimited as exc:
                     delay = max(1.0, exc.retry_after)
                     self.log(f"rate limited; waiting {delay:.0f}s")
@@ -191,6 +197,22 @@ class MonitorService:
         finally:
             self._emit_timings()
             self._release_lock()
+
+    def _poll_lifecycle(self) -> None:
+        if self.lifecycle is None:
+            return
+        now = self.clock()
+        if (
+            self._last_lifecycle is not None
+            and now - self._last_lifecycle < self.config.lifecycle_poll_seconds
+        ):
+            return
+        self._last_lifecycle = now
+        try:
+            with self.timings.measure("lifecycle:poll"):
+                self.lifecycle.poll()
+        except Exception as exc:  # noqa: BLE001 - lifecycle must not stop polling
+            self.log(f"lifecycle poll failed: {exc.__class__.__name__}")
 
     def process_update(self, update: dict) -> None:
         if not isinstance(update, dict):
@@ -262,6 +284,12 @@ def check_monitor(config: MonitorConfig, api: TelegramApi, registry, documents) 
     directory = ensure_state_dir(config.state_dir)
     lines.append(f"config: {config.config_path}")
     lines.append(f"mode: {config.mode}")
+    if config.control_enabled:
+        lines.append("control: enabled; mutating actions require explicit confirmation")
+        if config.control_passphrase_hash:
+            lines.append("control unlock: passphrase configured")
+        else:
+            lines.append("control unlock: not configured; relying on the numeric allowlist")
     lines.append(f"authorized users: {len(config.authorized_user_ids)}")
     lines.append(f"allowed chats: {len(config.allowed_chat_ids)}")
     lines.append(f"monitor state: {directory}")

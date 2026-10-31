@@ -1,5 +1,5 @@
 [Unit]
-Description=Qortium Dev Monitor (read-only Telegram observer)
+Description=Qortium Dev Monitor (Telegram observer; control mode is explicit owner configuration)
 Documentation=file:///home/iffi/dev-workspace/control-plane/docs/operations/QORTIUM-DEV-MONITOR.md
 Wants=network-online.target
 After=network-online.target

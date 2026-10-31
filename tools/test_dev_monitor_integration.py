@@ -185,9 +185,9 @@ class MonitorIntegrationTests(unittest.TestCase):
         self.router.handle(message_update(2, "/nonsense"))
         self.assertIn("Unknown command", self.api.sent[-1]["text"])
 
-    def test_control_commands_are_disabled_in_p1(self) -> None:
+    def test_control_commands_are_disabled_in_read_only_mode(self) -> None:
         self.router.handle(message_update(1, "/resume"))
-        self.assertIn("not available in P1", self.api.sent[-1]["text"])
+        self.assertIn("read-only mode", self.api.sent[-1]["text"])
         self.assertNotIn(SECRET, self.api.sent[-1]["text"])
 
     # ---- jobs --------------------------------------------------------------------
@@ -231,7 +231,7 @@ class MonitorIntegrationTests(unittest.TestCase):
         text = self.api.sent[-1]["text"]
         self.assertIn("demo/project", text)
         self.assertIn("repo ok", text)
-        self.assertIn("P1 does not start jobs", text)
+        self.assertIn("Read-only mode", text)
 
     def test_document_browse_preview_and_redacted_download(self) -> None:
         self.router.handle(message_update(1, "/docs"))
@@ -407,6 +407,30 @@ class MonitorIntegrationTests(unittest.TestCase):
     def test_insecure_config_permissions_are_refused(self) -> None:
         path = self.root / "telegram.json"
         os.chmod(path, 0o644)
+        with self.assertRaises(ConfigError):
+            load_monitor_config(path, environ={}, require_secure=True)
+
+    def test_control_mode_requires_agent_and_model_allowlists(self) -> None:
+        import json
+
+        path = self.root / "telegram.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["monitor"]["mode"] = "control"
+        data["monitor"]["agent_allowlist"] = []
+        path.write_text(json.dumps(data), encoding="utf-8")
+        os.chmod(path, 0o600)
+        with self.assertRaises(ConfigError):
+            load_monitor_config(path, environ={}, require_secure=True)
+
+    def test_invalid_control_passphrase_hash_is_refused(self) -> None:
+        import json
+
+        path = self.root / "telegram.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["monitor"]["mode"] = "control"
+        data["monitor"]["control_passphrase_hash"] = "not-a-valid-hash"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        os.chmod(path, 0o600)
         with self.assertRaises(ConfigError):
             load_monitor_config(path, environ={}, require_secure=True)
 

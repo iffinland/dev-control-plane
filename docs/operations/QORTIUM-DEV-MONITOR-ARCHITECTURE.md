@@ -1,6 +1,7 @@
 # Qortium Dev Monitor — Telegram remote control architecture
 
-Status: **proposed architecture; audit only; no bot implementation in this task.**
+Status: **P1 read-only observer implemented; P2-P5 remain proposed.** P1
+activation is manual; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 
 | Field | Value |
 | --- | --- |
@@ -13,7 +14,7 @@ Status: **proposed architecture; audit only; no bot implementation in this task.
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | Nothing implemented. No Workflow v3 file, job, service, listener, node or VPS setting was changed by this task. |
+| Implementation state | P1 read-only observer implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. No Workflow v3 file, job, service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 

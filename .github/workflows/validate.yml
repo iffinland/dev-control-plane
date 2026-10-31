@@ -42,6 +42,16 @@ jobs:
         run: python3 tools/test_opencode_guard.py
       - name: Test Workflow v3 development CLI
         run: python3 tools/test_dev_cli.py
+      - name: Test Qortium Dev Monitor P1
+        run: |
+          python3 tools/test_dev_monitor_redact.py
+          python3 tools/test_dev_monitor_auth.py
+          python3 tools/test_dev_monitor_projects.py
+          python3 tools/test_dev_monitor_documents.py
+          python3 tools/test_dev_monitor_jobs.py
+          python3 tools/test_dev_monitor_api.py
+          python3 tools/test_dev_monitor_state.py
+          python3 tools/test_dev_monitor_integration.py
       - name: Scan reachable Git history
         run: |
           zero=0000000000000000000000000000000000000000

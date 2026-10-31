@@ -80,6 +80,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [OpenCode tmux session runbook](docs/operations/OPENCODE-TMUX-SESSIONS.md)
 - [Unattended OpenCode execution runbook](docs/operations/UNATTENDED-OPENCODE.md)
 - [Workflow v3 development jobs](docs/operations/DEV-WORKFLOW-V3.md)
+- [Qortium Dev Monitor P1 operations](docs/operations/QORTIUM-DEV-MONITOR.md)
 - [OpenCode permission semantics](docs/operations/OPENCODE-PERMISSIONS.md)
 - [Git and durable handoff](GIT-AND-HANDOFF.md)
 - [Qortal platform boundary](platforms/qortal/README.md)

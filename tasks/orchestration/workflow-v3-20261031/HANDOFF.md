@@ -40,5 +40,6 @@ Canonical detailed report path / SHA-256 / authorized remote evidence:
 `/home/iffi/dev-workspace/docs/workspace/implementation/2026-10-31-workflow-v3.md`,
 SHA-256 `b36b11ab55ea173f35cd7a5e511772f565852ab96aa9473fe6105c2fea68f1a2`;
 local only, no remote publication authorized.
-Commit and push state / verified remote SHA: two local commits
-(`d88172a`, `a15d97b`); no push authorized; no remote SHA.
+Commit and push state / verified remote SHA: implementation commit
+`d88172a` plus the subsequent handoff commits on this branch; no push authorized;
+no remote SHA.

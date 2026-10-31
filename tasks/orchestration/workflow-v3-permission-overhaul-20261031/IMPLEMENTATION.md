@@ -95,7 +95,7 @@ attempt.
 
 Canonical report path / SHA-256 / authorized remote evidence:
 `/home/iffi/dev-workspace/docs/workspace/implementation/2026-10-31-workflow-v3-permission-overhaul.md`,
-SHA-256 `719952a110f35381969d5c60f23a1a2449a054587ce36074b4838d314eeb80fc`;
+SHA-256 `3214cd34968ef13a31747c8f9c22c7f2424b5daefd6760666ff9cf0903fbd339`;
 local only, no remote publication authorized.
 
 Commit and push state / verified remote SHA:

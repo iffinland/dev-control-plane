@@ -12,12 +12,15 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 from devmonitor.api import (  # noqa: E402
+    CALLBACK_ACK_TIMEOUT_SECONDS,
     TelegramApi,
     TelegramFatalError,
     TelegramRateLimited,
     TelegramRequestError,
+    TelegramStaleCallback,
     TelegramTransientError,
     backoff_seconds,
+    is_stale_callback_error,
 )
 from devmonitor_test_support import BOT_TOKEN, FakeTransport  # noqa: E402
 
@@ -92,6 +95,36 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(TelegramRequestError) as caught:
             api.get_me()
         self.assertNotIn(BOT_TOKEN, str(caught.exception))
+
+    def test_stale_callback_ack_is_classified_and_not_fatal(self) -> None:
+        description = (
+            "Bad Request: query is too old and response timeout expired or "
+            "query ID is invalid"
+        )
+        transport = FakeTransport([(400, response(ok=False, description=description))])
+        api = TelegramApi(BOT_TOKEN, transport=transport)
+        with self.assertRaises(TelegramStaleCallback) as caught:
+            api.answer_callback_query("cb-old")
+        self.assertIsInstance(caught.exception, TelegramRequestError)
+        self.assertTrue(is_stale_callback_error(caught.exception))
+        self.assertNotIn(BOT_TOKEN, str(caught.exception))
+
+    def test_other_callback_ack_400_remains_a_request_error(self) -> None:
+        transport = FakeTransport(
+            [(400, response(ok=False, description="Bad Request: callback_query_id is invalid"))]
+        )
+        api = TelegramApi(BOT_TOKEN, transport=transport)
+        with self.assertRaises(TelegramRequestError) as caught:
+            api.answer_callback_query("cb-bad")
+        self.assertNotIsInstance(caught.exception, TelegramStaleCallback)
+
+    def test_callback_ack_uses_a_short_bounded_timeout(self) -> None:
+        transport = FakeTransport([(200, response(True))])
+        api = TelegramApi(BOT_TOKEN, transport=transport, timeout_seconds=35)
+        self.assertTrue(api.answer_callback_query("cb-1", "ok"))
+        self.assertLessEqual(
+            transport.calls[0]["timeout"], CALLBACK_ACK_TIMEOUT_SECONDS
+        )
 
     def test_send_message_payload(self) -> None:
         transport = FakeTransport([(200, response({"message_id": 5}))])

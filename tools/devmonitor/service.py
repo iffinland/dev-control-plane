@@ -113,6 +113,9 @@ class MonitorService:
                         self.state.next_offset(), self.config.poll_timeout_seconds
                     )
                     transient_attempt = 0
+                    # Answer all queued callbacks before any handler can block the
+                    # loop. Otherwise a slow first action expires the rest.
+                    self.router.acknowledge_updates(updates)
                     for update in updates:
                         if self.stop_requested():
                             break
@@ -140,6 +143,9 @@ class MonitorService:
         if isinstance(update_id, bool) or not isinstance(update_id, int):
             return
         if not self.state.claim_update(update_id):
+            # The action already ran. Stop the spinner for a callback that was
+            # never acknowledged in this process, but never re-run the action.
+            self.router.acknowledge_update(update)
             self.state.set_offset(update_id + 1)
             return
         try:

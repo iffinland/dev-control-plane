@@ -44,6 +44,30 @@ class TelegramRateLimited(TelegramError):
         self.retry_after = max(0.0, float(retry_after))
 
 
+class TelegramStaleCallback(TelegramRequestError):
+    """A callback query can no longer be answered (expired or already used).
+
+    This is a UI acknowledgement failure, not a reason to drop the update: the
+    associated read-only action can still be executed.
+    """
+
+
+STALE_CALLBACK_MARKERS = (
+    "query is too old",
+    "response timeout expired",
+    "query id is invalid",
+    "query_id_invalid",
+)
+CALLBACK_ACK_TIMEOUT_SECONDS = 5.0
+
+
+def is_stale_callback_error(value: object) -> bool:
+    """Return True for Telegram's expired/already-answered callback errors."""
+
+    text = str(value).lower()
+    return any(marker in text for marker in STALE_CALLBACK_MARKERS)
+
+
 def _default_transport(url: str, payload: dict, timeout: float) -> tuple[int, str]:
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -236,11 +260,29 @@ class TelegramApi:
         result = self._call("editMessageText", payload)
         return result if isinstance(result, dict) else {}
 
-    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> bool:
+    def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: str | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
         payload: dict[str, object] = {"callback_query_id": callback_query_id}
         if text:
             payload["text"] = text[:200]
-        self._call("answerCallbackQuery", payload)
+        # Long-poll timeouts must not apply to a UI acknowledgement. Keeping this
+        # call short prevents one slow request from consuming the window in which
+        # the remaining queued callback queries can still be answered.
+        ack_timeout = min(
+            self.timeout_seconds if timeout is None else float(timeout),
+            CALLBACK_ACK_TIMEOUT_SECONDS,
+        )
+        try:
+            self._call("answerCallbackQuery", payload, timeout=ack_timeout)
+        except TelegramRequestError as exc:
+            if is_stale_callback_error(exc):
+                raise TelegramStaleCallback(str(exc)) from exc
+            raise
         return True
 
     def send_document(

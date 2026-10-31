@@ -17,7 +17,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
-from devmonitor.api import TelegramRateLimited  # noqa: E402
+from devmonitor.api import TelegramRateLimited, TelegramStaleCallback  # noqa: E402
 from devmonitor.config import ConfigError, load_monitor_config, with_overrides  # noqa: E402
 from devmonitor.documents import DocumentLibrary  # noqa: E402
 from devmonitor.jobs import JobFacade  # noqa: E402
@@ -48,6 +48,47 @@ def find_button(markup, text_fragment: str) -> str:
             if text_fragment.lower() in item.get("text", "").lower():
                 return item["callback_data"]
     raise AssertionError(f"button not found: {text_fragment}")
+
+
+class VirtualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+
+class ExpiringBatchApi(FakeApi):
+    """Fake API where building a response consumes callback validity time."""
+
+    def __init__(self, clock: VirtualClock, *, deadline: float = 5.0, handler_cost: float = 10.0):
+        super().__init__()
+        self.clock = clock
+        self.deadline = deadline
+        self.handler_cost = handler_cost
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> bool:
+        if self.clock.now > self.deadline:
+            raise TelegramStaleCallback(
+                "Bad Request: query is too old and response timeout expired or "
+                "query ID is invalid"
+            )
+        return super().answer_callback_query(callback_query_id, text)
+
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        self.clock.now += self.handler_cost
+        return super().edit_message_text(chat_id, message_id, text, reply_markup)
+
+
+class StaleAckApi(FakeApi):
+    """Fake API that rejects every callback acknowledgement as expired."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_attempts: list[str] = []
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> bool:
+        self.ack_attempts.append(callback_query_id)
+        raise TelegramStaleCallback(
+            "Bad Request: query is too old and response timeout expired or query ID is invalid"
+        )
 
 
 class MonitorIntegrationTests(unittest.TestCase):
@@ -250,6 +291,72 @@ class MonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.api.sent), 1)
         self.assertIn(2.0, sleeps)
         self.assertEqual(self.state.next_offset(), 21)
+
+    def _components_with(self, api):
+        router = Router(
+            self.config, self.state, api, self.jobs, self.registry, self.documents
+        )
+        service = MonitorService(
+            self.config, api, self.state, router, sleep=lambda _value: None
+        )
+        return router, service
+
+    def _audit_rows(self) -> list[tuple[str, str]]:
+        rows = self.state.connection.execute(
+            "SELECT action, result FROM audit ORDER BY id"
+        ).fetchall()
+        return [(str(row["action"]), str(row["result"])) for row in rows]
+
+    def test_slow_handler_does_not_expire_other_callbacks_in_batch(self) -> None:
+        clock = VirtualClock()
+        api = ExpiringBatchApi(clock)
+        _router, service = self._components_with(api)
+        api.updates = [[callback_update(100, "jl:0"), callback_update(101, "h")]]
+        service.run(max_iterations=1)
+        self.assertEqual([item["id"] for item in api.answered], ["cb-100", "cb-101"])
+        self.assertEqual(len(api.edited), 2)
+        self.assertEqual(self.state.next_offset(), 102)
+        self.assertNotIn(("update_dead_letter", "error"), self._audit_rows())
+
+    def test_expired_callback_ack_still_runs_every_menu_action(self) -> None:
+        api = StaleAckApi()
+        _router, service = self._components_with(api)
+        for index, action in enumerate(["jl:0", "p", "d", "h"], start=200):
+            service.process_update(callback_update(index, action))
+        self.assertEqual(api.ack_attempts, [f"cb-{index}" for index in range(200, 204)])
+        self.assertEqual(len(api.edited), 4)
+        self.assertEqual(self.state.next_offset(), 204)
+        audits = self._audit_rows()
+        self.assertNotIn(("update_dead_letter", "error"), audits)
+        self.assertTrue(
+            any(action == "callback_ack" and result == "stale" for action, result in audits)
+        )
+
+    def test_duplicate_callback_update_runs_action_once(self) -> None:
+        api = StaleAckApi()
+        _router, service = self._components_with(api)
+        update = callback_update(300, "h")
+        service.process_update(update)
+        service.process_update(update)
+        self.assertEqual(len(api.edited), 1)
+        self.assertEqual(api.ack_attempts, ["cb-300"])
+        self.assertEqual(self.state.next_offset(), 301)
+        self.assertNotIn(("update_dead_letter", "error"), self._audit_rows())
+
+    def test_duplicate_after_restart_acknowledges_without_repeating_action(self) -> None:
+        first_api = FakeApi()
+        _first_router, first_service = self._components_with(first_api)
+        update = callback_update(400, "h")
+        first_service.process_update(update)
+        self.assertEqual(len(first_api.edited), 1)
+
+        restarted_api = StaleAckApi()
+        _restarted_router, restarted_service = self._components_with(restarted_api)
+        restarted_service.process_update(update)
+        self.assertEqual(restarted_api.ack_attempts, ["cb-400"])
+        self.assertEqual(restarted_api.edited, [])
+        self.assertEqual(self.state.next_offset(), 401)
+        self.assertNotIn(("update_dead_letter", "error"), self._audit_rows())
 
     def test_stop_flag_stops_between_iterations(self) -> None:
         self.api.updates = [[message_update(30, "/start")]]

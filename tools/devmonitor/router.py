@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from . import auth, menus, render
-from .api import TelegramApi, TelegramFatalError, TelegramRequestError
+from .api import (
+    TelegramApi,
+    TelegramFatalError,
+    TelegramRequestError,
+    TelegramStaleCallback,
+)
 from .config import MonitorConfig
 from .documents import DocumentError, DocumentLibrary
 from .jobs import JobError, JobFacade, validate_job_id
@@ -35,6 +40,41 @@ class Router:
         self.jobs = jobs
         self.registry = registry
         self.documents = documents
+        self._acked_callbacks: set[str] = set()
+
+    # ---- callback acknowledgements -----------------------------------------------
+    def acknowledge_updates(self, updates: list[dict]) -> None:
+        """Acknowledge every authorized callback in a polling batch immediately.
+
+        Telegram callback query IDs expire. Processing updates strictly in order
+        means a slow handler for the first click can delay the acknowledgement of
+        later clicks in the same batch until they are no longer valid. Acknowledging
+        the whole batch before any read-only action runs avoids that head-of-line
+        blocking while keeping the actual action handling sequential.
+        """
+
+        self._acked_callbacks = set()
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            kind, event = auth.extract_event(update)
+            if kind != "callback_query" or event is None:
+                continue
+            decision = auth.authorize(update, self.config)
+            if decision.allowed:
+                self._acknowledge(event, decision)
+
+    def acknowledge_update(self, update: dict) -> None:
+        """Acknowledge one callback update without dispatching its action."""
+
+        if not isinstance(update, dict):
+            return
+        kind, event = auth.extract_event(update)
+        if kind != "callback_query" or event is None:
+            return
+        decision = auth.authorize(update, self.config)
+        if decision.allowed:
+            self._acknowledge(event, decision)
 
     # ---- public entry point ------------------------------------------------------
     def handle(self, update: dict) -> None:
@@ -49,7 +89,7 @@ class Router:
         ):
             self._audit(decision, "rate_limited", "refused")
             if kind == "callback_query":
-                self._answer(event, "Rate limit exceeded; try again shortly.")
+                self._answer(event, "Rate limit exceeded; try again shortly.", decision)
             else:
                 self._send(decision.chat_id or 0, "Rate limit exceeded; try again shortly.")
             return
@@ -64,7 +104,7 @@ class Router:
         self._audit(decision, "denied", decision.reason)
         if kind == "callback_query" and event is not None:
             try:
-                self._answer(event, "Access denied.")
+                self._answer(event, "Access denied.", decision)
             except Exception:  # noqa: BLE001 - denial must not break the loop
                 return
             return
@@ -133,7 +173,9 @@ class Router:
     def _handle_callback(self, callback: dict, decision: auth.AuthDecision) -> None:
         callback_id = str(callback.get("id") or "")
         if callback_id:
-            self._answer(callback, None)
+            # Best-effort and already pre-acknowledged in the polling batch. A
+            # stale or rejected acknowledgement must not abort the read-only action.
+            self._answer(callback, None, decision)
         data = callback.get("data")
         if not isinstance(data, str) or not data:
             self._audit(decision, "callback", "ignored", "missing data")
@@ -582,10 +624,38 @@ class Router:
                 chat_id, part, markup if index == len(parts) - 1 else None
             )
 
-    def _answer(self, callback: dict, text: str | None) -> None:
+    def _acknowledge(self, callback: dict, decision: auth.AuthDecision) -> bool:
+        return self._answer(callback, None, decision)
+
+    def _answer(
+        self,
+        callback: dict,
+        text: str | None,
+        decision: auth.AuthDecision | None = None,
+    ) -> bool:
         callback_id = callback.get("id")
-        if isinstance(callback_id, str) and callback_id:
+        if not isinstance(callback_id, str) or not callback_id:
+            return False
+        if callback_id in self._acked_callbacks:
+            return True
+        try:
             self.api.answer_callback_query(callback_id, self._safe(text) if text else None)
+        except TelegramRequestError as exc:
+            # An acknowledgement is a UI convenience. Expired/already-used query
+            # IDs and other request rejections must not dead-letter the update or
+            # prevent its read-only action from running.
+            self._remember_ack(callback_id)
+            if decision is not None:
+                result = "stale" if isinstance(exc, TelegramStaleCallback) else "error"
+                self._audit(decision, "callback_ack", result, str(exc))
+            return False
+        self._remember_ack(callback_id)
+        return True
+
+    def _remember_ack(self, callback_id: str) -> None:
+        self._acked_callbacks.add(callback_id)
+        if len(self._acked_callbacks) > 1024:
+            self._acked_callbacks = {callback_id}
 
     def _audit(
         self,

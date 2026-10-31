@@ -170,6 +170,20 @@ def send_message(
     return False, _redact(f"telegram HTTP {status}: {body}", settings.bot_token)
 
 
+def _format_seconds(value: object) -> str:
+    try:
+        total = max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "-"
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
 def build_message(job: dict, state: str | None = None) -> str:
     final_state = state or str(job.get("state", "UNKNOWN"))
     label = {
@@ -190,8 +204,19 @@ def build_message(job: dict, state: str | None = None) -> str:
         lines.append(f"started: {job['started_at']}")
     if job.get("ended_at"):
         lines.append(f"ended: {job['ended_at']}")
+    attempts = job.get("attempts")
+    last_attempt = attempts[-1] if isinstance(attempts, list) and attempts else None
+    attempt_number = (
+        last_attempt.get("number") if isinstance(last_attempt, dict) else None
+    )
+    attempt_duration = job.get("attempt_duration_seconds")
+    if attempt_duration is None and isinstance(last_attempt, dict):
+        attempt_duration = last_attempt.get("duration_seconds")
     if job.get("duration_seconds") is not None:
-        lines.append(f"duration: {int(job['duration_seconds'])}s")
+        lines.append(f"duration (total): {_format_seconds(job['duration_seconds'])}")
+    if attempt_duration is not None:
+        label = f"attempt #{attempt_number}" if attempt_number else "attempt"
+        lines.append(f"duration ({label}): {_format_seconds(attempt_duration)}")
     issues = job.get("detected_issues") or []
     if issues:
         lines.append(f"issues: {len(issues)}")

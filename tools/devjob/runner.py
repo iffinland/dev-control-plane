@@ -37,6 +37,7 @@ from .store import (  # noqa: E402
     job_dir,
     job_lock,
     load_job,
+    parse_timestamp,
     pid_alive,
     read_json,
     save_job,
@@ -56,6 +57,10 @@ DEFAULT_ACCEPTANCE_TIMEOUT = 1800
 WORKER_LOG = "worker.log"
 RUN_LOG = "run.log"
 REPORT = "report.md"
+COMPLETION = "completion.json"
+DEFAULT_SESSION_POLL_SECONDS = 5.0
+DEFAULT_SESSION_IDLE_SECONDS = 20.0
+DEFAULT_SESSION_CONFIRM_SECONDS = 5.0
 
 
 class JobError(RuntimeError):
@@ -64,6 +69,27 @@ class JobError(RuntimeError):
 
 def utc_now_dt() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _elapsed_seconds(start: str | None, end: str | None = None) -> int | None:
+    started = parse_timestamp(start)
+    if started is None:
+        return None
+    finished = parse_timestamp(end) if end else utc_now_dt()
+    if finished is None:
+        finished = utc_now_dt()
+    return max(0, int((finished - started).total_seconds()))
 
 
 def parse_duration(value: str | int | None, default: int = opencode_guard.MAX_TIMEOUT_SECONDS) -> int:
@@ -225,8 +251,20 @@ def _guard_command(
         str(job_dir(job["id"]) / RUN_LOG),
         "--pid-file",
         str(job_dir(job["id"]) / "child.pid.json"),
-        "--",
+        "--completion-file",
+        str(job_dir(job["id"]) / COMPLETION),
+        "--session-title",
+        f"{job['title']} [job {job['id']}]",
+        "--session-poll-seconds",
+        f"{_env_float('DEV_SESSION_POLL_SECONDS', DEFAULT_SESSION_POLL_SECONDS, 0.0, 300.0):g}",
+        "--session-idle-seconds",
+        f"{_env_float('DEV_SESSION_IDLE_SECONDS', DEFAULT_SESSION_IDLE_SECONDS, 0.0, 3600.0):g}",
+        "--session-confirm-seconds",
+        f"{_env_float('DEV_SESSION_CONFIRM_SECONDS', DEFAULT_SESSION_CONFIRM_SECONDS, 0.0, 300.0):g}",
     ]
+    if job.get("session_id") and not job.get("force_new_session"):
+        base.extend(["--session-id", str(job["session_id"])])
+    base.append("--")
     title = f"{job['title']} [job {job['id']}]"
     opencode = [
         "opencode",
@@ -303,12 +341,15 @@ def _new_job(
         "ended_at": None,
         "updated_at": now,
         "duration_seconds": None,
+        "attempt_duration_seconds": None,
+        "total_attempt_seconds": None,
         "timeout_seconds": timeout_seconds,
         "worker_pid": None,
         "guard_pid": None,
         "child_pid": None,
         "child_pgid": None,
         "exit_code": None,
+        "completion": None,
         "session_id": None,
         "is_resume": False,
         "force_new_session": False,
@@ -513,7 +554,7 @@ def _read_child_pid(job: dict) -> dict | None:
     return payload
 
 
-def _attempt_summary(job: dict, attempt: dict) -> None:
+def _append_attempt(job: dict, attempt: dict) -> None:
     attempts = job.setdefault("attempts", [])
     attempts.append(attempt)
     job["attempts"] = attempts[-50:]
@@ -539,12 +580,20 @@ def _finish(
     if session_id:
         job["session_id"] = session_id
     job["ended_at"] = utc_now()
-    started = job.get("started_at")
-    try:
-        started_dt = datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        job["duration_seconds"] = int((utc_now_dt() - started_dt).total_seconds())
-    except (TypeError, ValueError):
-        job["duration_seconds"] = None
+    job["duration_seconds"] = _elapsed_seconds(job.get("started_at"), job["ended_at"])
+    attempts = job.get("attempts") or []
+    attempt_total = 0
+    for attempt in attempts:
+        duration = attempt.get("duration_seconds")
+        if duration is None and attempt.get("started_at"):
+            duration = _elapsed_seconds(attempt.get("started_at"), attempt.get("ended_at"))
+            attempt["duration_seconds"] = duration
+        if isinstance(duration, int):
+            attempt_total += duration
+    job["total_attempt_seconds"] = attempt_total if attempts else None
+    job["attempt_duration_seconds"] = (
+        attempts[-1].get("duration_seconds") if attempts else None
+    )
     job["is_resume"] = False
     job["resume_prompt"] = None
     job["force_new_session"] = False
@@ -585,16 +634,26 @@ def run_worker(job_id: str) -> int:
             job["blocker"] = None
             job["detected_issues"] = []
             job["exit_code"] = None
+            job["completion"] = None
             attempt_number = len(job.get("attempts") or []) + 1
             attempt = {
                 "number": attempt_number,
                 "started_at": now,
                 "ended_at": None,
+                "duration_seconds": None,
                 "timeout_seconds": job.get("timeout_seconds"),
                 "session_id": job.get("session_id"),
                 "is_resume": bool(job.get("is_resume")),
                 "worker_pid": os.getpid(),
+                "completion": None,
             }
+            # Persist the attempt at start so `dev status` can report the
+            # current attempt separately from total job elapsed time.
+            _append_attempt(job, attempt)
+            try:
+                (directory / COMPLETION).unlink()
+            except FileNotFoundError:
+                pass
             append_event(
                 job,
                 "attempt_started",
@@ -655,6 +714,20 @@ def run_worker(job_id: str) -> int:
             child = _read_child_pid(job)
             job["child_pid"] = (child or {}).get("pid") or job.get("child_pid")
             job["child_pgid"] = (child or {}).get("pgid") or job.get("child_pgid")
+            completion = read_json(directory / COMPLETION)
+            if completion:
+                job["completion"] = completion
+                attempt["completion"] = completion
+                completion_session = completion.get("session_id")
+                if completion_session:
+                    # The guard's structured evidence identifies the session that
+                    # actually completed this attempt.
+                    job["session_id"] = str(completion_session)
+                append_event(
+                    job,
+                    "session_completion",
+                    f"message={completion.get('message_id')} action={completion.get('action')}",
+                )
             save_job(job)
 
             session_id = job.get("session_id") or _discover_session(job)
@@ -692,10 +765,12 @@ def run_worker(job_id: str) -> int:
                     ).asdict()
                 )
             attempt["ended_at"] = utc_now()
+            attempt["duration_seconds"] = _elapsed_seconds(
+                attempt.get("started_at"), attempt.get("ended_at")
+            )
             attempt["guard_exit_code"] = guard_exit_code
             attempt["detected_issues"] = len(issues)
             attempt["session_id"] = session_id
-            _attempt_summary(job, attempt)
             state = _finish(
                 job,
                 guard_exit_code=guard_exit_code,
@@ -852,6 +927,9 @@ def resume_job(
     )
     job["is_resume"] = True
     job["force_new_session"] = bool(new_session)
+    if new_session:
+        # Do not carry an old session id into detection when starting fresh.
+        job["session_id"] = None
     job["resume_prompt"] = (
         prompt
         or "Continue the existing authorized task. Preserve the working tree and "
@@ -935,16 +1013,60 @@ def accept_job(
     return job
 
 
+def _attempt_info(job: dict) -> dict:
+    attempts = job.get("attempts") or []
+    current = attempts[-1] if attempts else None
+    if not current:
+        return {
+            "attempt_number": 0,
+            "attempt_started_at": None,
+            "attempt_ended_at": None,
+            "attempt_elapsed_seconds": None,
+            "total_attempt_seconds": None,
+        }
+    started = current.get("started_at")
+    ended = current.get("ended_at")
+    attempt_elapsed = current.get("duration_seconds")
+    running = job.get("state") == "RUNNING" and ended is None
+    if attempt_elapsed is None:
+        if ended:
+            attempt_elapsed = _elapsed_seconds(started, ended)
+        elif running:
+            attempt_elapsed = _elapsed_seconds(started)
+    total = 0
+    for attempt in attempts:
+        duration = attempt.get("duration_seconds")
+        if duration is None:
+            if attempt is current and running:
+                duration = attempt_elapsed
+            elif attempt.get("ended_at"):
+                duration = _elapsed_seconds(attempt.get("started_at"), attempt.get("ended_at"))
+        if isinstance(duration, int):
+            total += duration
+    return {
+        "attempt_number": int(current.get("number") or len(attempts)),
+        "attempt_started_at": started,
+        "attempt_ended_at": ended,
+        "attempt_elapsed_seconds": attempt_elapsed,
+        "total_attempt_seconds": total,
+    }
+
+
 def status_payload(job: dict) -> dict:
     alive = worker_is_alive(job)
     started = job.get("started_at")
-    elapsed = None
+    ended = job.get("ended_at")
     if started:
-        try:
-            started_dt = datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            elapsed = int((utc_now_dt() - started_dt).total_seconds())
-        except ValueError:
-            pass
+        if job.get("state") == "RUNNING" or not ended:
+            elapsed = _elapsed_seconds(started)
+        else:
+            elapsed = _elapsed_seconds(started, ended)
+    else:
+        elapsed = None
+    attempt_info = _attempt_info(job)
+    attempt_duration = job.get("attempt_duration_seconds")
+    if attempt_duration is None:
+        attempt_duration = attempt_info["attempt_elapsed_seconds"]
     criteria = job.get("acceptance_criteria") or []
     verification = job.get("verification") or {}
     pending = [
@@ -962,6 +1084,13 @@ def status_payload(job: dict) -> dict:
         "ended_at": job.get("ended_at"),
         "duration_seconds": job.get("duration_seconds"),
         "elapsed_seconds": elapsed,
+        "attempt_duration_seconds": attempt_duration,
+        "total_attempt_seconds": attempt_info["total_attempt_seconds"],
+        "attempt_number": attempt_info["attempt_number"],
+        "attempt_started_at": attempt_info["attempt_started_at"],
+        "attempt_ended_at": attempt_info["attempt_ended_at"],
+        "attempt_elapsed_seconds": attempt_info["attempt_elapsed_seconds"],
+        "completion": job.get("completion"),
         "timeout_seconds": job.get("timeout_seconds"),
         "worker_pid": job.get("worker_pid"),
         "guard_pid": job.get("guard_pid"),
@@ -993,6 +1122,17 @@ def _format_seconds(value: int | None) -> str:
     return f"{seconds}s"
 
 
+def _format_ms(value: object) -> str:
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "-"
+    try:
+        return datetime.fromtimestamp(number / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return "-"
+
+
 def render_status(job: dict) -> str:
     payload = status_payload(job)
     lines = [
@@ -1002,7 +1142,11 @@ def render_status(job: dict) -> str:
         f"Repo:     {payload['repo']} ({payload['branch'] or 'detached'})",
         f"Started:  {payload['started_at'] or '-'}",
         f"Ended:    {payload['ended_at'] or '-'}",
-        f"Elapsed:  {_format_seconds(payload['elapsed_seconds'])} / timeout {_format_seconds(payload['timeout_seconds'])}",
+        f"Elapsed:  total {_format_seconds(payload['elapsed_seconds'])} / "
+        f"attempt {_format_seconds(payload['attempt_elapsed_seconds'])} / "
+        f"timeout {_format_seconds(payload['timeout_seconds'])}",
+        f"Attempt:  #{payload['attempt_number']} {payload['attempt_started_at'] or '-'} -> "
+        f"{payload['attempt_ended_at'] or '-'}",
         f"PIDs:     worker={payload['worker_pid'] or '-'} guard={payload['guard_pid'] or '-'} child={payload['child_pid'] or '-'} alive={payload['worker_alive']}",
         f"Exit:     {payload['exit_code'] if payload['exit_code'] is not None else '-'}",
         f"Session:  {payload['session_id'] or '-'}",
@@ -1035,8 +1179,11 @@ def render_report(job: dict) -> str:
         f"- Model: `{job.get('model')}`",
         f"- Started: {job.get('started_at') or '-'}",
         f"- Ended: {job.get('ended_at') or '-'}",
-        f"- Duration: {_format_seconds(payload['duration_seconds'])}",
-        f"- Timeout: {_format_seconds(job.get('timeout_seconds'))}",
+        f"- Duration (total job): {_format_seconds(payload['duration_seconds'])}",
+        f"- Attempt: #{payload['attempt_number']} "
+        f"{payload['attempt_started_at'] or '-'} -> {payload['attempt_ended_at'] or '-'}",
+        f"- Duration (current/last attempt): {_format_seconds(payload['attempt_duration_seconds'])}",
+        f"- Timeout per attempt: {_format_seconds(job.get('timeout_seconds'))}",
         f"- Guard exit code: {job.get('exit_code') if job.get('exit_code') is not None else '-'}",
         f"- Worker PID: {job.get('worker_pid') or '-'}",
         f"- Guard PID: {job.get('guard_pid') or '-'}",
@@ -1049,6 +1196,25 @@ def render_report(job: dict) -> str:
     ]
     if job.get("blocker"):
         lines.extend([f"**Blocker:** {job['blocker']}", ""])
+    completion = job.get("completion")
+    if isinstance(completion, dict) and completion:
+        lines.extend(
+            [
+                "## Session completion evidence",
+                "",
+                f"- Session: `{completion.get('session_id') or job.get('session_id') or 'unknown'}`",
+                f"- Final assistant message: `{completion.get('message_id') or '-'}` "
+                f"(finish={completion.get('finish') or '-'})",
+                f"- Finished at: {_format_ms(completion.get('finished_at_ms'))}",
+                f"- Active tool calls at confirmation: {completion.get('active_tool_calls', 0)}",
+                f"- Guard action: {completion.get('action') or '-'}",
+                f"- Idle before stop: {completion.get('idle_seconds', '-')}s",
+                "",
+                "Session completion only means the agent turn ended without active tool calls.",
+                "It is not acceptance; the criteria below are authoritative.",
+                "",
+            ]
+        )
     lines.extend(["## Acceptance criteria", ""])
     if not criteria:
         lines.append("No acceptance criteria were recorded. This job cannot succeed.")

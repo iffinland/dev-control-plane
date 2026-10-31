@@ -40,6 +40,17 @@ def write_process(proc_root: Path, pid: int, argv: list[str], rss_kib: int) -> N
     )
 
 
+def wait_until_gone(pid: int, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def make_empty_proc(root: Path) -> Path:
     proc = root / "proc"
     proc.mkdir(parents=True, exist_ok=True)
@@ -123,6 +134,33 @@ if mode == "noise":
     print('+        self.assertNotIn(\'"ssh *": deny\', text)')
     print("fake opencode run completed")
     sys.exit(0)
+if mode == "hang":
+    now = int(time.time() * 1000)
+    payload = {
+        "info": {"id": "ses_fake123", "title": title or "fake", "time": {"updated": now}},
+        "messages": [
+            {
+                "info": {
+                    "id": "msg_final",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": {"created": now, "completed": now},
+                },
+                "parts": [],
+            }
+        ],
+    }
+    export_file = os.environ.get("FAKE_OPENCODE_EXPORT", "")
+    if export_file:
+        with open(export_file, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+    pid_file = os.environ.get("FAKE_OPENCODE_PIDFILE", "")
+    if pid_file:
+        with open(pid_file, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    print("fake run produced a final assistant message and will hang", flush=True)
+    time.sleep(300)
+    sys.exit(0)
 if mode == "resume":
     print("continuing the existing session")
     if session:
@@ -164,6 +202,11 @@ class CliTestCase(unittest.TestCase):
         self.env["FAKE_OPENCODE_REPO"] = str(self.repo)
         self.env["FAKE_OPENCODE_MODE"] = "success"
         self.env["FAKE_OPENCODE_EXPORT"] = ""
+        self.env["FAKE_OPENCODE_PIDFILE"] = ""
+        # Keep the guard's completion watchdog fast and deterministic in tests.
+        self.env["DEV_SESSION_POLL_SECONDS"] = "0.1"
+        self.env["DEV_SESSION_IDLE_SECONDS"] = "0.2"
+        self.env["DEV_SESSION_CONFIRM_SECONDS"] = "0.2"
 
     def set_export(self, messages: list[dict]) -> None:
         path = self.root / "opencode-export.json"
@@ -438,6 +481,46 @@ class CliTestCase(unittest.TestCase):
         payload = self.wait_for_state(job["id"], timeout=25)
         self.assertEqual(payload["state"], "TIMEOUT", payload)
         self.assertEqual(payload["exit_code"], 124)
+
+    def test_hung_cli_after_structured_completion_is_success(self) -> None:
+        export_path = self.root / "completion-export.json"
+        pid_path = self.root / "hang.pid"
+        self.env["FAKE_OPENCODE_EXPORT"] = str(export_path)
+        self.env["FAKE_OPENCODE_PIDFILE"] = str(pid_path)
+        job = self.start(mode="hang", timeout="20s")
+        payload = self.wait_for_state(job["id"], timeout=35)
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertIsNotNone(payload["completion"], payload)
+        self.assertEqual(payload["completion"]["finish"], "stop")
+        self.assertEqual(payload["completion"]["active_tool_calls"], 0)
+        stored = load_job(job["id"], self.state)
+        self.assertEqual(
+            stored["attempts"][-1]["completion"]["action"],
+            "session_completed_cli_stopped",
+        )
+        self.assertTrue(pid_path.exists(), "fake run did not record its pid")
+        self.assertTrue(
+            wait_until_gone(int(pid_path.read_text(encoding="utf-8"))),
+            "the hung fake OpenCode process was not stopped",
+        )
+
+    def test_hung_cli_completion_still_requires_acceptance(self) -> None:
+        export_path = self.root / "completion-export-fail.json"
+        self.env["FAKE_OPENCODE_EXPORT"] = str(export_path)
+        self.env["FAKE_OPENCODE_PIDFILE"] = str(self.root / "hang-fail.pid")
+        job = self.start(
+            mode="hang",
+            criterion="python3 -c \"raise SystemExit(1)\"",
+            timeout="20s",
+        )
+        payload = self.wait_for_state(job["id"], timeout=35)
+        self.assertEqual(payload["state"], "FAILED", payload)
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertIn(
+            "incomplete_implementation",
+            {issue["kind"] for issue in payload["issues"]},
+        )
 
     def test_logs_and_report_are_persistent(self) -> None:
         job = self.start(mode="success")

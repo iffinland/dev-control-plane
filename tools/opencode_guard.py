@@ -35,10 +35,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import session_state
+
 
 DEFAULT_WORKSPACE = Path("/home/iffi/dev-workspace")
 DEFAULT_PROC = Path("/proc")
 MAX_TIMEOUT_SECONDS = 8 * 60 * 60
+SESSION_POLL_SECONDS = 5.0
+SESSION_IDLE_SECONDS = 20.0
+SESSION_CONFIRM_SECONDS = 5.0
 HEAVY_SUBCOMMANDS = {"run", "serve", "web", "attach", "acp"}
 HELPER_SUBCOMMANDS = {
     "stats",
@@ -405,6 +410,206 @@ class GuardLock:
                 self.handle = None
 
 
+class SessionCompletionWatcher(threading.Thread):
+    """Observe structured session state for a definite end of the agent turn.
+
+    OpenCode can keep the ``run`` process alive after it has already emitted the
+    final assistant message. This watcher never signals a process. It only
+    produces evidence that the current attempt's turn is finished:
+
+    - the newest message created during this attempt is assistant ``finish=stop``;
+    - it has no error;
+    - no tool call created during this attempt is pending or running;
+    - the session has been quiescent for an idle window; and
+    - two consecutive observations agree.
+
+    The guard's main loop decides whether to stop the process group it created.
+    Acceptance criteria are still verified separately; completion is not success.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str | None,
+        session_title: str | None,
+        cwd: str | Path | None,
+        since_ms: int,
+        poll_seconds: float,
+        idle_seconds: float,
+        confirm_seconds: float,
+        export_timeout: int,
+        log,
+    ) -> None:
+        super().__init__(name="session-completion", daemon=True)
+        self.session_id = session_id
+        self.session_title = session_title
+        self.cwd = cwd
+        self.since_ms = since_ms
+        self.poll_seconds = max(0.05, poll_seconds)
+        self.idle_seconds = max(0.0, idle_seconds)
+        self.confirm_seconds = max(0.0, confirm_seconds)
+        self.export_timeout = max(1, export_timeout)
+        self.log = log
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._evidence: dict | None = None
+        self._pending: dict | None = None
+        self._pending_since: float | None = None
+        self._last_updated: int | None = None
+        self._last_exported_updated: int | None = None
+        self._stable_since: float | None = None
+        self._last_error: str | None = None
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def current_evidence(self) -> dict | None:
+        with self._lock:
+            return dict(self._evidence) if self._evidence else None
+
+    def clear_evidence(self) -> None:
+        with self._lock:
+            self._evidence = None
+            self._pending = None
+            self._pending_since = None
+            # Force the next tick to re-read the session instead of skipping it
+            # as already inspected.
+            self._last_exported_updated = None
+
+    def _log(self, message: str) -> None:
+        try:
+            self.log.write(f"guard: {message}\n")
+            self.log.flush()
+        except (OSError, ValueError):
+            pass
+
+    def _resolve_session(self) -> bool:
+        if self.session_id:
+            return True
+        if not self.session_title:
+            return False
+        sessions = session_state.list_sessions(
+            cwd=self.cwd,
+            timeout=min(self.export_timeout, session_state.SESSION_LIST_TIMEOUT),
+        )
+        session_id = session_state.discover_session_id(sessions, title=self.session_title)
+        if not session_id:
+            return False
+        self.session_id = session_id
+        self._log(f"session completion watcher attached to {session_id}")
+        return True
+
+    def _list_updated(self) -> int | None:
+        sessions = session_state.list_sessions(
+            cwd=self.cwd,
+            timeout=min(self.export_timeout, session_state.SESSION_LIST_TIMEOUT),
+        )
+        if sessions is None or not self.session_id:
+            return None
+        return session_state.session_updated_from_list(sessions, self.session_id)
+
+    def _tick(self) -> None:
+        if not self._resolve_session():
+            return
+        now = time.monotonic()
+        updated = self._list_updated()
+        if updated is not None:
+            if self._last_updated != updated:
+                self._last_updated = updated
+                self._stable_since = now
+                self._pending = None
+                self._pending_since = None
+                self.clear_evidence()
+            elif self._stable_since is None:
+                self._stable_since = now
+            if now - (self._stable_since or now) < self.idle_seconds:
+                return
+            if self._pending is None and self._last_exported_updated == updated:
+                return
+
+        payload = session_state.load_export(
+            self.session_id,
+            cwd=self.cwd,
+            timeout=self.export_timeout,
+        )
+        if payload is None:
+            self._pending = None
+            self._pending_since = None
+            return
+        if updated is not None:
+            self._last_exported_updated = updated
+        else:
+            exported_updated = session_state.session_updated_ms(payload)
+            if exported_updated is not None:
+                self._last_exported_updated = exported_updated
+        evidence = session_state.completion_evidence(payload, since_ms=self.since_ms)
+        if not evidence:
+            self._pending = None
+            self._pending_since = None
+            return
+        if self._pending is None or evidence.get("message_id") != self._pending.get("message_id"):
+            self._pending = evidence
+            self._pending_since = now
+            self._log(
+                "session completion candidate "
+                f"message={evidence.get('message_id')} finish=stop; awaiting confirmation"
+            )
+            return
+        if now - (self._pending_since or now) < self.confirm_seconds:
+            return
+        evidence = dict(evidence)
+        evidence["idle_seconds"] = round(now - (self._stable_since or now), 1)
+        evidence["confirmed_seconds"] = round(now - (self._pending_since or now), 1)
+        with self._lock:
+            self._evidence = evidence
+        self._pending = None
+        self._pending_since = None
+        self._log(
+            "session completion confirmed "
+            f"message={evidence.get('message_id')} idle={evidence['idle_seconds']}s"
+        )
+
+    def confirm_now(self) -> dict | None:
+        """Re-read the session immediately before the main loop stops the child."""
+        if not self.session_id:
+            return None
+        payload = session_state.load_export(
+            self.session_id,
+            cwd=self.cwd,
+            timeout=self.export_timeout,
+        )
+        evidence = session_state.completion_evidence(payload, since_ms=self.since_ms)
+        if not evidence:
+            return None
+        with self._lock:
+            self._evidence = dict(evidence)
+        return dict(evidence)
+
+    def run(self) -> None:
+        while not self._stop.wait(self.poll_seconds):
+            try:
+                self._tick()
+            except Exception as exc:  # noqa: BLE001 - watcher must not kill the run
+                message = f"{exc.__class__.__name__}: {exc}"
+                if message != self._last_error:
+                    self._last_error = message
+                    self._log(f"session completion watcher error: {message}")
+
+
+def write_completion_file(path: Path, evidence: dict, action: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(evidence)
+        payload["action"] = action
+        payload["written_utc"] = utc_now()
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
 def group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)
@@ -595,6 +800,7 @@ def run_command(args: argparse.Namespace, command: list[str]) -> int:
                 log.write(f"snapshot_before={json.dumps(summarize(snapshot, decision), sort_keys=True)}\n")
                 log.flush()
 
+                completion_since_ms = int(time.time() * 1000)
                 try:
                     process = subprocess.Popen(
                         command,
@@ -619,15 +825,45 @@ def run_command(args: argparse.Namespace, command: list[str]) -> int:
                 )
                 pump.start()
 
+                watcher: SessionCompletionWatcher | None = None
+                if (args.session_id or args.session_title) and args.session_poll_seconds > 0:
+                    watcher = SessionCompletionWatcher(
+                        session_id=args.session_id,
+                        session_title=args.session_title,
+                        cwd=Path.cwd(),
+                        since_ms=completion_since_ms,
+                        poll_seconds=args.session_poll_seconds,
+                        idle_seconds=args.session_idle_seconds,
+                        confirm_seconds=args.session_confirm_seconds,
+                        export_timeout=args.session_export_timeout,
+                        log=log,
+                    )
+                    watcher.start()
+
                 started = time.monotonic()
                 deadline = started + args.timeout
                 reason = "exit"
                 exit_code = 0
+                completion: dict | None = None
                 try:
                     while True:
+                        polled = process.poll()
+                        if polled is not None:
+                            exit_code = polled
+                            reason = "exit"
+                            break
                         if stop_signal["value"] is not None:
                             reason = "signal"
                             break
+                        if watcher is not None and watcher.current_evidence():
+                            evidence = watcher.confirm_now()
+                            if evidence:
+                                completion = evidence
+                                reason = "complete"
+                                break
+                            # The session changed between observations. Keep
+                            # waiting instead of stopping potentially active work.
+                            watcher.clear_evidence()
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             reason = "timeout"
@@ -639,6 +875,9 @@ def run_command(args: argparse.Namespace, command: list[str]) -> int:
                         except subprocess.TimeoutExpired:
                             continue
                 finally:
+                    if watcher is not None:
+                        watcher.stop()
+                        watcher.join(timeout=2)
                     if reason != "exit":
                         log.write(f"guard: {reason} after {time.monotonic() - started:.1f}s\n")
                         log.flush()
@@ -648,7 +887,28 @@ def run_command(args: argparse.Namespace, command: list[str]) -> int:
 
                 pump.join(timeout=3)
                 duration = time.monotonic() - started
-                if reason == "timeout":
+                if reason == "complete":
+                    exit_code = 0
+                    evidence = completion or {}
+                    log.write(
+                        "guard: SESSION_COMPLETE exit=0 "
+                        f"message={evidence.get('message_id')} "
+                        f"finish={evidence.get('finish')} active_tools=0 duration={duration:.1f}s\n"
+                    )
+                    log.write(
+                        "guard: session completion is not acceptance; "
+                        "acceptance criteria and failure detectors still decide the job state\n"
+                    )
+                    log.flush()
+                    if args.completion_file is not None:
+                        write_completion_file(
+                            args.completion_file,
+                            evidence,
+                            "session_completed_cli_stopped",
+                        )
+                        log.write(f"guard: wrote completion evidence {args.completion_file}\n")
+                        log.flush()
+                elif reason == "timeout":
                     exit_code = EXIT_TIMEOUT
                     log.write(f"guard: TIMEOUT exit={exit_code} duration={duration:.1f}s\n")
                     log.write("guard: no graceful checkpoint is guaranteed; session history is preserved\n")
@@ -764,6 +1024,42 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--log", type=Path, default=None, help="log path (default: workspace/logs/...)")
     run.add_argument("--lock-file", type=Path, default=None)
     run.add_argument("--pid-file", type=Path, default=None, help="write the child PID/PGID as JSON")
+    run.add_argument(
+        "--completion-file",
+        type=Path,
+        default=None,
+        help="write structured session-completion evidence as JSON",
+    )
+    run.add_argument("--session-id", default=None, help="OpenCode session id to watch for completion")
+    run.add_argument(
+        "--session-title",
+        default=None,
+        help="OpenCode session title used to discover the session id for a new run",
+    )
+    run.add_argument(
+        "--session-poll-seconds",
+        type=float,
+        default=SESSION_POLL_SECONDS,
+        help="poll interval for the completion watcher (0 disables it)",
+    )
+    run.add_argument(
+        "--session-idle-seconds",
+        type=float,
+        default=SESSION_IDLE_SECONDS,
+        help="required session quiescence before checking structured completion",
+    )
+    run.add_argument(
+        "--session-confirm-seconds",
+        type=float,
+        default=SESSION_CONFIRM_SECONDS,
+        help="delay between the two agreeing completion observations",
+    )
+    run.add_argument(
+        "--session-export-timeout",
+        type=int,
+        default=session_state.SESSION_EXPORT_TIMEOUT,
+        help="timeout for opencode export during completion checks",
+    )
     run.add_argument("--term-grace", type=float, default=10.0, help="seconds before SIGKILL")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=run_command)

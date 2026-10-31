@@ -21,6 +21,8 @@ OpenCode:
   acceptance;
 - detection of permission rejection, failed commands, missing dependencies,
   agent step exhaustion and incomplete implementation;
+- a race-safe session-completion watchdog for runs where the OpenCode CLI stays
+  alive after the final assistant message;
 - detached background execution that survives SSH disconnect without tmux;
 - safe resume of the same OpenCode session and working tree;
 - optional Telegram notifications for completed, failed, blocked and timed-out
@@ -36,7 +38,7 @@ execution at a time.
 | --- | --- | --- |
 | CLI | `tools/dev.py` | `dev start/status/report/logs/resume` (plus `accept`) |
 | Job engine | `tools/devjob/` | Durable store, detection, notifications, worker |
-| Execution guard | `tools/opencode_guard.py` | Preflight, one-execution lock, 8-hour maximum, safe cancellation |
+| Execution guard | `tools/opencode_guard.py` | Preflight, one-execution lock, 8-hour maximum, session-completion watchdog, safe cancellation |
 | Development profile | `adapters/opencode/agents/opencode-development.md` | Unattended development permissions and hard boundaries |
 | Restricted profile | `adapters/opencode/agents/opencode-unattended.md` | Existing restricted profile for non-development tasks |
 | Profile installer | `tools/install_opencode_profiles.sh` | Copies/symlinks profiles into `~/.config/opencode/agents/` |
@@ -63,6 +65,7 @@ events.jsonl         append-only lifecycle events
 run.log              guarded OpenCode output
 worker.log           worker/guard console output
 child.pid.json       child PID/PGID written by the guard
+completion.json      structured session-completion evidence, when detected
 acceptance-AC1.log   per-criterion command output
 report.md            rendered Markdown report
 .worker.lock         per-job worker lock
@@ -159,7 +162,7 @@ dev start \
 | State | Meaning |
 | --- | --- |
 | `RUNNING` | The detached worker is active, or state has not yet been reconciled. |
-| `SUCCESS` | The guarded process exited `0`, every required criterion verified, and no blocking/failure detector fired. |
+| `SUCCESS` | The guard completed the run (process exit `0`, or a confirmed session completion stopped a hung CLI), every required criterion verified, and no blocking/failure detector fired. |
 | `FAILED` | A failure detector fired, a required criterion failed, or the process exited non-zero. |
 | `BLOCKED` | The guard refused, a permission/dependency/marker blocked the run, or manual acceptance is pending. |
 | `TIMEOUT` | The guard reached the wall-clock limit (exit code `124`). |
@@ -191,6 +194,36 @@ failures merely because they contain phrases such as "permission denied" or
 "is not installed". The acceptance commands and the job report remain
 authoritative.
 
+## Session completion and hung CLI
+
+OpenCode 1.19.5 can leave `opencode run` alive after a resumed session has
+already produced its final assistant message. The guard therefore does not rely
+on process exit alone. It watches the same structured session state used by
+detection (`opencode export <session-id>`) and treats the agent turn as complete
+only when all of these hold:
+
+- the newest message created during the current attempt is an assistant message
+  with `finish=stop` and no error;
+- no tool part created during that attempt is `pending` or `running`;
+- the session has been quiescent for the idle window; and
+- two consecutive observations agree, with a fresh export immediately before the
+  process group is stopped.
+
+Only then does the guard stop the process group it created, and it records
+`completion.json`. The guard returns success for that attempt; the worker still
+runs every required acceptance criterion and failure detector. **`finish=stop`
+alone is never success**, and a stop message from an earlier attempt is ignored.
+
+If an active tool call or newer work appears between observations, the guard
+keeps waiting instead of terminating the process. A run that never produces a
+confirmed completion still ends as `TIMEOUT` at the wall-clock limit.
+
+The watcher poll/idle/confirmation windows default to 5/20/5 seconds. They can be
+overridden for controlled tests with `DEV_SESSION_POLL_SECONDS`,
+`DEV_SESSION_IDLE_SECONDS` and `DEV_SESSION_CONFIRM_SECONDS`. The session id is
+known for a resume; for a new job the guard discovers it by exact session title
+(the job title plus job id).
+
 ## Inspect, report and follow logs
 
 ```bash
@@ -204,6 +237,13 @@ dev logs <job-id> -n 200         # run.log
 dev logs -f <job-id>             # follow until interrupted
 dev logs <job-id> --worker       # worker/guard console log
 ```
+
+`dev status` reports both clocks explicitly: **total job elapsed** from the
+job's first start (fixed at `ended_at` once terminal) and **current/last attempt
+elapsed** from that attempt's own start. Resuming a job adds a new attempt, so the
+attempt duration is normally shorter than the total. `dev status --json` exposes
+`elapsed_seconds`, `duration_seconds`, `attempt_elapsed_seconds`,
+`attempt_duration_seconds`, `total_attempt_seconds` and `attempt_number`.
 
 If a `RUNNING` job's worker has disappeared, `dev status` reconciles it to
 `FAILED` with a `worker_lost` issue and records a notification. `dev resume`
@@ -267,8 +307,10 @@ DEV_TELEGRAM_CONFIG
 ```
 
 Credentials are never written to `job.json`, logs, reports or Git. Notification
-failures are recorded as sanitized reasons and never change the job result. Use
-`--no-notify` for a single job.
+failures are recorded as sanitized reasons and never change the job result. Final
+messages report `duration (total)` and `duration (attempt #N)` separately so a
+resumed job is not misread as one continuous attempt. Use `--no-notify` for a
+single job.
 
 ## Permissions and security
 
@@ -351,6 +393,7 @@ python3 tools/test_dev_cli.py
 python3 tools/test_agent_permissions.py
 python3 tools/test_install_profiles.py
 python3 tools/test_detect.py
+python3 tools/test_session_lifecycle.py
 python3 tools/validate_agent_permissions.py --check
 python3 tools/validate_control_plane.py
 python3 tools/validate_skills.py
@@ -358,8 +401,11 @@ python3 tools/validate_security.py .
 ```
 
 The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
-root. The detection tests include the actual documentation, source/diff and
-failed-tool log examples from the permissions job. The permission tests parse
+root, including a hung-CLI-after-`finish=stop` regression case. The detection
+tests include the actual documentation, source/diff and failed-tool log examples
+from the permissions job. `test_session_lifecycle.py` covers structured
+completion evidence, active-tool safety, attempt scoping and total-vs-attempt
+duration reporting. The permission tests parse
 the agent Markdown and exercise the last-match wildcard model; they also record
 the known wrapper/script limitations. They do not start a model session, contact
 Telegram or touch Qortium.
@@ -373,6 +419,9 @@ Telegram or touch Qortium.
 - permission patterns are not a sandbox;
 - structured detection depends on `opencode export` remaining available for the
   session; the context-aware log parser is the fallback;
+- session completion also depends on `opencode export`; if export is unavailable
+  the guard falls back to the wall-clock timeout rather than guessing, and
+  completion detection is limited to sessions whose id or exact title is known;
 - generic non-execution tool errors (for example a 404 web fetch) are ignored
   unless they indicate a permission or dependency problem; execution-tool
   failures remain detectable;

@@ -152,11 +152,15 @@ def command_status(args: argparse.Namespace) -> int:
         if not jobs:
             print("No development jobs.")
             return 0
-        print(f"{'STATE':8} {'JOB':48} {'ELAPSED':>10}  TITLE")
+        print(f"{'STATE':8} {'JOB':48} {'TOTAL':>10} {'ATTEMPT':>10}  TITLE")
         for job in jobs:
             payload = runner.status_payload(job)
-            elapsed = runner._format_seconds(payload.get("elapsed_seconds"))
-            print(f"{payload['state']:8} {payload['id']:48} {elapsed:>10}  {payload['title']}")
+            total = runner._format_seconds(payload.get("elapsed_seconds"))
+            attempt = runner._format_seconds(payload.get("attempt_elapsed_seconds"))
+            print(
+                f"{payload['state']:8} {payload['id']:48} "
+                f"{total:>10} {attempt:>10}  {payload['title']}"
+            )
         return 0
     job = _resolve_job(args)
     if runner.reconcile_job(job):

@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+import session_state
 
 from .store import safe_text
 
@@ -619,50 +619,20 @@ def scan_session(
     if not session_id:
         return None
     # OpenCode 1.19.5 truncates large export output when stdout is a pipe.
-    # Use an anonymous temporary file, matching shell redirection semantics,
-    # then parse and discard it. Nothing is written to the job directory.
-    try:
-        with tempfile.TemporaryFile(mode="w+b") as handle:
-            result = subprocess.run(
-                ["opencode", "export", str(session_id)],
-                cwd=str(cwd) if cwd is not None else None,
-                stdout=handle,
-                stderr=subprocess.DEVNULL,
-                timeout=timeout,
-                check=False,
-            )
-            if result.returncode != 0:
-                return None
-            handle.seek(0)
-            data = handle.read(MAX_SESSION_BYTES + 1)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if len(data) > MAX_SESSION_BYTES or not data.strip():
-        return None
-    try:
-        payload = json.loads(data.decode("utf-8", "replace"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+    # session_state reads through an anonymous temporary file instead. The
+    # export is parsed and discarded; nothing is written to the job directory.
+    payload = session_state.load_export(
+        session_id,
+        cwd=cwd,
+        timeout=timeout,
+        max_bytes=MAX_SESSION_BYTES,
+    )
+    if payload is None:
         return None
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         return None
-    observable = False
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        role = str((message.get("info") or {}).get("role") or "")
-        for part in message.get("parts") or []:
-            if not isinstance(part, dict):
-                continue
-            part_type = str(part.get("type") or "")
-            if part_type == "tool" or (part_type == "text" and role == "assistant"):
-                observable = True
-                break
-        if observable:
-            break
-    if not observable:
+    if not session_state.has_observable_events(payload):
         return None
     return scan_events(payload, since_ms=since_ms)
 

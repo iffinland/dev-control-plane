@@ -481,6 +481,230 @@ class TimeoutTests(unittest.TestCase):
             sentinel.wait(timeout=5)
 
 
+FAKE_SESSION_OPENCODE = r'''#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+args = sys.argv[1:]
+state_dir = os.environ["FAKE_GUARD_STATE"]
+mode = os.environ.get("FAKE_GUARD_MODE", "complete")
+export_path = os.path.join(state_dir, "export.json")
+title_path = os.path.join(state_dir, "title.txt")
+pid_path = os.environ.get("FAKE_GUARD_PIDFILE", "")
+
+
+def find_arg(name):
+    for index, value in enumerate(args[:-1]):
+        if value == name:
+            return args[index + 1]
+    return None
+
+
+if args[:2] == ["session", "list"]:
+    if os.path.exists(export_path):
+        try:
+            with open(export_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+            updated = (data.get("info", {}).get("time", {}) or {}).get("updated")
+            title = open(title_path, encoding="utf-8").read()
+        except (OSError, ValueError):
+            updated = None
+            title = "fake"
+        print(json.dumps([{"id": "ses_guard_fake", "title": title, "updated": updated}]))
+    else:
+        print("[]")
+    sys.exit(0)
+
+if args and args[0] == "export":
+    if os.path.exists(export_path):
+        with open(export_path, encoding="utf-8") as handle:
+            sys.stdout.write(handle.read())
+    sys.exit(0)
+
+if not args or args[0] != "run":
+    sys.exit(0)
+
+title = find_arg("--title") or "fake"
+with open(title_path, "w", encoding="utf-8") as handle:
+    handle.write(title)
+if pid_path:
+    with open(pid_path, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+
+now = int(time.time() * 1000)
+created = now + 200
+if mode == "complete":
+    messages = [
+        {
+            "info": {
+                "id": "msg_final",
+                "role": "assistant",
+                "finish": "stop",
+                "time": {"created": created, "completed": created + 100},
+            },
+            "parts": [
+                {"type": "tool", "tool": "bash", "state": {"status": "completed", "metadata": {"exit": 0}}}
+            ],
+        }
+    ]
+elif mode == "active":
+    messages = [
+        {
+            "info": {"id": "msg_tool", "role": "assistant", "finish": "tool-calls", "time": {"created": created}},
+            "parts": [{"type": "tool", "tool": "bash", "state": {"status": "running"}}],
+        }
+    ]
+elif mode == "pending":
+    messages = [
+        {
+            "info": {
+                "id": "msg_pending",
+                "role": "assistant",
+                "finish": "stop",
+                "time": {"created": created, "completed": created + 100},
+            },
+            "parts": [{"type": "tool", "tool": "bash", "state": {"status": "pending"}}],
+        }
+    ]
+elif mode == "old_stop":
+    messages = [
+        {
+            "info": {
+                "id": "msg_old",
+                "role": "assistant",
+                "finish": "stop",
+                "time": {"created": now - 100000, "completed": now - 99000},
+            },
+            "parts": [],
+        }
+    ]
+else:
+    raise SystemExit(f"unknown fake mode: {mode}")
+
+updated = messages[-1]["info"]["time"].get("completed", created) + 1000
+payload = {
+    "info": {"id": "ses_guard_fake", "title": title, "time": {"updated": updated}},
+    "messages": messages,
+}
+temporary = export_path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+os.replace(temporary, export_path)
+print("fake opencode run finished; deliberately sleeping", flush=True)
+time.sleep(300)
+'''
+
+
+class SessionCompletionGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.proc = make_proc(
+            self.root,
+            processes=[
+                (13615, ["java", "-jar", "/home/iffi/qortium-preview/qortium.jar"], 3500000)
+            ],
+        )
+        self.lock = self.root / "guard.lock"
+        self.log = self.root / "guard.log"
+        self.pid_file = self.root / "child.pid.json"
+        self.completion_file = self.root / "completion.json"
+        self.state_dir = self.root / "fake-state"
+        self.state_dir.mkdir()
+        self.bin_dir = self.root / "bin"
+        self.bin_dir.mkdir()
+        fake = self.bin_dir / "opencode"
+        fake.write_text(FAKE_SESSION_OPENCODE, encoding="utf-8")
+        fake.chmod(0o755)
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{self.bin_dir}:{self.env.get('PATH', '')}"
+        self.env["FAKE_GUARD_STATE"] = str(self.state_dir)
+        self.env["FAKE_GUARD_PIDFILE"] = str(self.root / "fake.pid")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def run_session_guard(
+        self,
+        mode: str,
+        *,
+        timeout: str = "15s",
+        completion_file: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.env["FAKE_GUARD_MODE"] = mode
+        args = [
+            "run",
+            "--timeout",
+            timeout,
+            "--term-grace",
+            "1",
+            "--proc-root",
+            str(self.proc),
+            "--workspace",
+            str(CONTROL_PLANE),
+            "--lock-file",
+            str(self.lock),
+            "--log",
+            str(self.log),
+            "--pid-file",
+            str(self.pid_file),
+            "--session-title",
+            "Fake session job [job test]",
+            "--session-poll-seconds",
+            "0.1",
+            "--session-idle-seconds",
+            "0.2",
+            "--session-confirm-seconds",
+            "0.2",
+        ]
+        target = completion_file if completion_file is not None else self.completion_file
+        if target is not None:
+            args.extend(["--completion-file", str(target)])
+        args.extend(["--", "opencode", "run", "--title", "Fake session job [job test]", "work"])
+        return subprocess.run(
+            [sys.executable, str(GUARD), *args],
+            cwd=CONTROL_PLANE,
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=40,
+            check=False,
+        )
+
+    def test_completed_session_with_hung_cli_is_complete_not_timeout(self) -> None:
+        result = self.run_session_guard("complete")
+        self.assertEqual(result.returncode, guard.EXIT_PASS, result.stdout + result.stderr)
+        log_text = self.log.read_text(encoding="utf-8")
+        self.assertIn("SESSION_COMPLETE", log_text)
+        self.assertNotIn("TIMEOUT", log_text)
+        evidence = json.loads(self.completion_file.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["message_id"], "msg_final")
+        self.assertEqual(evidence["finish"], "stop")
+        self.assertEqual(evidence["active_tool_calls"], 0)
+        self.assertEqual(evidence["action"], "session_completed_cli_stopped")
+        child_pid = int(json.loads(self.pid_file.read_text(encoding="utf-8"))["pid"])
+        self.assertTrue(wait_until_gone(child_pid), f"hung child {child_pid} survived completion stop")
+
+    def test_active_tool_call_is_not_terminated_early(self) -> None:
+        result = self.run_session_guard("active", timeout="2s")
+        self.assertEqual(result.returncode, guard.EXIT_TIMEOUT, result.stdout + result.stderr)
+        log_text = self.log.read_text(encoding="utf-8")
+        self.assertNotIn("SESSION_COMPLETE", log_text)
+        self.assertFalse(self.completion_file.exists())
+
+    def test_pending_tool_call_blocks_completion(self) -> None:
+        result = self.run_session_guard("pending", timeout="2s")
+        self.assertEqual(result.returncode, guard.EXIT_TIMEOUT, result.stdout + result.stderr)
+        self.assertFalse(self.completion_file.exists())
+
+    def test_previous_attempt_stop_does_not_complete_new_attempt(self) -> None:
+        result = self.run_session_guard("old_stop", timeout="2s")
+        self.assertEqual(result.returncode, guard.EXIT_TIMEOUT, result.stdout + result.stderr)
+        self.assertFalse(self.completion_file.exists())
+
+
 class PermissionProfileTests(unittest.TestCase):
     def test_profile_is_restricted(self) -> None:
         text = AGENT.read_text(encoding="utf-8")

@@ -11,6 +11,7 @@ tunnels, or authorize server changes.
 | `control-plane` | `/home/iffi/dev-workspace/control-plane` | Canonical agent control plane |
 | `projects-root` | `/home/iffi/dev-workspace/projects` | Local project and source checkouts |
 | `central-docs` | `/home/iffi/dev-workspace/docs` | Canonical central report storage, grouped by project and category |
+| `source-references` | `/home/iffi/dev-workspace/docs/references` | Preserved third-party and source documents with provenance; reference material, not platform authority |
 | `phase0-backups` | `/home/iffi/dev-workspace/backups/agent-workspaces-20261030` | Verified Phase 0 backups including `.git` |
 | `qortal-platform-source` | `/home/iffi/dev-workspace/projects/qortal-dev-workspace` | Preserved Qortal platform source; `main` `b8fd2f6fbfcff88c0ab9bc8fd116d5548679d2d2` |
 | `orchestration-migration-source` | `/home/iffi/dev-workspace/projects/ai-development-orchestration` | Preserved migration repository; do not modify in Phase 1 |

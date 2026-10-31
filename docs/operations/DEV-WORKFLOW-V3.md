@@ -42,6 +42,8 @@ execution at a time.
 | Profile installer | `tools/install_opencode_profiles.sh` | Copies/symlinks profiles into `~/.config/opencode/agents/` |
 | CLI tests | `tools/test_dev_cli.py` | Integration and unit tests with a fake OpenCode |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
+| Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
+| Permission/installer tests | `tools/test_agent_permissions.py`, `tools/test_install_profiles.py` | Profile semantics and installer safety |
 
 Runtime state defaults to:
 
@@ -261,31 +263,62 @@ failures are recorded as sanitized reasons and never change the job result. Use
 
 The development profile is
 [`adapters/opencode/agents/opencode-development.md`](../../adapters/opencode/agents/opencode-development.md).
-It allows project work in `/home/iffi/dev-workspace/**`: editing project files,
-project-local dependency installation, Git commit/push/PR, QDN publish/update,
-development-wallet transactions and live application tests. It declares explicit
-allow/deny rules so unattended work does not wait for routine permission prompts.
-Do not use `--auto`.
+It allows normal development in `/home/iffi/dev-workspace/**`: project edits,
+project-local dependency installation, builds/tests, Git commit/push/PR, SSH,
+QDN publish/update, Qortal API calls, authorized development-wallet operations
+and live application tests. It also permits read-only diagnostics of the VPS and
+the running Qortium node. It declares explicit allow/deny rules so unattended
+work does not wait for routine permission prompts. Do not use `--auto`.
 
-Hard denials preserved from the control-plane contract:
+Hard boundaries:
 
-- no Qortium node/configuration/database/service mutation or restart;
-- no `sudo`, `systemctl`, `service`, `systemd-run`, reboot/shutdown;
-- no system-wide package installation;
-- no `kill`/`pkill`/`killall`, `tmux kill-server`, or `opencode serve/web/acp`;
-- no force-push, branch merge, release, or deployment;
-- no reads of `.env`, private keys or `~/.ssh`, and no writes outside
-  `/home/iffi/dev-workspace/**` (with explicit denials for Qortium paths and
-  `~/.config`).
+- no Qortium node/service/configuration/database/data/log/JAR mutation, restart,
+  stop or signal;
+- no VPS system-configuration change, mutating service-manager operation,
+  reboot/shutdown, mount/network/kernel change or global package install;
+- no `sudo`/`su`, `kill`/`pkill`/`killall`, `tmux kill-server`, or
+  `opencode serve/web/acp`;
+- no force-push, branch merge, release or deployment;
+- no package-registry publication; QDN publishing is allowed only within the
+  job's authorization;
+- read-only Qortium file access goes through the `read` tool; shell writes and
+  `edit` operations on the Qortium paths are denied.
 
-The guard independently refuses to start a second heavyweight OpenCode
-execution, reads Qortium only to report PID/RSS, and terminates only the process
-group it created. Permission patterns are not a sandbox; owner authorization,
-Git hooks, branch protection and review remain authoritative.
+The profile intentionally allows `ssh` because normal development and read-only
+remote diagnostics need it. That is not a remote isolation control: an SSH
+command can run anything the remote account can run. Remote safety is governed
+by the job authorization and the control-plane contract.
 
-The development profile allows `qortal` commands for QDN/development-wallet work
-but denies `qortium` commands. Never use a development permission to operate the
-live Qortium node.
+The profile also allows `qortal` commands for QDN/development-wallet work and
+permits read-only Qortium diagnostics through `systemctl status`, `journalctl`,
+`ps`, `service ... status` and the `read` tool. It keeps the Qortium node
+process, JAR and paths out of shell writes.
+
+### Permission semantics and limitations
+
+OpenCode evaluates permission patterns with **last matching rule wins**; bash
+rules match each parsed shell command. Without `--auto`, an `ask` decision is
+auto-rejected in a non-interactive run. The full model, the development policy
+and the remaining bypasses are documented in
+[OpenCode permission semantics](OPENCODE-PERMISSIONS.md).
+
+Permission patterns are **not** an OS sandbox. Shell wrappers, interpreters,
+scripts, SSH sessions, copied binaries and remote commands can do more than the
+visible pattern suggests. The guard independently refuses to start a second
+heavyweight OpenCode execution, reads Qortium only to report PID/RSS, and
+terminates only the process group it created. Owner authorization, Git hooks,
+branch protection and review remain authoritative.
+
+Validate a profile change before installing it:
+
+```bash
+python3 tools/validate_agent_permissions.py --check
+python3 tools/test_agent_permissions.py
+tools/install_opencode_profiles.sh --check
+```
+
+Never use a development permission to modify the live Qortium node or VPS system
+configuration.
 
 ## Recovery and stop conditions
 
@@ -304,13 +337,18 @@ live Qortium node.
 ```bash
 python3 tools/test_opencode_guard.py
 python3 tools/test_dev_cli.py
+python3 tools/test_agent_permissions.py
+python3 tools/test_install_profiles.py
+python3 tools/validate_agent_permissions.py --check
 python3 tools/validate_control_plane.py
 python3 tools/validate_skills.py
 python3 tools/validate_security.py .
 ```
 
 The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
-root. They do not start a model session, contact Telegram or touch Qortium.
+root. The permission tests parse the agent Markdown and exercise the last-match
+wildcard model; they also record the known wrapper/script limitations. They do
+not start a model session, contact Telegram or touch Qortium.
 
 ## Known limits
 

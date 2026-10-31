@@ -522,12 +522,20 @@ class PermissionProfileTests(unittest.TestCase):
             '"git push --force*": deny',
             '"gh pr merge*": deny',
             '"qortium*": deny',
+            '"java *qortium*": deny',
+            '"*qortium-preview*": deny',
+            '"**/qortium-preview/**": deny',
             '"/home/iffi/dev-workspace/**": allow',
-            '"/home/iffi/qortium-preview/**": deny',
+            '"/home/iffi/qortium-preview/**": allow',
+            '"systemctl status*": allow',
+            '"journalctl *--vacuum*": deny',
         ):
             self.assertIn(expected, text, expected)
+        # Normal development and read-only diagnostics must not be blanket-denied.
         self.assertNotIn('"git push *": deny', text)
         self.assertNotIn('"qortal*": deny', text)
+        self.assertNotIn('"ssh *": deny', text)
+        self.assertNotIn('"journalctl *": deny', text)
 
     @unittest.skipUnless(shutil.which("opencode"), "opencode is not installed")
     def test_installed_profile_loads_with_restrictions(self) -> None:

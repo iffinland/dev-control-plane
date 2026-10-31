@@ -107,3 +107,11 @@ Rules:
 - On a resource warning or refusal, stop starting new work and write a
   recoverable handoff. On timeout, preserve session history and resume with
   `--session <id>`.
+
+This restricted profile is intentionally separate from the Workflow v3
+`opencode-development` profile. It does not allow normal Git push/PR, SSH, Qortal
+or Qortium development work. See
+`/home/iffi/dev-workspace/control-plane/docs/operations/OPENCODE-PERMISSIONS.md`
+for the verified OpenCode permission semantics and the limits of command
+patterns. Do not use this profile for development jobs that need the broader
+authorization.

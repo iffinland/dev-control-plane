@@ -168,8 +168,11 @@ For multi-step or multi-hour development work, use the
 [Workflow v3 development CLI](docs/operations/DEV-WORKFLOW-V3.md). It records
 durable jobs with explicit acceptance criteria, runs them detached (no tmux),
 detects blocked/failed outcomes, supports safe resume and sends optional
-Telegram notifications. It is still owner-started and does not add a scheduler
-or background polling service.
+Telegram notifications. Its development profile allows normal Git/build/SSH,
+Qortal/QDN work and read-only VPS/Qortium diagnostics, with documented hard
+boundaries and command-pattern limits
+([permission semantics](docs/operations/OPENCODE-PERMISSIONS.md)). It is still
+owner-started and does not add a scheduler or background polling service.
 
 Before starting, record:
 

@@ -60,17 +60,25 @@ Bounded unattended execution is documented in the
 
 The separate Workflow v3 development profile is
 [`agents/opencode-development.md`](agents/opencode-development.md). It is used by
-the `dev` CLI for owner-authorized development jobs: project-local dependency
-installation, Git commit/push/PR, QDN publish/update, development-wallet
-transactions and live application tests. It still denies Qortium/node mutation,
-system administration, global package installation, force-push, merge, release
-and listener creation. See the
-[Workflow v3 runbook](../../docs/operations/DEV-WORKFLOW-V3.md).
+the `dev` CLI for owner-authorized development jobs. It allows project-local
+dependency installation, builds/tests, Git commit/push/PR, SSH, QDN
+publish/update, Qortal API calls, authorized development-wallet operations, live
+application tests and read-only VPS/Qortium diagnostics. It still denies
+Qortium/node mutation or signalling, VPS system-configuration changes, system
+administration, global package installation, force-push, branch merge, release,
+package publication and listener creation.
+
+The development profile's command patterns are policy, not an OS sandbox. The
+verified 1.19.5 semantics, the remaining wrapper/script/SSH bypasses and the
+read-only diagnostic policy are documented in
+[OpenCode permission semantics](../../docs/operations/OPENCODE-PERMISSIONS.md).
+See also the [Workflow v3 runbook](../../docs/operations/DEV-WORKFLOW-V3.md).
 
 Install either profile by copying the repository file to
 `~/.config/opencode/agents/<name>.md` (or symlinking it). The control-plane
-installer is `tools/install_opencode_profiles.sh`; it is never run automatically
-by a job.
+installer is `tools/install_opencode_profiles.sh`; it validates the development
+profile first and supports `--check`, `--dry-run` and `--target`. It is never run
+automatically by a job.
 
 Verified v1.19.5 behaviour that the runbook relies on:
 

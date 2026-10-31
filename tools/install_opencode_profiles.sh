@@ -7,21 +7,40 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_dir="$repo_root/adapters/opencode/agents"
+validator="$repo_root/tools/validate_agent_permissions.py"
 target_dir="${OPENCODE_AGENT_DIR:-$HOME/.config/opencode/agents}"
 dry_run=0
+check_only=0
+run_check=1
 
 usage() {
   cat <<'EOF'
-usage: install_opencode_profiles.sh [--dry-run] [--target DIR]
+usage: install_opencode_profiles.sh [--check] [--dry-run] [--no-check] [--target DIR]
 
 Copies/synchronises the control-plane agent profiles into the OpenCode user
 config directory (default: ~/.config/opencode/agents, or $OPENCODE_AGENT_DIR).
 It does not edit opencode.jsonc, create services or require root.
+
+  --check     validate the development profile and exit without installing
+  --dry-run   print what would be installed
+  --no-check  skip the profile policy validation (not recommended)
+  --target    alternate agent directory (for tests or a separate config)
+
+The profiles are policy files, not an operating-system sandbox. Restart OpenCode
+after installing so the agent definitions reload.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --check)
+      check_only=1
+      shift
+      ;;
+    --no-check)
+      run_check=0
+      shift
+      ;;
     --dry-run)
       dry_run=1
       shift
@@ -56,6 +75,27 @@ if [ ! -d "$source_dir" ]; then
   exit 1
 fi
 
+if [ "$run_check" -eq 1 ]; then
+  if [ ! -f "$validator" ]; then
+    echo "install_opencode_profiles: policy validator missing: $validator" >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "install_opencode_profiles: python3 is required for --check" >&2
+    exit 1
+  fi
+  python3 "$validator" --profile "$source_dir/opencode-development.md" --check
+  if [ "$check_only" -eq 1 ]; then
+    echo "profile policy check passed; nothing installed (--check)"
+    exit 0
+  fi
+fi
+
+if [ "$check_only" -eq 1 ]; then
+  echo "install_opencode_profiles: --check requires policy validation" >&2
+  exit 2
+fi
+
 if [ "$dry_run" -eq 0 ]; then
   mkdir -p "$target_dir"
 fi
@@ -88,4 +128,5 @@ if [ "$dry_run" -eq 0 ]; then
   echo ""
   echo "Restart OpenCode so the profiles load."
   echo "Verify with: opencode debug agent opencode-development"
+  echo "Permission patterns are policy, not OS-level isolation; see docs/operations/OPENCODE-PERMISSIONS.md."
 fi

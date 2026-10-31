@@ -185,6 +185,13 @@ authoritative controls. The restricted profile also denies feature-branch
 pushes and PR creation; the owner integrates local work unless a separately
 approved profile is used for external writes.
 
+The restricted profile is intentionally unchanged by the Workflow v3 development
+permission modernization. Development jobs use the separate
+`opencode-development` profile, which allows normal Git/build/SSH/Qortal work and
+read-only VPS/Qortium diagnostics. Its verified semantics and limitations are in
+[OpenCode permission semantics](OPENCODE-PERMISSIONS.md). Do not use the
+development profile for a task that is meant to stay restricted.
+
 ## Stop and cleanup
 
 1. Reach a phase boundary, write the checkpoint/report and stop starting new

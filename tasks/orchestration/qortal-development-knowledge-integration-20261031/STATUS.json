@@ -5,9 +5,9 @@
   "executing_agent": "DeepSeek",
   "report_writer": "DeepSeek",
   "state": "complete",
-  "state_revision": 5,
+  "state_revision": 6,
   "previous_state": "complete",
-  "updated_at_utc": "2026-10-31T07:22:01Z",
+  "updated_at_utc": "2026-10-31T07:22:42Z",
   "next_actor": "owner",
   "application": {
     "repository": "/home/iffi/dev-workspace/control-plane",
@@ -36,7 +36,9 @@
       "workspace/validation/2026-10-31-post-merge-verification.md"
     ],
     "control_plane_pr": "https://github.com/iffinland/dev-control-plane/pull/3",
-    "control_plane_head": "f89c208f84495f89a8088e5c9424891faf3efeed",
+    "control_plane_verified_head": "f83ecd8d33c703ea90be61d1b406647d6a534327",
+    "control_plane_ci_run": "41180338958",
+    "note": "Verified head is the last content commit; this STATUS-only follow-up may advance the branch tip.",
     "docs_pr": "https://github.com/iffinland/dev-workspace-docs/pull/2",
     "docs_head": "49ebf541147134106ac5f3696a4e1ed616e5ffdb",
     "owner_merge_required": true
@@ -83,7 +85,7 @@
     "Post-merge validation report /home/iffi/dev-workspace/docs/workspace/validation/2026-10-31-post-merge-verification.md SHA-256 f36ab7cf36333540c8e75e01a21d7a0398670c2b36fa43b2e96899afd90aa447.",
     "Finalization audit: seven reports are uniquely filed under workspace/<category>/, are dated, have executing-agent and canonical-path fields, and have no exact-content duplicates among tracked docs reports; all referenced absolute paths resolve.",
     "Docs security scan passed for all 35 docs files including the seven reports; control-plane, skills, security self-test and Git-hook tests passed before finalization.",
-    "Finalization branch agent/control-plane/finalize-post-merge-status-20261031 pushed at f89c208f84495f89a8088e5c9424891faf3efeed; PR https://github.com/iffinland/dev-control-plane/pull/3.",
+    "Finalization branch agent/control-plane/finalize-post-merge-status-20261031; PR https://github.com/iffinland/dev-control-plane/pull/3; Actions run 41180316558 success for f89c208 and run 41180338958 success for f83ecd8.",
     "Docs branch agent/workspace/finalize-pending-reports-20261031 pushed at 49ebf541147134106ac5f3696a4e1ed616e5ffdb; PR https://github.com/iffinland/dev-workspace-docs/pull/2."
   ],
   "missing_evidence": [

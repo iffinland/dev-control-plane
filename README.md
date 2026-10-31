@@ -78,6 +78,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [Environment registry](ENVIRONMENT.md)
 - [Report storage policy](docs/REPORT-STORAGE-POLICY.md)
 - [OpenCode tmux session runbook](docs/operations/OPENCODE-TMUX-SESSIONS.md)
+- [Unattended OpenCode execution runbook](docs/operations/UNATTENDED-OPENCODE.md)
 - [Git and durable handoff](GIT-AND-HANDOFF.md)
 - [Qortal platform boundary](platforms/qortal/README.md)
 - [Qortal legacy audit reference](platforms/qortal/references/README.md)

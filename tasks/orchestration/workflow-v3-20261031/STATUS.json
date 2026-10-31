@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "project": "control-plane",
+  "task": "workflow-v3-20261031",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "implementing",
+  "state_revision": 1,
+  "previous_state": "planned",
+  "updated_at_utc": "2026-10-31T00:00:00Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/workflow-v3-20261031",
+    "commit": null
+  },
+  "skills": {
+    "loaded": [
+      "skills/shared/capability-harvest/SKILL.md"
+    ],
+    "freshness": [
+      "control-plane workflow tooling: not a platform skill; capability-harvest procedure read"
+    ],
+    "created_or_updated": []
+  },
+  "handoff_sync": "local_only",
+  "authorization": {
+    "application_commit_push": false,
+    "handoff_commit_push": false,
+    "source": "Owner authorized local commit on dedicated feature branch; push not requested."
+  },
+  "evidence": [
+    "python3 tools/test_opencode_guard.py: 30 tests OK",
+    "python3 tools/test_dev_cli.py: 21 tests OK",
+    "python3 tools/validate_control_plane.py: PASS",
+    "python3 tools/validate_skills.py: PASS",
+    "python3 tools/validate_security.py .: PASS",
+    "python3 tools/test_git_hooks.py: PASS",
+    "python3 -m compileall -q tools: OK"
+  ],
+  "missing_evidence": [
+    "Real OpenCode model session, Telegram delivery, QDN publish and live application tests were not executed during this implementation task."
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "opencode-unattended",
+    "guard_command": "python3 tools/opencode_guard.py check",
+    "timeout_seconds": 28800,
+    "stop_condition": "guard WARN/REFUSE or task boundary",
+    "checkpoints": [
+      "baseline guard check PASS",
+      "post-implementation validation"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": "guard check PASS at phase boundaries",
+    "acceptance_evidence": [
+      "guard max/default tests assert 28800s",
+      "CLI tests assert verified acceptance, detectors, timeout, resume and manual accept"
+    ]
+  },
+  "blocker": null
+}

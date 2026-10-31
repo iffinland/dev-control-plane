@@ -159,10 +159,17 @@ this section still governs authorization, scope, validation and stop conditions.
 
 Bounded unattended execution mechanics are documented in the
 [unattended OpenCode runbook](docs/operations/UNATTENDED-OPENCODE.md). The run
-uses a separate restricted agent profile, a short-lived execution guard with a
-four-hour maximum and one-execution lock, resource preflight at phase
+uses a separate restricted agent profile, a short-lived execution guard with an
+eight-hour maximum and one-execution lock, resource preflight at phase
 boundaries, and safe process-group cancellation. The owner starts the task; no
 scheduler, daemon, timer or polling agent is installed.
+
+For multi-step or multi-hour development work, use the
+[Workflow v3 development CLI](docs/operations/DEV-WORKFLOW-V3.md). It records
+durable jobs with explicit acceptance criteria, runs them detached (no tmux),
+detects blocked/failed outcomes, supports safe resume and sends optional
+Telegram notifications. It is still owner-started and does not add a scheduler
+or background polling service.
 
 Before starting, record:
 

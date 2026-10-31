@@ -38,7 +38,7 @@ from typing import Iterable, Sequence
 
 DEFAULT_WORKSPACE = Path("/home/iffi/dev-workspace")
 DEFAULT_PROC = Path("/proc")
-MAX_TIMEOUT_SECONDS = 4 * 60 * 60
+MAX_TIMEOUT_SECONDS = 8 * 60 * 60
 HEAVY_SUBCOMMANDS = {"run", "serve", "web", "attach", "acp"}
 HELPER_SUBCOMMANDS = {
     "stats",
@@ -372,7 +372,7 @@ def parse_duration(value: str) -> int:
     if seconds <= 0:
         raise argparse.ArgumentTypeError("duration must be greater than zero")
     if seconds > MAX_TIMEOUT_SECONDS:
-        raise argparse.ArgumentTypeError("duration exceeds the four-hour maximum")
+        raise argparse.ArgumentTypeError("duration exceeds the eight-hour maximum")
     return seconds
 
 
@@ -503,6 +503,29 @@ def command_for_log(argv: Sequence[str]) -> str:
         return " ".join(argv)
 
 
+def write_pid_file(path: Path, pid: int, log) -> None:
+    """Record the child PID/PGID for external status readers.
+
+    The file is evidence only. The guard never reads it back to decide which
+    process group to signal; it always uses the Popen handle it created.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pid": pid,
+            "pgid": pid,
+            "started_utc": utc_now(),
+        }
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+        log.write(f"guard: wrote pid file {path}\n")
+        log.flush()
+    except OSError as exc:
+        log.write(f"guard: could not write pid file {path}: {exc}\n")
+        log.flush()
+
+
 def run_command(args: argparse.Namespace, command: list[str]) -> int:
     heavy_command = command_is_heavy_opencode(command)
     snapshot = collect_snapshot(
@@ -586,6 +609,8 @@ def run_command(args: argparse.Namespace, command: list[str]) -> int:
                     log.write(f"guard: cannot start command: {exc}\n")
                     log.flush()
                     return EXIT_REFUSE
+                if args.pid_file is not None:
+                    write_pid_file(args.pid_file, process.pid, log)
                 assert process.stdout is not None
                 pump = threading.Thread(
                     target=pump_output,
@@ -734,10 +759,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=parse_duration,
         default=MAX_TIMEOUT_SECONDS,
-        help="wall-clock limit, e.g. 4h, 240m or 14400s (maximum 4h; default 4h)",
+        help="wall-clock limit, e.g. 8h, 480m or 28800s (maximum 8h; default 8h)",
     )
     run.add_argument("--log", type=Path, default=None, help="log path (default: workspace/logs/...)")
     run.add_argument("--lock-file", type=Path, default=None)
+    run.add_argument("--pid-file", type=Path, default=None, help="write the child PID/PGID as JSON")
     run.add_argument("--term-grace", type=float, default=10.0, help="seconds before SIGKILL")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=run_command)

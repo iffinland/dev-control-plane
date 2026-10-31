@@ -40,6 +40,8 @@ jobs:
         run: python3 tools/test_git_hooks.py
       - name: Test unattended OpenCode guard
         run: python3 tools/test_opencode_guard.py
+      - name: Test Workflow v3 development CLI
+        run: python3 tools/test_dev_cli.py
       - name: Scan reachable Git history
         run: |
           zero=0000000000000000000000000000000000000000

@@ -20,8 +20,9 @@ paths as provenance and are not current routing.
 OpenCode loads this root instruction file through the owner's global
 instructions adapter. DeepSeek uses the same canonical files. The adapters under
 `adapters/` are discovery notes, not a second policy. No background agent,
-polling loop, scheduler, or automatic task execution is provided by this
-workspace.
+polling loop, scheduler, or automatic task execution service is provided by this
+workspace. The optional Workflow v3 job worker is an owner-started detached
+process, not a scheduler or service.
 
 ## Instruction precedence and inheritance
 

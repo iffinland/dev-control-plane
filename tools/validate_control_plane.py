@@ -36,8 +36,15 @@ REQUIRED = (
     "tools/validate_skills.py",
     "tools/validate_control_plane.py",
     "tools/opencode_guard.py",
+    "tools/dev.py",
+    "tools/test_opencode_guard.py",
+    "tools/test_dev_cli.py",
+    "tools/install_opencode_profiles.sh",
     "docs/operations/UNATTENDED-OPENCODE.md",
+    "docs/operations/DEV-WORKFLOW-V3.md",
+    "docs/migration/2026-10-31-workflow-v3.md",
     "adapters/opencode/agents/opencode-unattended.md",
+    "adapters/opencode/agents/opencode-development.md",
 )
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 REF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?([^ >]+)>?", re.MULTILINE)

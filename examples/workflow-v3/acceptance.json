@@ -1,0 +1,19 @@
+[
+  {
+    "kind": "command",
+    "label": "focused tests",
+    "command": "python3 -m pytest -q",
+    "timeout_seconds": 1800
+  },
+  {
+    "kind": "command",
+    "label": "no whitespace errors",
+    "command": "git diff --check",
+    "timeout_seconds": 120
+  },
+  {
+    "kind": "manual",
+    "label": "owner verifies the live application flow",
+    "required": true
+  }
+]

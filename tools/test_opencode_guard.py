@@ -24,6 +24,7 @@ TOOLS = Path(__file__).resolve().parent
 CONTROL_PLANE = TOOLS.parent
 GUARD = TOOLS / "opencode_guard.py"
 AGENT = CONTROL_PLANE / "adapters/opencode/agents/opencode-unattended.md"
+DEV_AGENT = CONTROL_PLANE / "adapters/opencode/agents/opencode-development.md"
 sys.path.insert(0, str(TOOLS))
 
 import opencode_guard as guard  # noqa: E402
@@ -101,14 +102,20 @@ def wait_until_gone(pid: int, timeout: float = 5.0) -> bool:
 
 class DurationTests(unittest.TestCase):
     def test_duration_units(self) -> None:
-        self.assertEqual(guard.parse_duration("4h"), 14400)
-        self.assertEqual(guard.parse_duration("240m"), 14400)
-        self.assertEqual(guard.parse_duration("14400s"), 14400)
+        self.assertEqual(guard.parse_duration("8h"), 28800)
+        self.assertEqual(guard.parse_duration("480m"), 28800)
+        self.assertEqual(guard.parse_duration("28800s"), 28800)
         self.assertEqual(guard.parse_duration("1s"), 1)
 
-    def test_duration_rejects_over_four_hours(self) -> None:
+    def test_default_maximum_is_eight_hours(self) -> None:
+        self.assertEqual(guard.MAX_TIMEOUT_SECONDS, 8 * 60 * 60)
+        parser = guard.build_parser()
+        args = parser.parse_args(["run", "--", "true"])
+        self.assertEqual(args.timeout, 8 * 60 * 60)
+
+    def test_duration_rejects_over_eight_hours(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
-            guard.parse_duration("5h")
+            guard.parse_duration("9h")
 
     def test_duration_rejects_garbage(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
@@ -305,6 +312,34 @@ class CommandTests(unittest.TestCase):
         self.assertIn("dry-run-ok", result.stdout)
         self.assertTrue(self.log.exists())
 
+    def test_run_writes_pid_file(self) -> None:
+        pid_file = self.root / "child.pid.json"
+        result = run_guard(
+            [
+                "run",
+                "--timeout",
+                "5s",
+                "--proc-root",
+                str(self.proc),
+                "--workspace",
+                str(CONTROL_PLANE),
+                "--lock-file",
+                str(self.lock),
+                "--log",
+                str(self.log),
+                "--pid-file",
+                str(pid_file),
+                "--",
+                "sh",
+                "-c",
+                "printf 'pid-file-ok\\n'",
+            ]
+        )
+        self.assertEqual(result.returncode, guard.EXIT_PASS, result.stdout + result.stderr)
+        payload = json.loads(pid_file.read_text(encoding="utf-8"))
+        self.assertIsInstance(payload["pid"], int)
+        self.assertEqual(payload["pid"], payload["pgid"])
+
     def test_lock_conflict_refuses_second_guard(self) -> None:
         first = subprocess.Popen(
             [
@@ -470,6 +505,29 @@ class PermissionProfileTests(unittest.TestCase):
             '"/home/iffi/qortium-preview/**": deny',
         ):
             self.assertIn(expected, text, expected)
+
+    def test_development_profile_keeps_hard_boundaries(self) -> None:
+        text = DEV_AGENT.read_text(encoding="utf-8")
+        for expected in (
+            "mode: primary",
+            "steps: 1000",
+            "question: deny",
+            "doom_loop: deny",
+            '"*": deny',
+            '"sudo *": deny',
+            '"apt *": deny',
+            '"systemctl *": deny',
+            '"kill *": deny',
+            '"pkill *": deny',
+            '"git push --force*": deny',
+            '"gh pr merge*": deny',
+            '"qortium*": deny',
+            '"/home/iffi/dev-workspace/**": allow',
+            '"/home/iffi/qortium-preview/**": deny',
+        ):
+            self.assertIn(expected, text, expected)
+        self.assertNotIn('"git push *": deny', text)
+        self.assertNotIn('"qortal*": deny', text)
 
     @unittest.skipUnless(shutil.which("opencode"), "opencode is not installed")
     def test_installed_profile_loads_with_restrictions(self) -> None:

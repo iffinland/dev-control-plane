@@ -54,9 +54,23 @@ Bounded unattended execution is documented in the
   `~/.config/opencode/agents/opencode-unattended.md`;
 - the no-daemon guard at
   [`tools/opencode_guard.py`](../../tools/opencode_guard.py), which enforces a
-  one-execution lock, resource preflight, a four-hour maximum and safe process-
+  one-execution lock, resource preflight, an eight-hour maximum and safe process-
   group cancellation;
 - the existing tmux terminal persistence and control-plane authorization rules.
+
+The separate Workflow v3 development profile is
+[`agents/opencode-development.md`](agents/opencode-development.md). It is used by
+the `dev` CLI for owner-authorized development jobs: project-local dependency
+installation, Git commit/push/PR, QDN publish/update, development-wallet
+transactions and live application tests. It still denies Qortium/node mutation,
+system administration, global package installation, force-push, merge, release
+and listener creation. See the
+[Workflow v3 runbook](../../docs/operations/DEV-WORKFLOW-V3.md).
+
+Install either profile by copying the repository file to
+`~/.config/opencode/agents/<name>.md` (or symlinking it). The control-plane
+installer is `tools/install_opencode_profiles.sh`; it is never run automatically
+by a job.
 
 Verified v1.19.5 behaviour that the runbook relies on:
 

@@ -17,9 +17,9 @@ The implementation consists of:
 
 | Component | Canonical path | Purpose |
 | --- | --- | --- |
-| Unattended agent profile | `adapters/opencode/agents/opencode-unattended.md` | Restricted permissions and an 80-step limit |
+| Unattended agent profile | `adapters/opencode/agents/opencode-unattended.md` | Restricted permissions and a 500-step limit |
 | Installed agent copy | `~/.config/opencode/agents/opencode-unattended.md` | What the local OpenCode client loads |
-| Execution guard | `tools/opencode_guard.py` | Preflight, one-session lock, resource checks, four-hour timeout, safe cancellation |
+| Execution guard | `tools/opencode_guard.py` | Preflight, one-session lock, resource checks, eight-hour timeout, safe cancellation |
 | Guard tests | `tools/test_opencode_guard.py` | Threshold, timeout, cancellation, lock, permission and Qortium-safety tests |
 | tmux runbook | `docs/operations/OPENCODE-TMUX-SESSIONS.md` | Terminal persistence and reattachment |
 | Task state | `templates/TASK.md`, `templates/STATUS.json` | Optional unattended fields, backward compatible with schema version 2 |
@@ -28,10 +28,17 @@ The existing interactive OpenCode configuration is not changed. The new agent is
 an additional profile; the global `opencode.jsonc` and the interactive `build`
 agent remain as they were.
 
+For multi-step or multi-hour development work, use the separate
+[Workflow v3 development jobs](DEV-WORKFLOW-V3.md) CLI (`dev start`, `dev status`,
+`dev report`, `dev logs`, `dev resume`). It wraps this guard, records durable
+job state and explicit acceptance criteria, runs detached without tmux and can
+send Telegram final-state notifications. It is still owner-started and does not
+install a scheduler or service.
+
 ## Owner decisions recorded
 
 - autonomous work starts immediately when the owner submits an authorized task;
-- maximum wall-clock time is four hours per task;
+- maximum wall-clock time is eight hours per task;
 - no monetary or credit limit and no pricing-window logic;
 - no automatic delayed scheduling;
 - no scheduler, daemon or orchestration service;
@@ -69,7 +76,7 @@ The guard reads Qortium only to report its PID and RSS. It never uses a
 process-name kill, never signals Qortium, and only terminates the process group
 it created for the unattended command.
 
-## Start an authorized four-hour task
+## Start an authorized eight-hour task
 
 Use a named tmux session, one repository/worktree per session, and start in the
 task working directory:
@@ -84,7 +91,7 @@ Inside the tmux session:
 
 ```bash
 python3 /home/iffi/dev-workspace/control-plane/tools/opencode_guard.py run \
-  --timeout 4h \
+  --timeout 8h \
   --log "/home/iffi/dev-workspace/logs/opencode-<task>-$(date -u +%Y%m%dT%H%M%SZ).log" \
   -- opencode run \
     --agent opencode-unattended \
@@ -130,7 +137,7 @@ opencode run --session <session-id> --agent opencode-unattended "<next instructi
 
 ## Timeout, cancellation and recovery
 
-- The guard enforces the four-hour maximum and records exit code `124` on
+- The guard enforces the eight-hour maximum and records exit code `124` on
   timeout.
 - `SIGINT` to the guard records exit code `130`; `SIGTERM` records `143`.
 - On timeout or signal the guard sends `SIGTERM` to the child process group,
@@ -190,7 +197,7 @@ approved profile is used for external writes.
 
 ## Known limitations
 
-- no hard monetary cap; the four-hour bound and 80-step limit are the only
+- no hard monetary cap; the eight-hour bound and step limit are the only
   native proxies;
 - no graceful checkpoint guarantee at timeout;
 - tmux sessions do not survive a reboot;
@@ -205,7 +212,7 @@ approved profile is used for external writes.
 
 The unattended OpenCode agent uses `steps: 500` (previously 80).
 This is a per-run agent step limit, independent of the execution guard's
-maximum four-hour wall-clock timeout.
+maximum eight-hour wall-clock timeout.
 
 When the step limit is reached, preserve the existing working tree and
 session history. Resume the same task in a new guarded execution rather

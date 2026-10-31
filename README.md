@@ -58,7 +58,7 @@ control-plane/
 ├── adapters/
 │   ├── opencode/             OpenCode discovery and inheritance notes
 │   └── deepseek/             DeepSeek client boundary notes
-├── tools/                    skills/library validators
+├── tools/                    validators, guard and Workflow v3 development CLI
 ├── tasks/                    historical task artifacts and evidence
 ├── reports/                  historical orchestration reports
 ├── research/                 historical pattern research
@@ -79,6 +79,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [Report storage policy](docs/REPORT-STORAGE-POLICY.md)
 - [OpenCode tmux session runbook](docs/operations/OPENCODE-TMUX-SESSIONS.md)
 - [Unattended OpenCode execution runbook](docs/operations/UNATTENDED-OPENCODE.md)
+- [Workflow v3 development jobs](docs/operations/DEV-WORKFLOW-V3.md)
 - [Git and durable handoff](GIT-AND-HANDOFF.md)
 - [Qortal platform boundary](platforms/qortal/README.md)
 - [Qortal legacy audit reference](platforms/qortal/references/README.md)
@@ -86,6 +87,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [OpenCode adapter](adapters/opencode/README.md)
 - [DeepSeek adapter](adapters/deepseek/README.md)
 - [Phase 1 migration record](docs/migration/2026-10-30-phase1-control-plane.md)
+- [Workflow v3 migration record](docs/migration/2026-10-31-workflow-v3.md)
 - [Agent roles](roles/)
 - [Task and handoff templates](templates/)
 
@@ -104,8 +106,9 @@ OpenCode and DeepSeek are clients/execution surfaces, not separate governance
 sources. They read the same canonical contract and skills. Claude remains an
 optional future adapter.
 
-No background agent, polling process, scheduler, notification service, or
-automatic task dispatch is installed by this repository.
+No background agent, polling process, scheduler or automatic task dispatch is
+installed by this repository. `dev start` launches one owner-authorized job in a
+detached session; optional Telegram notifications report final states.
 
 ## Platform boundary
 

@@ -33,6 +33,11 @@ credentials/
 *.bak
 backups/
 
+# Workflow v3 runtime state (default is outside the repository)
+.dev-state/
+dev-state/
+telegram.json
+
 # Keep active guidance, skills, tasks, historical reports and docs tracked.
 # Do not add rules that hide reports/, tasks/, docs/, skills/, platforms/,
 # adapters/, roles/, templates/ or tools/.

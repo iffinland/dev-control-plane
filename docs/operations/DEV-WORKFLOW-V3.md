@@ -1,0 +1,324 @@
+# Workflow v3 development jobs
+
+Status: active operating procedure, implemented 2026-10-31.
+Scope: owner-authorized autonomous development on the Debian VPS.
+Related: [control-plane contract](../../AGENTS.md),
+[workflow](../../WORKFLOW.md), [unattended OpenCode runbook](UNATTENDED-OPENCODE.md),
+[tmux runbook](OPENCODE-TMUX-SESSIONS.md),
+[OpenCode adapter](../../adapters/opencode/README.md).
+
+## What Workflow v3 adds
+
+Workflow v3 is a durable job layer around the existing execution guard and
+OpenCode:
+
+- `dev start`, `dev status`, `dev report`, `dev logs` and `dev resume`;
+- unique job IDs, start/end timestamps, PID/process tracking and an eight-hour
+  wall-clock maximum per attempt;
+- persistent job status, event history, run logs and Markdown reports outside
+  Git;
+- explicit acceptance criteria; OpenCode exit code `0` is never treated as
+  acceptance;
+- detection of permission rejection, failed commands, missing dependencies,
+  agent step exhaustion and incomplete implementation;
+- detached background execution that survives SSH disconnect without tmux;
+- safe resume of the same OpenCode session and working tree;
+- optional Telegram notifications for completed, failed, blocked and timed-out
+  jobs, with credentials outside Git.
+
+It is **not** a scheduler, daemon, timer or network listener. No job starts
+itself; the owner starts it. The guard still enforces one heavyweight OpenCode
+execution at a time.
+
+## Components
+
+| Component | Path | Purpose |
+| --- | --- | --- |
+| CLI | `tools/dev.py` | `dev start/status/report/logs/resume` (plus `accept`) |
+| Job engine | `tools/devjob/` | Durable store, detection, notifications, worker |
+| Execution guard | `tools/opencode_guard.py` | Preflight, one-execution lock, 8-hour maximum, safe cancellation |
+| Development profile | `adapters/opencode/agents/opencode-development.md` | Unattended development permissions and hard boundaries |
+| Restricted profile | `adapters/opencode/agents/opencode-unattended.md` | Existing restricted profile for non-development tasks |
+| Profile installer | `tools/install_opencode_profiles.sh` | Copies/symlinks profiles into `~/.config/opencode/agents/` |
+| CLI tests | `tools/test_dev_cli.py` | Integration and unit tests with a fake OpenCode |
+| Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
+
+Runtime state defaults to:
+
+```text
+~/.local/state/dev-control-plane/jobs/<job-id>/
+```
+
+Override it with `DEV_CONTROL_PLANE_STATE` or `--state-dir`. Nothing is written
+inside a project repository by default. If `XDG_STATE_HOME` is set, the state
+root is `$XDG_STATE_HOME/dev-control-plane`.
+
+A job directory contains:
+
+```text
+job.json             durable job state and acceptance results
+events.jsonl         append-only lifecycle events
+run.log              guarded OpenCode output
+worker.log           worker/guard console output
+child.pid.json       child PID/PGID written by the guard
+acceptance-AC1.log   per-criterion command output
+report.md            rendered Markdown report
+.worker.lock         per-job worker lock
+```
+
+## Install the CLI and profile
+
+The repository script is runnable directly:
+
+```bash
+python3 /home/iffi/dev-workspace/control-plane/tools/dev.py status --all
+```
+
+Optional user-local command (no system changes):
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf /home/iffi/dev-workspace/control-plane/tools/dev.py ~/.local/bin/dev
+```
+
+Install the OpenCode agent profiles (copies only missing/changed files, does not
+change the interactive `build` agent or `opencode.jsonc`):
+
+```bash
+/home/iffi/dev-workspace/control-plane/tools/install_opencode_profiles.sh
+```
+
+Restart OpenCode after installing or updating an agent profile. Verify the
+profile without starting a job:
+
+```bash
+opencode debug agent opencode-development
+```
+
+## Start a job
+
+Acceptance criteria are mandatory. A criterion is either a command that the
+harness runs after the agent exits, or a manual criterion that the owner must
+accept explicitly.
+
+```bash
+dev start \
+  --repo /home/iffi/dev-workspace/projects/example-app \
+  --title "finish settings page" \
+  --prompt-file /home/iffi/dev-workspace/control-plane/tasks/example/TASK.md \
+  --criterion "unit tests::npm test -- --runInBand" \
+  --criterion "build::npm run build" \
+  --manual-criterion "owner checks the settings page in the live app" \
+  --timeout 8h
+```
+
+Useful forms:
+
+```bash
+# Label::command (label optional)
+dev start ... --criterion "pytest::python3 -m pytest -q"
+
+# A JSON acceptance file: array of strings or {kind,label,command} objects
+dev start ... --acceptance-file acceptance.json
+
+# Validate without starting a job
+dev start ... --dry-run
+
+# Disable Telegram for one job
+dev start ... --no-notify
+```
+
+`dev start` runs the guard preflight first. A refusal creates a `BLOCKED` job
+with the refusal reason instead of starting a doomed process. The worker is
+started with `start_new_session=True`, its standard streams are redirected to the
+job directory and the parent CLI exits immediately. Closing SSH or Termius does
+not stop the job; tmux is not required.
+
+The default timeout and the hard maximum are both **8 hours**. Per-attempt
+timestamps and exit codes are recorded in `job.json`; resume starts a new
+attempt with a fresh maximum.
+
+## Example files
+
+A reusable example prompt and acceptance file live under
+[`examples/workflow-v3`](../../examples/workflow-v3/TASK.md):
+
+```bash
+dev start \
+  --repo /home/iffi/dev-workspace/projects/example-app \
+  --title "settings page save flow" \
+  --prompt-file examples/workflow-v3/TASK.md \
+  --acceptance-file examples/workflow-v3/acceptance.json \
+  --timeout 8h
+```
+
+## Job states and acceptance
+
+| State | Meaning |
+| --- | --- |
+| `RUNNING` | The detached worker is active, or state has not yet been reconciled. |
+| `SUCCESS` | The guarded process exited `0`, every required criterion verified, and no blocking/failure detector fired. |
+| `FAILED` | A failure detector fired, a required criterion failed, or the process exited non-zero. |
+| `BLOCKED` | The guard refused, a permission/dependency/marker blocked the run, or manual acceptance is pending. |
+| `TIMEOUT` | The guard reached the wall-clock limit (exit code `124`). |
+
+`SUCCESS` is computed from evidence, not from the OpenCode exit code alone. A
+run that exits `0` but fails an acceptance command, reports an incomplete
+implementation, or reports permission rejection is `FAILED` or `BLOCKED`.
+
+Detected signals include:
+
+- permission rejection / auto-rejection / approval requirement;
+- failed command, build or test output and non-zero exit records;
+- missing command, module, package or dependency;
+- maximum/step-limit exhaustion;
+- explicit incomplete or not-implemented statements, and `BLOCKED:` markers;
+- required acceptance criteria that did not verify (recorded as incomplete).
+
+Detectors are conservative heuristics over the run log. The acceptance commands
+and the job report remain authoritative.
+
+## Inspect, report and follow logs
+
+```bash
+dev status                       # latest job
+dev status <job-id>
+dev status --all
+dev status <job-id> --json
+
+dev report <job-id>              # prints and rewrites report.md
+dev logs <job-id> -n 200         # run.log
+dev logs -f <job-id>             # follow until interrupted
+dev logs <job-id> --worker       # worker/guard console log
+```
+
+If a `RUNNING` job's worker has disappeared, `dev status` reconciles it to
+`FAILED` with a `worker_lost` issue and records a notification. `dev resume`
+then continues the job.
+
+## Resume without discarding work
+
+```bash
+dev resume <job-id>
+dev resume <job-id> --timeout 8h
+dev resume <job-id> --prompt "Continue from the failing test; do not reset the tree."
+dev resume <job-id> --new-session     # only when the original session is unknown
+dev resume <job-id> --force           # re-run an already successful job
+```
+
+Resume reuses the same job directory, repository/worktree and OpenCode session
+(`opencode run --session <id>`). It appends a new attempt and never runs Git
+reset, clean, stash or checkout. If the session ID is unknown, resume refuses to
+attach to a random session unless `--new-session` is explicitly requested.
+
+## Manual acceptance
+
+For manual criteria, inspect the evidence and then record acceptance:
+
+```bash
+dev accept <job-id> --all-manual --note "checked staging UI"
+dev accept <job-id> --criterion AC3
+```
+
+Only manual criteria can be accepted this way. Command criteria must still pass.
+
+## Telegram notifications
+
+Notifications are optional and use a credential file outside Git:
+
+```text
+~/.config/dev-control-plane/telegram.json
+```
+
+Override the path with `DEV_TELEGRAM_CONFIG`. Example shape (replace values with
+the owner's real credentials, never commit them):
+
+```json
+{
+  "enabled": true,
+  "bot_token": "<configured outside Git>",
+  "chat_id": "<configured outside Git>",
+  "events": ["SUCCESS", "FAILED", "BLOCKED", "TIMEOUT"],
+  "timeout_seconds": 10
+}
+```
+
+Recommended file mode is `0600`. The loader warns if the file is group/world
+accessible. Environment overrides are also supported:
+
+```text
+DEV_TELEGRAM_ENABLED
+DEV_TELEGRAM_BOT_TOKEN
+DEV_TELEGRAM_CHAT_ID
+DEV_TELEGRAM_CONFIG
+```
+
+Credentials are never written to `job.json`, logs, reports or Git. Notification
+failures are recorded as sanitized reasons and never change the job result. Use
+`--no-notify` for a single job.
+
+## Permissions and security
+
+The development profile is
+[`adapters/opencode/agents/opencode-development.md`](../../adapters/opencode/agents/opencode-development.md).
+It allows project work in `/home/iffi/dev-workspace/**`: editing project files,
+project-local dependency installation, Git commit/push/PR, QDN publish/update,
+development-wallet transactions and live application tests. It declares explicit
+allow/deny rules so unattended work does not wait for routine permission prompts.
+Do not use `--auto`.
+
+Hard denials preserved from the control-plane contract:
+
+- no Qortium node/configuration/database/service mutation or restart;
+- no `sudo`, `systemctl`, `service`, `systemd-run`, reboot/shutdown;
+- no system-wide package installation;
+- no `kill`/`pkill`/`killall`, `tmux kill-server`, or `opencode serve/web/acp`;
+- no force-push, branch merge, release, or deployment;
+- no reads of `.env`, private keys or `~/.ssh`, and no writes outside
+  `/home/iffi/dev-workspace/**` (with explicit denials for Qortium paths and
+  `~/.config`).
+
+The guard independently refuses to start a second heavyweight OpenCode
+execution, reads Qortium only to report PID/RSS, and terminates only the process
+group it created. Permission patterns are not a sandbox; owner authorization,
+Git hooks, branch protection and review remain authoritative.
+
+The development profile allows `qortal` commands for QDN/development-wallet work
+but denies `qortium` commands. Never use a development permission to operate the
+live Qortium node.
+
+## Recovery and stop conditions
+
+- `TIMEOUT` or step exhaustion: preserve the working tree and session, then
+  `dev resume`.
+- `BLOCKED` due to permission/dependency: fix the environment or task scope,
+  then resume. The job retains the blocking evidence.
+- Worker disappeared: `dev status` reconciles it; resume continues.
+- Resource WARN/REFUSE from the guard: stop starting new work and write a
+  recoverable handoff. Do not signal Qortium or any process by name.
+- To stop new work, wait for the current job or interrupt the guard only inside
+  the job it owns. Do not use `pkill`, `killall` or `tmux kill-server`.
+
+## Tests
+
+```bash
+python3 tools/test_opencode_guard.py
+python3 tools/test_dev_cli.py
+python3 tools/validate_control_plane.py
+python3 tools/validate_skills.py
+python3 tools/validate_security.py .
+```
+
+The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
+root. They do not start a model session, contact Telegram or touch Qortium.
+
+## Known limits
+
+- one heavyweight OpenCode job at a time (guard lock);
+- job attempts are bounded by 8 hours each, not a single cumulative 8-hour cap;
+- no recurring scheduler, timer or auto-dispatch;
+- a deliberately daemonized child can escape the guard process group;
+- permission patterns are not a sandbox;
+- Telegram delivery depends on the owner's network and bot configuration;
+- OpenCode upgrades can change agent/permission or output semantics;
+- resume depends on OpenCode session history remaining in its SQLite store.

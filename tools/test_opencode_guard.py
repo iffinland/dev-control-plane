@@ -451,7 +451,7 @@ class PermissionProfileTests(unittest.TestCase):
         text = AGENT.read_text(encoding="utf-8")
         for expected in (
             "mode: primary",
-            "steps: 80",
+            "steps: 500",
             'question: deny',
             'task: deny',
             '"**/.env": deny',
@@ -486,7 +486,7 @@ class PermissionProfileTests(unittest.TestCase):
         if result.returncode != 0:
             self.skipTest("opencode debug agent unavailable")
         payload = json.loads(result.stdout)
-        self.assertEqual(payload.get("steps"), 80)
+        self.assertEqual(payload.get("steps"), 500)
         permissions = {
             (item.get("permission"), item.get("pattern")): item.get("action")
             for item in payload.get("permission", [])

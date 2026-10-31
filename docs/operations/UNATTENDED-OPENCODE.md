@@ -200,3 +200,13 @@ approved profile is used for external writes.
 - OpenCode upgrades can change flags, permission semantics or output events;
 - the owner must confirm the real SSH/Termius reconnect after the first
   authorized use.
+
+## Agent step limit
+
+The unattended OpenCode agent uses `steps: 500` (previously 80).
+This is a per-run agent step limit, independent of the execution guard's
+maximum four-hour wall-clock timeout.
+
+When the step limit is reached, preserve the existing working tree and
+session history. Resume the same task in a new guarded execution rather
+than starting implementation from scratch.

@@ -1,7 +1,7 @@
 ---
 description: Restricted unattended implementation agent for authorized control-plane tasks.
 mode: primary
-steps: 80
+steps: 500
 permission:
   "*": deny
   read:

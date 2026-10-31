@@ -4,15 +4,15 @@
   "task": "qortium-dev-monitor-p1",
   "executing_agent": "DeepSeek",
   "report_writer": "DeepSeek",
-  "state": "implementing",
-  "state_revision": 0,
-  "previous_state": "planned",
-  "updated_at_utc": "2026-10-31T20:59:00Z",
+  "state": "owner_validation_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-10-31T21:15:00Z",
   "next_actor": "owner",
   "application": {
     "repository": "/home/iffi/dev-workspace/control-plane",
     "branch": "agent/control-plane/workflow-v3-20261031",
-    "commit": null
+    "commit": "591a08c"
   },
   "skills": {
     "loaded": [],
@@ -25,9 +25,17 @@
     "handoff_commit_push": false,
     "source": "Workflow v3 job authorization: commit only P1-related changes; no push/merge/deploy."
   },
-  "evidence": [],
+  "evidence": [
+    "New P1 tests: 91 tests across 8 modules, all OK",
+    "Existing suite: git hooks, guard (34), dev CLI (30), permissions (20), profiles (5), detect (23), session lifecycle (13), all OK",
+    "Control-plane validator: 54 Markdown files, 207 links, 47 required files",
+    "Skills validator: 17 skills indexed once",
+    "Security validator: self-test passed; 149 files scanned",
+    "Local commit 591a08c contains only P1-related changes"
+  ],
   "missing_evidence": [
-    "Owner must add real numeric Telegram IDs and start the foreground monitor manually."
+    "Owner must add real numeric Telegram IDs, run dev_monitor.py check and start the foreground monitor manually.",
+    "Real Telegram owner acceptance was not executed by the implementation job."
   ],
   "owner_acceptance": "pending",
   "unattended": {

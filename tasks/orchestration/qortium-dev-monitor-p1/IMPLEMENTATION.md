@@ -7,8 +7,7 @@ Report/handoff writer (if different from the executing agent): same agent.
 
 Exact application repository / branch / SHA:
 `/home/iffi/dev-workspace/control-plane`,
-`agent/control-plane/workflow-v3-20261031`, commit recorded below after the P1
-commit.
+`agent/control-plane/workflow-v3-20261031`, `591a08c`.
 
 Verdict and measurable acceptance achieved:
 P1 read-only monitor implemented. Automated P1 tests pass, the full existing
@@ -66,4 +65,5 @@ Canonical detailed report path / SHA-256 / authorized remote evidence:
 (local report; no push or remote evidence authorized).
 
 Commit and push state / verified remote SHA:
-Local commit only; no push authorized.
+Local commit `591a08c` on `agent/control-plane/workflow-v3-20261031`; no push
+authorized.

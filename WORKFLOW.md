@@ -151,6 +151,12 @@ service. It applies only when the owner explicitly authorizes an unattended or
 overnight session and names the repository, outcome, allowed external actions
 and forbidden actions.
 
+Terminal persistence mechanics (tmux naming, working directories, detach,
+reattach, listing and safe cleanup) are documented in the
+[OpenCode tmux session runbook](docs/operations/OPENCODE-TMUX-SESSIONS.md).
+Persistence does not authorize autonomous execution or background scheduling;
+this section still governs authorization, scope, validation and stop conditions.
+
 Before starting, record:
 
 - the measurable outcome and phase exit criteria;

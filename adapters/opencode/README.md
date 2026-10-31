@@ -36,6 +36,14 @@ When working in a registered project:
 Do not overwrite an existing project-level `AGENTS.md`. Add only project-specific
 deltas and let the root contract supply shared rules.
 
+## Session persistence
+
+Terminal session persistence with tmux is documented in the
+[OpenCode tmux session runbook](../../docs/operations/OPENCODE-TMUX-SESSIONS.md).
+tmux keeps an OpenCode terminal alive across SSH/Termius disconnects and allows
+reattachment. It does not authorize autonomous execution: no service, scheduler,
+polling loop or `opencode serve` listener is configured.
+
 ## Boundaries
 
 - OpenCode is an execution client, not a governance source.

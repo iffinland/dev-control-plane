@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "project": "workspace",
+  "task": "qortium-dev-monitor-p1-stabilization",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "owner_validation_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-10-31T22:05:00Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/workflow-v3-20261031",
+    "commit": "e9708ce6ef1e173e1e882ea2ac752a1d4fca09c0"
+  },
+  "skills": {
+    "loaded": [],
+    "freshness": [],
+    "created_or_updated": []
+  },
+  "handoff_sync": "local_only",
+  "authorization": {
+    "application_commit_push": true,
+    "handoff_commit_push": false,
+    "source": "Workflow v3 job authorization: commit only relevant monitor changes; no push/merge/deploy/service activation."
+  },
+  "evidence": [
+    "Monitor tests: 116 tests across 10 modules, all OK",
+    "Full suite: 241 tests, OK (103.192s)",
+    "Control-plane validator: 54 Markdown files, 208 links, 50 required files",
+    "Skills validator: 17 skills indexed exactly once",
+    "Security validator: self-test and 154-file scan passed; pre-commit scanned 22 staged files",
+    "Agent permission validator: PASS, 302 rules / 72 checks",
+    "systemd-analyze verify: exit 0",
+    "Measured baseline: CLI ~0.18-0.21s, SQLite offset ~0.143ms, docs <0.3ms; demonstrated risk was the 35s ordinary API timeout inherited from poll_timeout+10",
+    "After WAL/atomic offset: ~0.048ms per set_offset on this host",
+    "Local commit e9708ce contains only monitor stabilization, tests, unit and documentation"
+  ],
+  "missing_evidence": [
+    "The systemd user unit was deliberately not installed, enabled or started.",
+    "Real Telegram network latency and journal timing output were not exercised; tests use fake transports.",
+    "Owner must install/activate the unit or start the foreground monitor and verify the private chat."
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "deepseek/deepseek-flash",
+    "guard_command": "python3 /home/iffi/dev-workspace/control-plane/tools/opencode_guard.py check",
+    "timeout_seconds": 28800,
+    "stop_condition": "Stabilization acceptance or guard timeout",
+    "checkpoints": [
+      "phase boundary guard check"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": null,
+    "acceptance_evidence": []
+  },
+  "blocker": null
+}

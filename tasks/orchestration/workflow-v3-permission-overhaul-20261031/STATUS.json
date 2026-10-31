@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "project": "control-plane",
+  "task": "workflow-v3-permission-overhaul-20261031",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "review_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-10-31T20:45:00Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/workflow-v3-20261031",
+    "commit": "efa9ae452cda93bdcbebbe19cc8922c6e73fee05"
+  },
+  "skills": {
+    "loaded": [],
+    "freshness": [
+      "control-plane workflow tooling: no platform skill applied; contract and current source read directly"
+    ],
+    "created_or_updated": []
+  },
+  "handoff_sync": "local_only",
+  "authorization": {
+    "application_commit_push": false,
+    "handoff_commit_push": false,
+    "source": "Workflow v3 job authorization: local commit only on the feature branch; no push, merge, deploy, QDN write or transaction."
+  },
+  "evidence": [
+    "Full suite: 253 tests, OK",
+    "Control-plane validator: PASS (54 Markdown files, 209 links, 50 required files)",
+    "Agent permission validator: PASS (337 rules, 97 checks)",
+    "Skills validator: PASS (17 skills indexed once)",
+    "Security validator: PASS (157 files scanned)",
+    "Execution guard: PASS",
+    "Installed profile with backup; opencode debug agent loaded the merged effective rules",
+    "Effective rules allow Workflow state and tooling, deny credential paths and Qortium wallet reads, and deny Qortium mutation",
+    "Re-running detection on the stored monitor sessions classified their permission denials and the same-operation git diff failure as recovered warnings",
+    "Scoped git diff --check clean",
+    "Implementation commit efa9ae452cda93bdcbebbe19cc8922c6e73fee05"
+  ],
+  "missing_evidence": [
+    "Owner review and merge are pending; branch is local only.",
+    "Long-running OpenCode sessions must be restarted to load the installed profile.",
+    "No new real model session, Qortium restart, monitor change, QDN write or transaction was performed."
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "deepseek/deepseek-flash",
+    "guard_command": "python3 tools/opencode_guard.py check",
+    "timeout_seconds": 10800,
+    "stop_condition": "acceptance criteria pass or guard WARN/REFUSE/timeout",
+    "checkpoints": [
+      "baseline guard PASS",
+      "post-implementation validation guard PASS"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": "guard PASS at phase boundaries; RAM 7.4 GiB available, disk 140 GiB available",
+    "acceptance_evidence": [
+      "253 tests OK",
+      "control-plane, permissions, skills and security validators PASS",
+      "effective merged-rule checks PASS"
+    ]
+  },
+  "blocker": null
+}

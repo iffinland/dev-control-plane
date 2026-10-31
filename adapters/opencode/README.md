@@ -44,6 +44,32 @@ tmux keeps an OpenCode terminal alive across SSH/Termius disconnects and allows
 reattachment. It does not authorize autonomous execution: no service, scheduler,
 polling loop or `opencode serve` listener is configured.
 
+## Unattended execution
+
+Bounded unattended execution is documented in the
+[unattended runbook](../../docs/operations/UNATTENDED-OPENCODE.md). It uses:
+
+- a separate restricted agent profile at
+  [`agents/opencode-unattended.md`](agents/opencode-unattended.md), installed as
+  `~/.config/opencode/agents/opencode-unattended.md`;
+- the no-daemon guard at
+  [`tools/opencode_guard.py`](../../tools/opencode_guard.py), which enforces a
+  one-execution lock, resource preflight, a four-hour maximum and safe process-
+  group cancellation;
+- the existing tmux terminal persistence and control-plane authorization rules.
+
+Verified v1.19.5 behaviour that the runbook relies on:
+
+- `opencode run` is the non-interactive surface and waits for session idle;
+- without `--auto`, `opencode run` auto-rejects `ask` permissions;
+- exit code `0` means idle, not accepted work;
+- session history persists in SQLite and can be resumed with `--session`;
+- there is no native monetary budget cap or whole-run timeout.
+
+The owner must not use `--auto` for unattended work. Permission patterns are not
+a security sandbox; the control-plane contract and owner review remain
+authoritative.
+
 ## Boundaries
 
 - OpenCode is an execution client, not a governance source.

@@ -11,6 +11,12 @@ Proven reference implementation to reuse (or exact missing investigation delta):
 Required surfaces and real runtime acceptance steps:
 Reference freshness evidence / environment IDs:
 Authorized external actions (exact repo, branch, operation; otherwise none):
+Unattended execution authorization (only when explicitly granted):
+- Agent profile / guard command / maximum wall-clock:
+- Resource limits / stop condition:
+- Checkpoint cadence and recovery:
+Forbidden actions (unattended):
+Acceptance evidence required (OpenCode exit code 0 alone is not success):
 Canonical report path / handoff branch:
 Owner-only steps or reason owner validation is not applicable:
 Capability-harvest expectation (likely reusable capability or project-specific):

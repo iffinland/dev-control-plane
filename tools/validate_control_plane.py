@@ -35,6 +35,9 @@ REQUIRED = (
     "templates/REPORT.md",
     "tools/validate_skills.py",
     "tools/validate_control_plane.py",
+    "tools/opencode_guard.py",
+    "docs/operations/UNATTENDED-OPENCODE.md",
+    "adapters/opencode/agents/opencode-unattended.md",
 )
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 REF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?([^ >]+)>?", re.MULTILINE)

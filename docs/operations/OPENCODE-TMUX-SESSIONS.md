@@ -2,7 +2,8 @@
 
 Status: active operating procedure, verified 2026-10-31.
 Scope: Debian VPS workspace `/home/iffi/dev-workspace`.
-Related: [workflow](../../WORKFLOW.md), [OpenCode adapter](../../adapters/opencode/README.md).
+Related: [workflow](../../WORKFLOW.md), [OpenCode adapter](../../adapters/opencode/README.md),
+[unattended execution runbook](UNATTENDED-OPENCODE.md).
 
 ## Purpose and boundary
 
@@ -245,7 +246,11 @@ kept the same PIDs and continued running. Memory remained stable at roughly
 3.6 GiB used and 8.1 GiB available. No OpenCode listener, systemd unit, linger
 setting or network port was created.
 
-Actual TCP/SSH teardown was not simulated because it would risk the owner's live
-connection. The client-exit test exercises the server-side persistence mechanism
-that protects against SSH/Termius disconnects; the untested portion is a real
-network drop and client reconnect from a separate SSH login.
+Actual TCP/SSH teardown was not simulated during the 2026-10-31 verification
+because it would risk the owner's live connection. The client-exit test
+exercises the server-side persistence mechanism that protects against
+SSH/Termius disconnects. On 2026-10-31 the owner subsequently reported a
+successful real Termius/SSH disconnect and reconnect against a tmux session.
+That is owner-provided evidence, not an independently re-simulated network drop;
+it closes the previously documented remaining real-network step for this
+workflow.

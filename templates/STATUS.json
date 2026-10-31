@@ -28,5 +28,18 @@
   "evidence": [],
   "missing_evidence": [],
   "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": false,
+    "agent": null,
+    "guard_command": null,
+    "timeout_seconds": null,
+    "stop_condition": null,
+    "checkpoints": [],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": null,
+    "acceptance_evidence": []
+  },
   "blocker": null
 }

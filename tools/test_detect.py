@@ -221,6 +221,244 @@ class StructuredEventTests(unittest.TestCase):
         )
         self.assertIn("failed_command", {issue.kind for issue in detect.scan_events(payload)})
 
+    def test_permission_rejection_recovered_by_later_success(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                                "input": {"command": "cat ~/.local/state/dev-control-plane/jobs/x/job.json"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "python3 tools/dev.py status --json"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        issues = detect.scan_events(payload)
+        permission = [issue for issue in issues if issue.kind == "permission_rejection"]
+        self.assertEqual(len(permission), 1)
+        self.assertTrue(permission[0].recovered)
+        self.assertEqual(permission[0].severity, "warning")
+        self.assertIsNone(detect.highest_severity(issues))
+
+    def test_permission_rejection_without_later_success_remains_blocked(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "git status"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                                "input": {"command": "cat /home/iffi/qortium-data/blockchain.data"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        issues = detect.scan_events(payload)
+        permission = [issue for issue in issues if issue.kind == "permission_rejection"]
+        self.assertEqual(len(permission), 1)
+        self.assertFalse(permission[0].recovered)
+        self.assertEqual(detect.highest_severity(issues), "blocked")
+
+    def test_recovered_permission_does_not_hide_later_blocked_marker(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {"status": "completed", "metadata": {"exit": 0}, "output": "ok"},
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [{"type": "text", "text": "BLOCKED: owner decision required"}],
+                },
+            ]
+        )
+        kinds = {issue.kind: issue for issue in detect.scan_events(payload)}
+        self.assertTrue(kinds["permission_rejection"].recovered)
+        self.assertEqual(kinds["blocked_marker"].severity, "blocked")
+
+    def test_failed_command_recovered_by_same_operation(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "output": "skills/example/SKILL.md:58: trailing whitespace.",
+                                "input": {"command": "git diff --check && git status --short"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "OUR DIFF CLEAN",
+                                "input": {"command": "git diff --check -- tools/example.py && echo CLEAN"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        issues = detect.scan_events(payload)
+        failed = [issue for issue in issues if issue.kind == "failed_command"]
+        self.assertEqual(len(failed), 1)
+        self.assertTrue(failed[0].recovered)
+        self.assertIsNone(detect.highest_severity(issues))
+
+    def test_failed_command_not_recovered_by_unrelated_success(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": "FAILED (failures=1)",
+                                "input": {"command": "npm test"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "ls -la"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        issues = detect.scan_events(payload)
+        failed = [issue for issue in issues if issue.kind == "failed_command"]
+        self.assertEqual(len(failed), 1)
+        self.assertFalse(failed[0].recovered)
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_failed_command_before_success_is_not_recovered(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "git diff --check"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "output": "trailing whitespace",
+                                "input": {"command": "git diff --check"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        failed = [issue for issue in detect.scan_events(payload) if issue.kind == "failed_command"]
+        self.assertEqual(len(failed), 1)
+        self.assertFalse(failed[0].recovered)
+
     def test_assistant_step_exhaustion(self) -> None:
         payload = self.payload(
             [

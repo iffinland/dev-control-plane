@@ -24,6 +24,22 @@ permission:
     "id_ed25519": deny
     "**/id_rsa": deny
     "**/id_ed25519": deny
+    # Credential/configuration directories and workflow-wallet material are not
+    # readable through the file tools, even when their parent path is approved.
+    "/home/iffi/.ssh/**": deny
+    "/home/iffi/.config/**": deny
+    "/home/iffi/.gnupg/**": deny
+    "/home/iffi/.aws/**": deny
+    "/home/iffi/.kube/**": deny
+    "/home/iffi/.docker/**": deny
+    "/home/iffi/qortium-data/wallet*": deny
+    "/home/iffi/qortium-data/**/wallet*": deny
+    "/home/iffi/qortium-data/*.seed": deny
+    "/home/iffi/qortium-data/**/*.seed": deny
+    "/home/iffi/qortium-data/*.mnemonic": deny
+    "/home/iffi/qortium-data/**/*.mnemonic": deny
+    "/home/iffi/qortium-data/*.keystore": deny
+    "/home/iffi/qortium-data/**/*.keystore": deny
   edit:
     "*": allow
     ".git/**": deny
@@ -46,6 +62,16 @@ permission:
     "id_ed25519": deny
     "**/id_rsa": deny
     "**/id_ed25519": deny
+    # Runtime job state and the OpenCode installation are readable for
+    # diagnostics but must not be edited by the agent.
+    "/home/iffi/.local/state/dev-control-plane/**": deny
+    "/home/iffi/.opencode/**": deny
+    "/home/iffi/.ssh/**": deny
+    "/home/iffi/.config/**": deny
+    "/home/iffi/.gnupg/**": deny
+    "/home/iffi/.aws/**": deny
+    "/home/iffi/.kube/**": deny
+    "/home/iffi/.docker/**": deny
     "**/qortium-preview/**": deny
     "**/qortium-data/**": deny
     "**/qortium.jar": deny
@@ -220,15 +246,34 @@ permission:
     "journalctl *--smart-relinquish-var*": deny
     "journalctl *--setup-keys*": deny
     "journalctl *--update-catalog*": deny
-    # The live Qortium node is never started, signalled or written by bash.
-    # Read-only file access uses the read tool; safe log reads are re-allowed.
+    # The live Qortium node is never started, signalled, moved or written by
+    # bash. Diagnostics may still read the paths; policy is not a sandbox.
     "qortium*": deny
     "java *qortium*": deny
     "nohup *qortium*": deny
     "setsid *qortium*": deny
     "*qortium.jar*": deny
-    "*qortium-preview*": deny
-    "*qortium-data*": deny
+    "rm *qortium*": deny
+    "mv *qortium*": deny
+    "cp *qortium*": deny
+    "chmod *qortium*": deny
+    "chown *qortium*": deny
+    "truncate *qortium*": deny
+    "dd *qortium*": deny
+    "tee *qortium*": deny
+    "touch *qortium*": deny
+    "mkdir *qortium*": deny
+    "rmdir *qortium*": deny
+    "ln *qortium*": deny
+    "install *qortium*": deny
+    "sed -i*qortium*": deny
+    "sed --in-place*qortium*": deny
+    "perl -i*qortium*": deny
+    # Wallet material inside node data is never read through bash.
+    "*qortium-data*wallet*": deny
+    "*qortium-data*.seed*": deny
+    "*qortium-data*.mnemonic*": deny
+    "*qortium-data*keystore*": deny
     # Read-only diagnostic re-allows (after broad denials).
     "systemctl status*": allow
     "systemctl show*": allow
@@ -283,24 +328,6 @@ permission:
     "mount": allow
     "swapon --show*": allow
     "ip netns list*": allow
-    "ls *qortium-preview*": allow
-    "stat *qortium-preview*": allow
-    "du *qortium-preview*": allow
-    "wc *qortium-preview*": allow
-    "file *qortium-preview*": allow
-    "head *qortium-preview*": allow
-    "tail *qortium-preview*": allow
-    "cat *qortium-preview*": allow
-    "grep *qortium-preview*": allow
-    "ls *qortium-data*": allow
-    "stat *qortium-data*": allow
-    "du *qortium-data*": allow
-    "wc *qortium-data*": allow
-    "file *qortium-data*": allow
-    "head *qortium-data*": allow
-    "tail *qortium-data*": allow
-    "cat *qortium-data*": allow
-    "grep *qortium-data*": allow
     # Best-effort shell denials for common secret files. These are not a
     # sandbox; interpreters and scripts can still open files.
     "*.env": deny
@@ -325,13 +352,33 @@ permission:
     "*>*qortium.jar*": deny
     "*qortium.jar*>*": deny
   external_directory:
+    # OpenCode checks external paths separately from read/edit/bash. Last match
+    # wins, and a "/**" pattern does not match the root directory itself, so
+    # approved roots are listed with and without the trailing glob.
     "*": deny
+    # Registered development workspace and documented control-plane tooling.
+    "/home/iffi/dev-workspace": allow
     "/home/iffi/dev-workspace/**": allow
+    "/home/iffi/.local/state/dev-control-plane": allow
+    "/home/iffi/.local/state/dev-control-plane/**": allow
+    "/home/iffi/.opencode": allow
+    "/home/iffi/.opencode/**": allow
+    "/tmp/opencode": allow
     "/tmp/opencode/*": allow
+    "/home/iffi/.local/share/opencode/tool-output": allow
     "/home/iffi/.local/share/opencode/tool-output/*": allow
+    # Qortium paths are for read-only diagnostics; edit and shell writes remain
+    # denied above.
+    "/home/iffi/qortium-preview": allow
     "/home/iffi/qortium-preview/**": allow
+    "/home/iffi/qortium-data": allow
     "/home/iffi/qortium-data/**": allow
+    # Credential, wallet-adjacent and host-configuration boundaries.
     "/home/iffi/.ssh/**": deny
+    "/home/iffi/.gnupg/**": deny
+    "/home/iffi/.aws/**": deny
+    "/home/iffi/.kube/**": deny
+    "/home/iffi/.docker/**": deny
     "/home/iffi/.config/**": deny
     "/etc/**": deny
 ---
@@ -388,6 +435,19 @@ Use the `read` tool for node files. Do not use shell redirection or file-writing
 commands against `/home/iffi/qortium-preview/**` or
 `/home/iffi/qortium-data/**`; those paths are intentionally denied for `edit`
 and for bash writes.
+
+The Workflow v3 runtime state under
+`/home/iffi/.local/state/dev-control-plane` and the OpenCode installation under
+`/home/iffi/.opencode` are approved tooling roots. They may be inspected and
+copied for isolated tests, but job records must not be edited by the agent.
+Credential-bearing locations (`~/.ssh`, `~/.config`, `~/.gnupg`, `~/.aws`,
+`~/.kube`, `~/.docker`) remain denied, as do Qortium wallet/seed/keystore files.
+
+An intermediate permission or command-tool failure that is followed by
+successful tool activity is recorded as recovered and does not by itself block a
+job. An unresolved permission denial still blocks, and failed required acceptance
+criteria always fail the job. Recovery classification is evidence, not a
+substitute for the acceptance criteria.
 
 Checkpoint rules:
 

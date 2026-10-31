@@ -390,6 +390,222 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(payload["state"], "BLOCKED", payload)
         self.assertIn("permission_rejection", {issue["kind"] for issue in payload["issues"]})
 
+    def test_recovered_permission_does_not_block_success(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                                "input": {
+                                    "command": "cat ~/.local/state/dev-control-plane/jobs/example/job.json"
+                                },
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "job state read",
+                                "input": {"command": "python3 tools/dev.py status --json"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        permission = [
+            issue for issue in payload["issues"] if issue["kind"] == "permission_rejection"
+        ]
+        self.assertEqual(len(permission), 1)
+        self.assertTrue(permission[0]["recovered"])
+        self.assertEqual(permission[0]["severity"], "warning")
+
+    def test_unresolved_permission_blocks_even_with_passing_acceptance(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "git status"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                                "input": {"command": "cat /home/iffi/qortium-data/blockchain.data"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "BLOCKED", payload)
+        permission = [
+            issue for issue in payload["issues"] if issue["kind"] == "permission_rejection"
+        ]
+        self.assertEqual(len(permission), 1)
+        self.assertFalse(permission[0]["recovered"])
+
+    def test_recovered_permission_does_not_hide_acceptance_failure(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {"status": "completed", "metadata": {"exit": 0}, "output": "ok"},
+                        }
+                    ],
+                },
+            ]
+        )
+        job = self.start(mode="success", criterion="python3 -c \"raise SystemExit(1)\"")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        self.assertIn(
+            "incomplete_implementation",
+            {issue["kind"] for issue in payload["issues"]},
+        )
+        permission = [
+            issue for issue in payload["issues"] if issue["kind"] == "permission_rejection"
+        ]
+        self.assertTrue(permission[0]["recovered"])
+
+    def test_recovered_failed_command_does_not_block_success(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "output": "docs/example.md:1: trailing whitespace.",
+                                "input": {"command": "git diff --check && git status --short"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "OUR DIFF CLEAN",
+                                "input": {"command": "git diff --check -- tools/example.py"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        failed = [
+            issue for issue in payload["issues"] if issue["kind"] == "failed_command"
+        ]
+        self.assertEqual(len(failed), 1)
+        self.assertTrue(failed[0]["recovered"])
+
+    def test_unrelated_success_does_not_recover_failed_command(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": "FAILED (failures=1)",
+                                "input": {"command": "npm test"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "ok",
+                                "input": {"command": "ls -la"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        failed = [
+            issue for issue in payload["issues"] if issue["kind"] == "failed_command"
+        ]
+        self.assertFalse(failed[0]["recovered"])
+
     def test_structured_missing_dependency_blocks(self) -> None:
         self.set_export(
             [

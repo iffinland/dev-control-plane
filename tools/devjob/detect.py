@@ -4,6 +4,12 @@ An OpenCode exit code of zero is not acceptance. These detectors add explicit
 signals for permission rejection, failed commands, missing dependencies, agent
 step exhaustion and incomplete implementation.
 
+Structured events preserve order so a recovered intermediate failure can be
+recorded as a warning instead of blocking completed work. A permission denial
+needs a later successful tool call; a failed command needs a later successful
+command performing the same operation. Unresolved failures remain blocking or
+failing, and acceptance criteria stay authoritative.
+
 Preference order:
 
 1. structured OpenCode session events from ``opencode export`` when the session
@@ -20,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -97,6 +104,8 @@ class Issue:
     message: str
     line: int
     excerpt: str
+    recovered: bool = False
+    recovery: str = ""
 
     def asdict(self) -> dict:
         return asdict(self)
@@ -236,25 +245,32 @@ def _strip_ansi(text: str) -> str:
 
 def _append(
     issues: list[Issue],
-    seen: set[tuple[str, str]],
+    seen: set[tuple[str, str, bool]],
     kind: str,
     line: int,
     excerpt: str,
+    *,
+    severity: str | None = None,
+    message: str | None = None,
+    recovered: bool = False,
+    recovery: str = "",
 ) -> None:
     if len(issues) >= MAX_ISSUES:
         return
     clean = safe_text(excerpt.strip(), 300)
-    key = (kind, clean.lower())
+    key = (kind, clean.lower(), recovered)
     if not clean or key in seen:
         return
     seen.add(key)
     issues.append(
         Issue(
             kind=kind,
-            severity=_severity(kind),
-            message=_message(kind),
+            severity=severity or _severity(kind),
+            message=message or _message(kind),
             line=line,
             excerpt=clean,
+            recovered=recovered,
+            recovery=recovery,
         )
     )
 
@@ -382,7 +398,7 @@ def _process_line(
     text: str,
     line_number: int,
     issues: list[Issue],
-    seen: set[tuple[str, str]],
+    seen: set[tuple[str, str, bool]],
     *,
     include_specific: bool = True,
 ) -> None:
@@ -426,7 +442,7 @@ def scan_text(text: str) -> list[Issue]:
     """Scan a default OpenCode console log with runtime-context awareness."""
 
     issues: list[Issue] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, bool]] = set()
     current_kind = "none"
     failure_tool = "bash"
     failure_lines: list[str] = []
@@ -521,6 +537,151 @@ def _message_created(info: dict) -> int | None:
     return None
 
 
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+AUXILIARY_COMMANDS = frozenset(
+    {"echo", "printf", "ls", "pwd", "true", ":", "cd", "pushd", "popd", "set", "export", "unset", "source", "."}
+)
+AUXILIARY_SIGNATURES = frozenset({("git", "status"), ("git", "diffstat")})
+COMMAND_WRAPPERS = frozenset({"command", "env", "nice", "nohup", "setsid", "stdbuf", "sudo", "time", "timeout"})
+MULTI_TOKEN_COMMANDS = frozenset(
+    {"bun", "cargo", "docker", "gh", "git", "go", "gradle", "kubectl", "make", "mvn", "npm", "npx", "perl", "pip", "pip3", "pnpm", "python", "python3", "qortal", "qortium", "ruby", "yarn"}
+)
+
+
+def _tool_succeeded(part: dict) -> bool:
+    """True when a tool part completed without an error or non-zero exit."""
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return False
+    if state.get("error"):
+        return False
+    if str(state.get("status") or "").lower() != "completed":
+        return False
+    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    return _exit_code(metadata.get("exit")) in (None, 0)
+
+
+def _tool_command(part: dict) -> str:
+    if str(part.get("tool") or "").lower() not in EXECUTION_TOOLS:
+        return ""
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return ""
+    raw_input = state.get("input")
+    if not isinstance(raw_input, dict):
+        return ""
+    return str(raw_input.get("command") or "")
+
+
+def _shell_segments(command: str) -> list[str]:
+    """Split a shell line on top-level separators, preserving quoted text."""
+    parts: list[str] = []
+    buffer: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            buffer.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            buffer.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            buffer.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            buffer.append(char)
+            index += 1
+            continue
+        if command.startswith("&&", index) or command.startswith("||", index):
+            parts.append("".join(buffer).strip())
+            buffer = []
+            index += 2
+            continue
+        if char in ";|\n":
+            parts.append("".join(buffer).strip())
+            buffer = []
+            index += 1
+            continue
+        buffer.append(char)
+        index += 1
+    parts.append("".join(buffer).strip())
+    return [part for part in parts if part]
+
+
+def _unwrap_tokens(tokens: list[str]) -> list[str]:
+    while tokens and ASSIGNMENT_RE.match(tokens[0]):
+        tokens = tokens[1:]
+    while tokens and tokens[0] in COMMAND_WRAPPERS:
+        wrapper = tokens[0]
+        tokens = tokens[1:]
+        while tokens and tokens[0].startswith("-"):
+            option = tokens[0]
+            tokens = tokens[1:]
+            if wrapper in {"sudo", "nice", "stdbuf"} and option in {"-u", "-g", "-n", "-c", "-i"} and tokens:
+                tokens = tokens[1:]
+        if wrapper == "timeout" and tokens:
+            tokens = tokens[1:]
+        while tokens and ASSIGNMENT_RE.match(tokens[0]):
+            tokens = tokens[1:]
+    return tokens
+
+
+def _segment_signature(segment: str) -> tuple[str, ...] | None:
+    try:
+        tokens = shlex.split(segment, comments=False, posix=True)
+    except ValueError:
+        tokens = segment.split()
+    tokens = _unwrap_tokens(tokens)
+    if not tokens:
+        return None
+    first = tokens[0]
+    if first in AUXILIARY_COMMANDS:
+        return None
+    if first in {"bash", "sh", "zsh", "dash"} and "-c" in tokens:
+        index = tokens.index("-c")
+        if index + 1 < len(tokens):
+            inner = _command_signatures(tokens[index + 1])
+            if inner:
+                return sorted(inner)[0]
+    if first in MULTI_TOKEN_COMMANDS:
+        for token in tokens[1:]:
+            if token.startswith("-"):
+                continue
+            signature = (first, token)
+            return None if signature in AUXILIARY_SIGNATURES else signature
+    signature = (first,)
+    return None if signature in AUXILIARY_SIGNATURES else signature
+
+
+def _command_signatures(command: str) -> frozenset[tuple[str, ...]]:
+    """Best-effort operation signatures for recovery of a failed command.
+
+    Only the command before a heredoc is inspected. Auxiliary diagnostics such
+    as ``cd``, ``echo``, ``ls`` and ``git status`` are ignored so an unrelated
+    successful command cannot recover a real failure.
+    """
+    if not command.strip():
+        return frozenset()
+    head = command.split("<<", 1)[0] if "<<" in command else command
+    signatures = set()
+    for segment in _shell_segments(head):
+        signature = _segment_signature(segment)
+        if signature:
+            signatures.add(signature)
+    return frozenset(signatures)
+
+
 def _event_tool_issue(part: dict) -> tuple[str, str] | None:
     state = part.get("state")
     if not isinstance(state, dict):
@@ -559,6 +720,12 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
     The function reads only tool state and assistant text. User prompts, tool
     inputs and successful tool output are not scanned for permission or
     dependency words.
+
+    Events are kept in order so an intermediate failure can be classified as
+    recovered only when later successful tool activity proves the run continued.
+    A permission denial with no later success remains blocking. A failed command
+    is recovered only when a later successful command performs the same
+    operation; unrelated successful commands do not clear it.
     """
 
     if not isinstance(payload, dict):
@@ -566,15 +733,20 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
     messages = payload.get("messages")
     if not isinstance(messages, list):
         return []
-    issues: list[Issue] = []
-    seen: set[tuple[str, str]] = set()
-    for message in messages:
+    ordered: list[tuple[int, int, dict]] = []
+    for index, message in enumerate(messages):
         if not isinstance(message, dict):
             continue
         info = message.get("info") if isinstance(message.get("info"), dict) else {}
         created = _message_created(info)
         if since_ms is not None and created is not None and created < since_ms:
             continue
+        ordered.append((created if created is not None else index, index, message))
+    ordered.sort(key=lambda item: (item[0], item[1]))
+
+    events: list[dict] = []
+    for _created, _index, message in ordered:
+        info = message.get("info") if isinstance(message.get("info"), dict) else {}
         role = str(info.get("role") or "")
         parts = message.get("parts")
         if not isinstance(parts, list):
@@ -586,8 +758,23 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
             if part_type == "tool":
                 found = _event_tool_issue(part)
                 if found:
-                    kind, excerpt = found
-                    _append(issues, seen, kind, 0, excerpt)
+                    events.append(
+                        {
+                            "type": "issue",
+                            "kind": found[0],
+                            "excerpt": found[1],
+                            "command": _tool_command(part),
+                        }
+                    )
+                elif _tool_succeeded(part):
+                    events.append(
+                        {
+                            "type": "success",
+                            "kind": "",
+                            "excerpt": "",
+                            "command": _tool_command(part),
+                        }
+                    )
                 continue
             if part_type == "text" and role == "assistant":
                 text = str(part.get("text") or "")
@@ -597,9 +784,49 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
                         continue
                     for kind in _line_signals(clean):
                         if kind in {"step_exhaustion", "incomplete_implementation", "blocked_marker"}:
-                            _append(issues, seen, kind, 0, clean)
-            if len(issues) >= MAX_ISSUES:
-                return issues[:MAX_ISSUES]
+                            events.append(
+                                {"type": "issue", "kind": kind, "excerpt": clean, "command": ""}
+                            )
+
+    issues: list[Issue] = []
+    seen: set[tuple[str, str, bool]] = set()
+    for index, event in enumerate(events):
+        if event["type"] != "issue":
+            continue
+        kind = str(event["kind"])
+        recovered = False
+        recovery = ""
+        later = events[index + 1 :]
+        if kind == "permission_rejection":
+            if any(item["type"] == "success" for item in later):
+                recovered = True
+                recovery = "a later tool call completed successfully"
+        elif kind == "failed_command":
+            signatures = _command_signatures(str(event.get("command") or ""))
+            if signatures:
+                for item in later:
+                    if item["type"] != "success":
+                        continue
+                    if signatures & _command_signatures(str(item.get("command") or "")):
+                        recovered = True
+                        recovery = "a later successful command performed the same operation"
+                        break
+        if recovered:
+            _append(
+                issues,
+                seen,
+                kind,
+                0,
+                str(event["excerpt"]),
+                severity="warning",
+                message=f"{_message(kind)} (recovered by later successful work)",
+                recovered=True,
+                recovery=recovery,
+            )
+        else:
+            _append(issues, seen, kind, 0, str(event["excerpt"]))
+        if len(issues) >= MAX_ISSUES:
+            break
     return issues[:MAX_ISSUES]
 
 

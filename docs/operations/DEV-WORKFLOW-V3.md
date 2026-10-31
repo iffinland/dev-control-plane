@@ -162,14 +162,15 @@ dev start \
 | State | Meaning |
 | --- | --- |
 | `RUNNING` | The detached worker is active, or state has not yet been reconciled. |
-| `SUCCESS` | The guard completed the run (process exit `0`, or a confirmed session completion stopped a hung CLI), every required criterion verified, and no blocking/failure detector fired. |
-| `FAILED` | A failure detector fired, a required criterion failed, or the process exited non-zero. |
-| `BLOCKED` | The guard refused, a permission/dependency/marker blocked the run, or manual acceptance is pending. |
+| `SUCCESS` | The guard completed the run (process exit `0`, or a confirmed session completion stopped a hung CLI), every required criterion verified, and no unresolved blocking/failure detector fired. |
+| `FAILED` | A required criterion failed, an unresolved failure detector fired, or the process exited non-zero. |
+| `BLOCKED` | The guard refused, an unresolved permission/dependency/marker blocked the run, or manual acceptance is pending. |
 | `TIMEOUT` | The guard reached the wall-clock limit (exit code `124`). |
 
 `SUCCESS` is computed from evidence, not from the OpenCode exit code alone. A
 run that exits `0` but fails an acceptance command, reports an incomplete
-implementation, or reports permission rejection is `FAILED` or `BLOCKED`.
+implementation, or leaves a permission denial unresolved is `FAILED` or
+`BLOCKED`.
 
 Detected signals include:
 
@@ -185,6 +186,22 @@ Detection prefers structured OpenCode tool events from
 to the job directory; only short sanitized issue excerpts are retained. Events
 are filtered to the current attempt, so a resolved error from an earlier attempt
 does not re-block a resumed job.
+
+Structured events preserve order so an intermediate failure can be classified
+as recovered:
+
+- a permission rejection followed by successful tool activity is a `warning`
+  and does not block; a rejection with no later success remains `blocked`;
+- a failed command is recovered only when a later successful command performs
+  the same operation (for example a scoped retry of `git diff --check`);
+- missing dependencies, step exhaustion, incomplete implementation and
+  `BLOCKED:` markers are never auto-recovered;
+- required acceptance criteria remain independent and authoritative. A recovered
+  error never turns a failed criterion into success.
+
+Recovered issues remain visible in `dev status` and `report.md` with recovery
+evidence. The context-aware log fallback cannot prove recovery, so it stays
+conservative and treats a permission rejection as blocking.
 
 When structured export is unavailable, the detector parses the default OpenCode
 console log with runtime context. It inspects failed tool blocks and explicit
@@ -319,9 +336,19 @@ The development profile is
 It allows normal development in `/home/iffi/dev-workspace/**`: project edits,
 project-local dependency installation, builds/tests, Git commit/push/PR, SSH,
 QDN publish/update, Qortal API calls, authorized development-wallet operations
-and live application tests. It also permits read-only diagnostics of the VPS and
-the running Qortium node. It declares explicit allow/deny rules so unattended
-work does not wait for routine permission prompts. Do not use `--auto`.
+and live application tests. Approved tooling roots also include Workflow v3
+state (`/home/iffi/.local/state/dev-control-plane`), the OpenCode installation
+(`/home/iffi/.opencode`), `/tmp/opencode` and the OpenCode tool-output cache. It
+also permits read-only diagnostics of the VPS and the running Qortium node. It
+declares explicit allow/deny rules so unattended work does not wait for routine
+permission prompts. Do not use `--auto`.
+
+`external_directory` is a separate OpenCode check. Last matching rule wins, and
+a `/**` pattern does not match the directory root itself. Approved roots
+therefore appear with and without the trailing glob. Unknown external paths
+remain denied; credential directories (`~/.ssh`, `~/.config`, `~/.gnupg`,
+`~/.aws`, `~/.kube`, `~/.docker`) and the OpenCode auth file stay denied. Job
+state is readable but not editable by the agent.
 
 Hard boundaries:
 
@@ -334,8 +361,17 @@ Hard boundaries:
 - no force-push, branch merge, release or deployment;
 - no package-registry publication; QDN publishing is allowed only within the
   job's authorization;
-- read-only Qortium file access goes through the `read` tool; shell writes and
-  `edit` operations on the Qortium paths are denied.
+- read-only Qortium file access goes through the `read` tool; shell mutation
+  commands, redirection and `edit` operations on the Qortium paths are denied;
+- Qortium wallet JSON, wallet directories, seed, mnemonic and keystore files are
+  denied to the file tools and common shell read forms.
+
+Qortium paths are no longer denied by a broad substring rule. A command that
+merely mentions `qortium-data` (for example a documentation search or a test)
+is allowed; commands that mutate, move, copy or redirect into the protected paths
+are denied. As documented in
+[OpenCode permission semantics](OPENCODE-PERMISSIONS.md), these patterns are
+policy, not an OS sandbox.
 
 The profile intentionally allows `ssh` because normal development and read-only
 remote diagnostics need it. That is not a remote isolation control: an SSH
@@ -401,14 +437,17 @@ python3 tools/validate_security.py .
 ```
 
 The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
-root, including a hung-CLI-after-`finish=stop` regression case. The detection
-tests include the actual documentation, source/diff and failed-tool log examples
-from the permissions job. `test_session_lifecycle.py` covers structured
-completion evidence, active-tool safety, attempt scoping and total-vs-attempt
-duration reporting. The permission tests parse
-the agent Markdown and exercise the last-match wildcard model; they also record
-the known wrapper/script limitations. They do not start a model session, contact
-Telegram or touch Qortium.
+root, including a hung-CLI-after-`finish=stop` regression case. They include
+recovered and unresolved permission rejections, recovered same-operation command
+failures and unrelated successful commands that must not clear a failure. The
+detection tests include the actual documentation, source/diff and failed-tool log
+examples from the permissions job, plus the recovered/unresolved structured-event
+matrix. `test_session_lifecycle.py` covers structured completion evidence,
+active-tool safety, attempt scoping and total-vs-attempt duration reporting. The
+permission tests parse the agent Markdown and exercise the last-match wildcard
+model, approved tooling roots, exact directory-root matching, Qortium diagnostics
+and hard boundaries; they also record the known wrapper/script limitations. They
+do not start a model session, contact Telegram or touch Qortium.
 
 ## Known limits
 
@@ -424,7 +463,8 @@ Telegram or touch Qortium.
   completion detection is limited to sessions whose id or exact title is known;
 - generic non-execution tool errors (for example a 404 web fetch) are ignored
   unless they indicate a permission or dependency problem; execution-tool
-  failures remain detectable;
+  failures remain detectable, with same-operation retries classified as
+  recovered warnings;
 - Telegram delivery depends on the owner's network and bot configuration;
 - OpenCode upgrades can change agent/permission or output semantics;
 - resume depends on OpenCode session history remaining in its SQLite store.

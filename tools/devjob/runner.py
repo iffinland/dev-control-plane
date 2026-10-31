@@ -1158,7 +1158,11 @@ def render_status(job: dict) -> str:
     if payload["issues"]:
         lines.append("Issues:")
         for issue in payload["issues"][:10]:
-            lines.append(f"  - [{issue.get('severity')}] {issue.get('kind')}: {issue.get('message')}")
+            suffix = " (recovered)" if issue.get("recovered") else ""
+            lines.append(
+                f"  - [{issue.get('severity')}] {issue.get('kind')}: "
+                f"{issue.get('message')}{suffix}"
+            )
     lines.append(f"Log:      {payload['log_path']}")
     lines.append(f"Report:   {payload['report_path']}")
     return "\n".join(lines)
@@ -1240,6 +1244,8 @@ def render_report(job: dict) -> str:
         )
         if issue.get("excerpt"):
             lines.append(f"  - `{issue['excerpt']}`")
+        if issue.get("recovered"):
+            lines.append(f"  - recovered: {issue.get('recovery') or 'later successful work'}")
     lines.extend(["", "## Git snapshot", ""])
     snapshot = job.get("git") or {}
     if snapshot:

@@ -59,6 +59,37 @@ Key facts that the profile relies on:
 7. An exit code of `0` means the session went idle, not that the requested work
    was accepted.
 
+## Observed external-directory rejections (2026-10-31)
+
+Two Qortium Dev Monitor jobs were marked `BLOCKED` by the old policy even though
+their required acceptance criteria passed. Inspecting the structured OpenCode
+session exports (`opencode export <session-id>`) showed exactly two rejected
+operations, both caused by `external_directory` rather than a real safety
+boundary:
+
+```text
+cat ~/.local/state/dev-control-plane/jobs/<job-id>/job.json | ...
+cd ~/.local/state/dev-control-plane/monitor && python3 ...
+cp -a ~/.local/state/dev-control-plane /tmp/opencode/state-copy
+```
+
+The merged rules contained the global `external_directory "*" ask` plus the
+development profile's `external_directory "*" deny`. Because `opencode run`
+auto-rejects `ask` without `--auto`, any path without a later matching allow was
+denied. The Workflow v3 state root had no allow rule.
+
+A second matching detail matters: `"/path/**"` does not match the directory
+`/path` itself. Reading a directory root therefore needs both entries:
+
+```text
+"/path": allow
+"/path/**": allow
+```
+
+The development profile now lists approved roots with and without the trailing
+glob. `opencode debug agent opencode-development` is the authoritative check of
+the merged, effective rule order after a global configuration change.
+
 ## Development policy
 
 The canonical profile is
@@ -72,10 +103,18 @@ It allows:
   live application checks;
 - QDN publish/update tooling and Qortal API calls when the job authorizes them;
 - development-wallet transactions only when the job explicitly authorizes them;
+- approved local tooling and runtime state: the registered development
+  workspace (`/home/iffi/dev-workspace`), Workflow v3 state
+  (`/home/iffi/.local/state/dev-control-plane`), the OpenCode installation
+  (`/home/iffi/.opencode`), `/tmp/opencode` and the OpenCode tool-output cache;
 - read-only VPS/Qortium diagnostics: `ps`, `top`, `free`, `df`, `uptime`,
   `journalctl`, `systemctl status/show/cat/list-*`, `service ... status`,
   `dpkg -l`, `apt list`, `sysctl -a`, `ip ... show`, `dmesg`, and read-only
   reads of Qortium logs/configuration through the `read` tool.
+
+Workflow v3 job records are read-only for the agent: the `edit` tool and common
+shell mutation commands are denied for the state root. The worker owns those
+records.
 
 It denies or constrains:
 
@@ -91,10 +130,17 @@ It denies or constrains:
 - containers/orchestration, `iptables`/`nft`/`ufw`, `nsenter`, `chroot`,
   hostname/timezone/locale changes, network-interface changes, mounts, swap and
   kernel-module changes, and `journalctl` maintenance options;
-- starting or writing the Qortium node: `qortium*`, `java ... qortium`, the JAR,
-  `/home/iffi/qortium-preview/**` and `/home/iffi/qortium-data/**` for shell
-  writes and edits. The same paths are allowed for diagnostics and the `read`
-  tool;
+- starting, signalling or writing the Qortium node: `qortium*`, `java ...
+  qortium`, the JAR, and shell mutation/redirection commands against
+  `/home/iffi/qortium-preview/**` and `/home/iffi/qortium-data/**`. Both paths
+  remain readable for diagnostics and through the `read` tool; the `edit` tool
+  is denied;
+- Qortium wallet material: wallet JSON, wallet directories, seed, mnemonic and
+  keystore files under the node data path are denied to the file tools and to
+  common shell read forms;
+- credential-bearing locations: `~/.ssh`, `~/.config`, `~/.gnupg`, `~/.aws`,
+  `~/.kube`, `~/.docker` and the OpenCode auth file are denied even though other
+  tooling roots are allowed;
 - `.env`/key files for the `read` and `edit` tools, with `.env.example` allowed.
   Bash has best-effort denials for `.env` and direct key reads, but see the
   limitations below.
@@ -114,6 +160,29 @@ Use the `read` tool for node configuration and logs. Do not use `tail >`,
 the node paths. Shell redirection against `/home/iffi/qortium-preview/**` and
 `/home/iffi/qortium-data/**` is denied, but the pattern rules are not a complete
 write barrier.
+
+## Job outcome classification
+
+Permission and command failures are not all equivalent. The structured session
+detector now keeps event order:
+
+- a `permission_rejection` followed by a later successful tool call is recorded
+  as `recovered` with `warning` severity and does not block the job;
+- a `permission_rejection` with no later successful tool call remains
+  `blocked`;
+- a `failed_command` is recovered only when a later successful command performs
+  the same operation (for example `git diff --check` followed by a scoped
+  `git diff --check -- <files>`); an unrelated successful command does not clear
+  it;
+- missing dependencies, step exhaustion, incomplete-implementation text and
+  `BLOCKED:` markers are never auto-recovered;
+- required acceptance criteria are evaluated independently. A recovered
+  permission error or command failure never turns a failed criterion into
+  success.
+
+Recovered issues stay visible in the report with their recovery evidence. The
+context-aware log fallback cannot prove recovery, so it stays conservative and
+continues to treat a permission rejection as blocking.
 
 ## Limits of command-pattern control
 
@@ -170,6 +239,7 @@ python3 tools/validate_agent_permissions.py --limitations
 python3 tools/test_agent_permissions.py
 python3 tools/test_opencode_guard.py
 python3 tools/test_install_profiles.py
+tools/install_opencode_profiles.sh --check
 ```
 
 The checker implements OpenCode's last-match wildcard model and a conservative

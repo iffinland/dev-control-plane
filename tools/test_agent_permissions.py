@@ -113,6 +113,37 @@ class DevelopmentPolicyTests(unittest.TestCase):
             "allow",
         )
 
+    def test_workflow_tooling_and_qortium_diagnostics_are_allowed(self) -> None:
+        for command in (
+            "cat ~/.local/state/dev-control-plane/jobs/example/job.json",
+            "cd ~/.local/state/dev-control-plane/monitor && python3 -c 'print(1)'",
+            "cp -a ~/.local/state/dev-control-plane /tmp/opencode/state-copy",
+            "grep -rn 'qortium-data' docs/operations",
+            "python3 -c \"print('/home/iffi/qortium-data')\"",
+            "tail -n 20 /home/iffi/qortium-preview/preview/run.log",
+            "cat /home/iffi/qortium-preview/preview/settings-preview-local.json",
+        ):
+            self.assertEqual(permissions.decide("bash", command, self.rules), "allow", command)
+        for path in (
+            "/home/iffi/.local/state/dev-control-plane",
+            "/home/iffi/.local/state/dev-control-plane/jobs/example/job.json",
+            "/home/iffi/.opencode",
+            "/home/iffi/.opencode/bin/opencode",
+            "/tmp/opencode",
+            "/home/iffi/dev-workspace",
+            "/home/iffi/qortium-preview",
+            "/home/iffi/qortium-data",
+        ):
+            self.assertEqual(
+                permissions.evaluate("external_directory", path, self.rules), "allow", path
+            )
+        self.assertEqual(
+            permissions.evaluate(
+                "read", "/home/iffi/.local/state/dev-control-plane/jobs/example/job.json", self.rules
+            ),
+            "allow",
+        )
+
     def test_hard_boundaries_are_denied(self) -> None:
         for command in (
             "sudo apt update",
@@ -132,6 +163,9 @@ class DevelopmentPolicyTests(unittest.TestCase):
             "npm publish",
             "java -jar /home/iffi/qortium-preview/qortium.jar",
             "rm -rf /home/iffi/qortium-preview/preview",
+            "mv /home/iffi/qortium-preview/preview/run.log /tmp/run.log",
+            "chmod 777 /home/iffi/qortium-data/blockchain.data",
+            "cat /home/iffi/qortium-data/wallet.json",
             "echo changed > /home/iffi/qortium-preview/preview/settings-preview-local.json",
             "journalctl --vacuum-size=1G",
             "hostnamectl set-hostname example",
@@ -162,11 +196,37 @@ class DevelopmentPolicyTests(unittest.TestCase):
             "deny",
         )
         self.assertEqual(
+            permissions.evaluate("read", "/home/iffi/qortium-data/wallet.json", self.rules),
+            "deny",
+        )
+        self.assertEqual(
+            permissions.evaluate(
+                "edit", "/home/iffi/.local/state/dev-control-plane/jobs/example/job.json", self.rules
+            ),
+            "deny",
+        )
+        self.assertEqual(
+            permissions.evaluate("edit", "/home/iffi/.opencode/bin/opencode", self.rules),
+            "deny",
+        )
+        self.assertEqual(
             permissions.evaluate("external_directory", "/etc/passwd", self.rules),
             "deny",
         )
         self.assertEqual(
             permissions.evaluate("external_directory", "/home/iffi/.ssh/id_ed25519", self.rules),
+            "deny",
+        )
+        self.assertEqual(
+            permissions.evaluate(
+                "external_directory", "/home/iffi/.gnupg/private-keys-v1.d", self.rules
+            ),
+            "deny",
+        )
+        self.assertEqual(
+            permissions.evaluate(
+                "external_directory", "/home/iffi/.local/share/opencode/auth.json", self.rules
+            ),
             "deny",
         )
 

@@ -84,6 +84,7 @@ if [ "$run_check" -eq 1 ]; then
     echo "install_opencode_profiles: python3 is required for --check" >&2
     exit 1
   fi
+  echo "Validating development profile and approved tooling roots..."
   python3 "$validator" --profile "$source_dir/opencode-development.md" --check
   if [ "$check_only" -eq 1 ]; then
     echo "profile policy check passed; nothing installed (--check)"
@@ -126,7 +127,12 @@ done
 
 if [ "$dry_run" -eq 0 ]; then
   echo ""
+  echo "Approved external roots include the development workspace, Workflow v3 state"
+  echo "(~/.local/state/dev-control-plane), ~/.opencode, /tmp/opencode, OpenCode"
+  echo "tool output and read-only Qortium paths. Credential directories remain denied."
   echo "Restart OpenCode so the profiles load."
   echo "Verify with: opencode debug agent opencode-development"
+  echo "Global opencode.jsonc rules are merged; confirm the effective rule order after"
+  echo "any global permission change."
   echo "Permission patterns are policy, not OS-level isolation; see docs/operations/OPENCODE-PERMISSIONS.md."
 fi

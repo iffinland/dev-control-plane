@@ -41,6 +41,7 @@ REQUIRED = (
     "tools/test_dev_cli.py",
     "tools/test_agent_permissions.py",
     "tools/test_install_profiles.py",
+    "tools/test_detect.py",
     "tools/validate_agent_permissions.py",
     "tools/install_opencode_profiles.sh",
     "docs/operations/UNATTENDED-OPENCODE.md",

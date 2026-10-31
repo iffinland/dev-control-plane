@@ -84,6 +84,13 @@ if args[:2] == ["session", "list"]:
         print("[]")
     sys.exit(0)
 
+if args and args[0] == "export":
+    export_file = os.environ.get("FAKE_OPENCODE_EXPORT", "")
+    if export_file and os.path.exists(export_file):
+        with open(export_file, encoding="utf-8") as handle:
+            sys.stdout.write(handle.read())
+    sys.exit(0)
+
 if not args or args[0] != "run":
     print("fake opencode helper")
     sys.exit(0)
@@ -109,6 +116,12 @@ if mode == "steps":
     sys.exit(0)
 if mode == "incomplete":
     print("The implementation is incomplete")
+    sys.exit(0)
+if mode == "noise":
+    print("auto-rejected in a non-interactive run. The full model, the development policy")
+    print('     @unittest.skipUnless(shutil.which("opencode"), "opencode is not installed")')
+    print('+        self.assertNotIn(\'"ssh *": deny\', text)')
+    print("fake opencode run completed")
     sys.exit(0)
 if mode == "resume":
     print("continuing the existing session")
@@ -150,6 +163,12 @@ class CliTestCase(unittest.TestCase):
         self.env["FAKE_OPENCODE_STATE"] = str(self.fake_state)
         self.env["FAKE_OPENCODE_REPO"] = str(self.repo)
         self.env["FAKE_OPENCODE_MODE"] = "success"
+        self.env["FAKE_OPENCODE_EXPORT"] = ""
+
+    def set_export(self, messages: list[dict]) -> None:
+        path = self.root / "opencode-export.json"
+        path.write_text(json.dumps({"info": {"id": "ses_fake123"}, "messages": messages}), encoding="utf-8")
+        self.env["FAKE_OPENCODE_EXPORT"] = str(path)
 
     def tearDown(self) -> None:
         for job in list_jobs(self.state):
@@ -265,6 +284,154 @@ class CliTestCase(unittest.TestCase):
         payload = self.wait_for_state(job["id"])
         self.assertEqual(payload["state"], "FAILED", payload)
         self.assertIn("incomplete_implementation", {issue["kind"] for issue in payload["issues"]})
+
+    def test_noisy_log_does_not_trigger_documentation_false_positives(self) -> None:
+        job = self.start(mode="noise")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        self.assertEqual(payload["issues"], [])
+
+    def test_structured_success_ignores_documentation_and_source_text(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 0},
+                                "output": "auto-rejected in a non-interactive run.\n"
+                                '     @unittest.skipUnless(shutil.which("opencode"), "opencode is not installed")',
+                            },
+                        },
+                        {
+                            "type": "tool",
+                            "tool": "read",
+                            "state": {
+                                "status": "completed",
+                                "output": "Permission denied: documentation example\ncommand not found: source example",
+                            },
+                        },
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="noise")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        self.assertEqual(payload["issues"], [])
+
+    def test_structured_permission_denial_blocks(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "error",
+                                "error": "The user has specified a rule which prevents you from using this specific tool call.",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "BLOCKED", payload)
+        self.assertIn("permission_rejection", {issue["kind"] for issue in payload["issues"]})
+
+    def test_structured_missing_dependency_blocks(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": "bash: vitest: command not found",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "BLOCKED", payload)
+        self.assertIn("missing_dependency", {issue["kind"] for issue in payload["issues"]})
+
+    def test_structured_failed_command_fails(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": "FAILED (failures=1)",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        self.assertIn("failed_command", {issue["kind"] for issue in payload["issues"]})
+
+    def test_structured_step_exhaustion_fails(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": "Reached the maximum number of steps for this agent",
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        self.assertIn("step_exhaustion", {issue["kind"] for issue in payload["issues"]})
+
+    def test_structured_user_text_is_not_scanned(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "user"},
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": "permission denied; command not found; The implementation is incomplete",
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        self.assertEqual(payload["issues"], [])
 
     def test_timeout_is_timeout(self) -> None:
         job = self.start(mode="timeout", timeout="1s")

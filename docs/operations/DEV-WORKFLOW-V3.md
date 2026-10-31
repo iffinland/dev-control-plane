@@ -177,8 +177,19 @@ Detected signals include:
 - explicit incomplete or not-implemented statements, and `BLOCKED:` markers;
 - required acceptance criteria that did not verify (recorded as incomplete).
 
-Detectors are conservative heuristics over the run log. The acceptance commands
-and the job report remain authoritative.
+Detection prefers structured OpenCode tool events from
+`opencode export <session-id>`. The export is parsed in memory and is not written
+to the job directory; only short sanitized issue excerpts are retained. Events
+are filtered to the current attempt, so a resolved error from an earlier attempt
+does not re-block a resumed job.
+
+When structured export is unavailable, the detector parses the default OpenCode
+console log with runtime context. It inspects failed tool blocks and explicit
+runtime error lines, not arbitrary file content. Documentation, source code,
+read/edit output and git diff text are not treated as permission or dependency
+failures merely because they contain phrases such as "permission denied" or
+"is not installed". The acceptance commands and the job report remain
+authoritative.
 
 ## Inspect, report and follow logs
 
@@ -339,6 +350,7 @@ python3 tools/test_opencode_guard.py
 python3 tools/test_dev_cli.py
 python3 tools/test_agent_permissions.py
 python3 tools/test_install_profiles.py
+python3 tools/test_detect.py
 python3 tools/validate_agent_permissions.py --check
 python3 tools/validate_control_plane.py
 python3 tools/validate_skills.py
@@ -346,9 +358,11 @@ python3 tools/validate_security.py .
 ```
 
 The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
-root. The permission tests parse the agent Markdown and exercise the last-match
-wildcard model; they also record the known wrapper/script limitations. They do
-not start a model session, contact Telegram or touch Qortium.
+root. The detection tests include the actual documentation, source/diff and
+failed-tool log examples from the permissions job. The permission tests parse
+the agent Markdown and exercise the last-match wildcard model; they also record
+the known wrapper/script limitations. They do not start a model session, contact
+Telegram or touch Qortium.
 
 ## Known limits
 
@@ -357,6 +371,11 @@ not start a model session, contact Telegram or touch Qortium.
 - no recurring scheduler, timer or auto-dispatch;
 - a deliberately daemonized child can escape the guard process group;
 - permission patterns are not a sandbox;
+- structured detection depends on `opencode export` remaining available for the
+  session; the context-aware log parser is the fallback;
+- generic non-execution tool errors (for example a 404 web fetch) are ignored
+  unless they indicate a permission or dependency problem; execution-tool
+  failures remain detectable;
 - Telegram delivery depends on the owner's network and bot configuration;
 - OpenCode upgrades can change agent/permission or output semantics;
 - resume depends on OpenCode session history remaining in its SQLite store.

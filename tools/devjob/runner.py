@@ -460,6 +460,16 @@ def verify_criteria(job: dict, skip_commands: bool = False) -> dict:
     return verification
 
 
+def _timestamp_ms(value: object) -> int | None:
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return int(datetime.fromisoformat(text).timestamp() * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _discover_session(job: dict) -> str | None:
     try:
         result = subprocess.run(
@@ -604,6 +614,10 @@ def run_worker(job_id: str) -> int:
             run_log = directory / RUN_LOG
             run_log.touch(exist_ok=True)
             chmod_private(run_log)
+            try:
+                run_log_start = run_log.stat().st_size
+            except OSError:
+                run_log_start = 0
             worker_log = directory / WORKER_LOG
             worker_log.touch(exist_ok=True)
             chmod_private(worker_log)
@@ -643,7 +657,22 @@ def run_worker(job_id: str) -> int:
             job["child_pgid"] = (child or {}).get("pgid") or job.get("child_pgid")
             save_job(job)
 
-            issues = [issue.asdict() for issue in detect.scan_log(directory / RUN_LOG)]
+            session_id = job.get("session_id") or _discover_session(job)
+            attempt_started_ms = _timestamp_ms(attempt.get("started_at"))
+            issues: list[dict] | None = None
+            if session_id:
+                structured = detect.scan_session(
+                    session_id,
+                    cwd=job.get("repo"),
+                    since_ms=attempt_started_ms,
+                )
+                if structured is not None:
+                    issues = [issue.asdict() for issue in structured]
+            if issues is None:
+                issues = [
+                    issue.asdict()
+                    for issue in detect.scan_log(directory / RUN_LOG, start_offset=run_log_start)
+                ]
             skip_commands = guard_exit_code in (
                 opencode_guard.EXIT_TIMEOUT,
                 opencode_guard.EXIT_REFUSE,
@@ -662,7 +691,6 @@ def run_worker(job_id: str) -> int:
                         "",
                     ).asdict()
                 )
-            session_id = job.get("session_id") or _discover_session(job)
             attempt["ended_at"] = utc_now()
             attempt["guard_exit_code"] = guard_exit_code
             attempt["detected_issues"] = len(issues)

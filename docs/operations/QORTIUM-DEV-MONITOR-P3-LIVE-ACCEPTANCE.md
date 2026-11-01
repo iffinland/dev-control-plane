@@ -27,6 +27,9 @@ the **real authorized Telegram bot**:
    it into a running turn.
 2. **Cancel job** shows the verified preview, requires the one-time confirmation
    and produces `CANCELLED` through `dev cancel`.
+3. **Resume delivery (E7 mode)** keeps the isolated poller alive after the first
+   cancellation, delivers exactly one queued instruction into synthetic attempt
+   #2 through the real Resume wizard, and stops only after a second cancellation.
 
 The harness exercises the real monitor router, authorization, callback handling,
 confirmation nonces, renderers and Telegram Bot API. It replaces only the
@@ -104,7 +107,9 @@ refuses to run while the production monitor holds it.
 | Production monitor state is missing, so its update offset cannot be proved | Refuse |
 | Pending Telegram updates exist beyond the production monitor offset | Refuse; drain them first |
 | Another isolated poller already owns the temporary state lock | Refuse |
+| E7 is requested without an E7-prepared fixture | Refuse; re-prepare with `--mode e7` |
 | Synthetic job is missing, non-synthetic state appears, or the final state is not `CANCELLED` | Verification fails |
+| E7 has fewer than two cancellations, no exact attempt-#2 delivery, or a duplicate delivery | Verification fails |
 
 No refusal is silently downgraded to a partial success.
 
@@ -120,8 +125,20 @@ python3 tools/p3_live_acceptance.py prepare \
   --source-config "$HOME/.config/dev-control-plane/telegram.json"
 ```
 
-The command prints the synthetic job ID, the isolated paths and the next steps.
-It does **not** contact Telegram.
+The default `--mode e1-e6` preserves the original queue/cancel acceptance flow:
+the isolated poller stops at the first `CANCELLED`. For the full resume lifecycle,
+prepare explicitly with E7 mode:
+
+```bash
+python3 tools/p3_live_acceptance.py prepare \
+  --work-dir /tmp/p3-telegram-live \
+  --source-config "$HOME/.config/dev-control-plane/telegram.json" \
+  --mode e7
+```
+
+The mode is recorded in `manifest.json`; `run`, `status` and `verify` use that
+recorded mode. The command prints the synthetic job ID, mode, isolated paths and
+the next steps. It does **not** contact Telegram.
 
 The generated layout is:
 
@@ -167,8 +184,16 @@ production buttons in the isolated state. Let the production monitor drain them
 cleanly, stop it again and retry. The harness initializes only the temporary
 monitor offset from that value; it never writes the production database.
 
-The poller stops when the synthetic job reaches `CANCELLED`. Use `Ctrl-C` for a
-manual stop; the synthetic job is temporary and cleanup removes it.
+In the default `e1-e6` mode the poller stops when the synthetic job first reaches
+`CANCELLED`. In `e7` mode it deliberately remains active after that first
+cancellation so the owner can press `Resume`; it stops only after the second
+cancellation is recorded. An absolute `--timeout` (default 900 seconds, minimum
+30) bounds the whole run, so a missing Resume or second cancel cannot hang the
+poller indefinitely. Use `Ctrl-C` for a manual stop; the synthetic job is
+temporary and cleanup removes it.
+
+Do not restart the poller halfway through E7. The lifecycle requires exactly one
+resume and exactly two cancellations in the same isolated run.
 
 ## 7. Required Telegram interactions
 
@@ -187,11 +212,14 @@ synthetic job's messages.
 | E4 | Send `/messages <job-id>` | The instruction appears as `[queued]` and says it will be delivered on the next resume |
 | E5 | Return to the job and press `Cancel job` | Preview says `Cancel this running job?` and names only the synthetic job |
 | E6 | Press `Confirm: Cancel running job` | Reply says `Cancel result: cancelled`; the job view shows `CANCELLED` |
-| E7 | Optional: press `Resume`, `Confirm resume`, `Confirm: Resume job`, then cancel the synthetic job again | Resume preview lists the queued instruction; after resume it is delivered at attempt #2 and marked `[delivered]`; final state is `CANCELLED` |
+| E7 | In `--mode e7`: press `Resume`, `Confirm resume`, `Confirm: Resume job`, then cancel the synthetic job again | Resume preview lists exactly one queued instruction; after resume it is delivered once at attempt #2 and marked `[delivered]`; the poller stops only after the second `Cancel result: cancelled` |
 
-For E7, the fake resume prompt contains the queued instruction. It never starts
-OpenCode. Cancelling again is required so verification can prove a terminal
-synthetic state with no success.
+E7 is mandatory for a fixture prepared with `--mode e7`. The fake resume prompt
+contains the queued instruction; it never starts OpenCode. The first cancel is
+not a terminal acceptance result in E7 mode. Cancelling again is required so
+verification can prove exactly one delivery into attempt #2 and a terminal
+synthetic state with no success. A run that stops after the first cancel, resumes
+more than once, or records a duplicate instruction is not an E7 pass.
 
 ## 8. Evidence requirements
 
@@ -238,9 +266,21 @@ Verification passes only when all of the following hold:
   `finished state=CANCELLED`;
 - the fake `dev cancel` invocation was recorded for that job;
 - the owner instruction contains `P3-TELEGRAM-LIVE-ACCEPTANCE` and is `queued`,
-  or, for E7, `delivered` after a recorded resume whose prompt contains it;
+  or, for E7, exactly one matching instruction is `delivered` after exactly one
+  recorded resume whose prompt contains it;
+- for E7, the job records exactly two attempts (`#1`, `#2`), exactly one resume,
+  exactly two `cancel_observed` events (attempt #1 and attempt #2), exactly two
+  fake cancel calls and one fake resume call; the delivered instruction has
+  `delivered_attempt = 2`;
+- for E7, the journal shows exactly one Resume preview/confirmation pair, exactly
+  one `Queued instructions included: 1`, and two cancel previews/results;
 - the journal contains the required buttons, callbacks and confirmation labels;
 - the operator evidence has no `UNRECORDED` value and all attestations are true.
+
+E7 verification fails closed when any of those conditions is missing, when more
+than one token-bearing instruction or resume is recorded (duplicate delivery), or
+when the synthetic job reaches `SUCCESS`. A report may say `delivered` only when
+the durable owner-message row proves attempt #2 delivery.
 
 A pass writes `evidence/report.json` and `evidence/REPORT.md`. Both are
 synthetic evidence and must never be presented as a real development delivery.
@@ -287,8 +327,12 @@ production job.
 | `Telegram preflight failed` | Check network and token validity; never print the token |
 | `a Telegram webhook is configured` | Clear the webhook explicitly before long polling |
 | `409 Conflict` | Another poller is active; stop the production monitor deliberately |
-| `timed out before ... cancelled` | The synthetic job was not cancelled; no success is claimed. Inspect `status`, then retry or clean up |
-| `final state is RUNNING` | The optional resume was performed without a final cancel; cancel the synthetic job again |
+| `timed out ... before ... lifecycle` | The synthetic job did not reach the mode's terminal condition; no success is claimed. Inspect `status`, then retry or clean up |
+| `resume acceptance requires ... --mode e7` | The fixture was prepared for E1-E6. Re-prepare with `--mode e7`; do not extend an E1-E6 run |
+| `final state is RUNNING` | A resume was performed without a final cancel; cancel the synthetic job again |
+| `E7 requires exactly two recorded cancellations` | The poller/operator stopped after the first cancel. Re-run E7 and perform the second cancel |
+| `E7 requires ... delivered by the resume` | The Resume wizard did not deliver the queued instruction; inspect the preview/journal and retry the resume |
+| `E7 requires exactly one owner instruction` | A duplicate token-bearing instruction was queued; clean up and re-prepare |
 | `no queued owner instruction contains ...` | The instruction text did not include the synthetic marker; repeat E3 |
 | `non-synthetic job found` | Do not mix production job state into the fixture; clean up and re-prepare |
 | `isolated monitor is still running` | Stop it with its stop flag or `Ctrl-C`, then clean up |

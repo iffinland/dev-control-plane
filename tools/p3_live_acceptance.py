@@ -15,6 +15,10 @@ Typical operator sequence (the live monitor must be stopped first, manually):
     python3 tools/p3_live_acceptance.py verify --work-dir /tmp/p3-live
     python3 tools/p3_live_acceptance.py cleanup --work-dir /tmp/p3-live
 
+For the full two-cancellation resume lifecycle, prepare with `--mode e7` before
+running. The default `e1-e6` mode stops the poller at the first cancellation and
+keeps the original queue/cancel acceptance flow unchanged.
+
 `prepare`, `verify`, `status` and `cleanup` do not contact Telegram. Only `run`
 starts the isolated long poller, and only with the explicit confirmation flag.
 """
@@ -32,7 +36,10 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from devmonitor.acceptance import (  # noqa: E402
+    ACCEPTANCE_MODES,
+    DEFAULT_ACCEPTANCE_MODE,
     DEFAULT_INSTRUCTION,
+    MODE_E7,
     AcceptanceError,
     LiveAcceptanceHarness,
 )
@@ -45,6 +52,7 @@ def _print_prepare(harness: LiveAcceptanceHarness, source_config: Path) -> None:
     print(f"  work dir: {manifest['paths']['root']}")
     print(f"  job id:   {manifest['job_id']}")
     print(f"  project:  {manifest['project_id']}")
+    print(f"  mode:     {manifest['acceptance_mode']}")
     print(f"  source config: {source_config} (unchanged)")
     print(f"  source registry: {manifest['source']['registry']} (unchanged)")
     print(f"  isolated registry: {manifest['paths']['registry']}")
@@ -54,6 +62,12 @@ def _print_prepare(harness: LiveAcceptanceHarness, source_config: Path) -> None:
         "\nThis fixture is not a development job and can never become a real "
         "success. It forces the synthetic job to CANCELLED."
     )
+    if manifest.get("acceptance_mode") == MODE_E7:
+        print(
+            "  E7 mode keeps polling after the first cancel, requires the Resume "
+            "flow to deliver the queued instruction into attempt #2, and stops "
+            "only after the second cancellation."
+        )
     print("\nNext steps:")
     print("  1. Stop the production monitor through its documented path.")
     print(
@@ -83,6 +97,7 @@ def command_prepare(args: argparse.Namespace) -> int:
         source_config=source,
         live_state_dir=args.live_state_dir,
         instruction=args.instruction,
+        acceptance_mode=args.mode,
     )
     _print_prepare(harness, source)
     if args.json:
@@ -125,6 +140,7 @@ def command_status(args: argparse.Namespace) -> int:
         print(json.dumps(snapshot, indent=2, sort_keys=True))
     else:
         print(f"job: {snapshot['job_id']}")
+        print(f"mode: {snapshot['acceptance_mode']}")
         print(f"state: {snapshot['state']}")
         print(f"monitor running: {snapshot['monitor_running']}")
         print(f"journal entries: {snapshot['journal_entries']}")
@@ -161,13 +177,26 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--source-config", help="owner telegram.json to copy (never edit)")
     prepare.add_argument("--live-state-dir", help="live monitor state dir to check")
     prepare.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
+    prepare.add_argument(
+        "--mode",
+        choices=ACCEPTANCE_MODES,
+        default=DEFAULT_ACCEPTANCE_MODE,
+        help=(
+            "e1-e6 (default: stop at the first cancellation) or e7 "
+            "(cancel, resume/deliver into attempt #2, then cancel again)"
+        ),
+    )
     prepare.add_argument("--json", action="store_true")
     prepare.set_defaults(func=command_prepare)
 
     run = subparsers.add_parser("run", help="start the isolated poller against the real bot")
     run.add_argument("--work-dir", required=True)
     run.add_argument("--timeout", type=float, default=900.0)
-    run.add_argument("--expect-resume", action="store_true")
+    run.add_argument(
+        "--expect-resume",
+        action="store_true",
+        help="deprecated alias: requires a fixture prepared with --mode e7",
+    )
     run.add_argument(
         "--confirm-live-telegram",
         action="store_true",

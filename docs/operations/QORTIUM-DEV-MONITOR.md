@@ -691,7 +691,10 @@ The P3 live harness tests cover an isolated throw-away Git repository, a
 generated synthetic project registry, a deterministic fake Workflow v3 CLI and a
 journaling Telegram wrapper. They exercise queue instruction and cancel through
 the real monitor router without contacting Telegram, starting OpenCode, editing
-the production registry or touching the live monitor state. See the
+the production registry or touching the live monitor state. The explicit
+`--mode e7` lifecycle is also covered: the isolated poller stays active after the
+first cancellation, the Resume wizard delivers exactly one queued instruction
+into attempt #2, and only the second cancellation ends the run. See the
 [P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md).
 
 The complete automated gate is:

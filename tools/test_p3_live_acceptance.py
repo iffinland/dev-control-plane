@@ -20,8 +20,12 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 from devmonitor.acceptance import (  # noqa: E402
+    CANCEL_CONFIRM_LABEL,
     DEFAULT_INSTRUCTION,
     EVIDENCE_FILENAME,
+    MODE_E1_E6,
+    MODE_E7,
+    RESUME_CONFIRM_LABEL,
     SYNTHETIC_MARKER,
     SYNTHETIC_PROJECT_ID,
     AcceptanceError,
@@ -51,6 +55,95 @@ def find_callback(markup, prefix: str) -> str:
             if data.startswith(prefix):
                 return data
     raise AssertionError(f"callback not found: {prefix}")
+
+
+class ScriptedApi(FakeApi):
+    """Fake Telegram API that follows a deterministic button/text script.
+
+    It returns one update per poll and resolves button callbacks from the most
+    recently sent or edited keyboard, exactly as an operator would press them.
+    """
+
+    def __init__(self, actions: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self.actions = list(actions)
+        self.index = 0
+        self.next_update_id = 1
+        self.last_markup: dict | None = None
+
+    def send_message(self, chat_id, text, reply_markup=None):
+        result = super().send_message(chat_id, text, reply_markup)
+        self.last_markup = reply_markup
+        return result
+
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        result = super().edit_message_text(chat_id, message_id, text, reply_markup)
+        self.last_markup = reply_markup
+        return result
+
+    def _markups(self) -> list[dict]:
+        markups = [self.last_markup] if self.last_markup else []
+        markups += [item["markup"] for item in reversed(self.sent + self.edited) if item.get("markup")]
+        return markups
+
+    def _find(self, finder, value: str) -> str:
+        for markup in self._markups():
+            try:
+                return finder(markup, value)
+            except AssertionError:
+                continue
+        raise AssertionError(f"button or callback not found: {value!r}")
+
+    def _next_update(self) -> dict | None:
+        if self.index >= len(self.actions):
+            return None
+        kind, value = self.actions[self.index]
+        update_id = self.next_update_id
+        if kind == "message":
+            self.next_update_id += 1
+            self.index += 1
+            return message_update(update_id, value)
+        if kind == "button":
+            data = self._find(find_button, value)
+            self.next_update_id += 1
+            self.index += 1
+            return callback_update(update_id, data)
+        if kind == "callback_prefix":
+            data = self._find(find_callback, value)
+            self.next_update_id += 1
+            self.index += 1
+            return callback_update(update_id, data)
+        raise AssertionError(f"unknown scripted action: {kind}")
+
+    def get_updates(self, offset, timeout, limit=100):
+        self.get_updates_calls.append({"offset": offset, "timeout": timeout, "limit": limit})
+        update = self._next_update()
+        return [update] if update is not None else []
+
+
+def e1_e6_actions(job_id: str) -> list[tuple[str, str]]:
+    return [
+        ("message", "/jobs"),
+        ("callback_prefix", "j:"),
+        ("button", "Queue instruction"),
+        ("message", DEFAULT_INSTRUCTION),
+        ("message", f"/messages {job_id}"),
+        ("message", f"/job {job_id}"),
+        ("button", "Cancel job"),
+        ("button", CANCEL_CONFIRM_LABEL),
+    ]
+
+
+def e7_actions(job_id: str) -> list[tuple[str, str]]:
+    return e1_e6_actions(job_id) + [
+        ("message", f"/job {job_id}"),
+        ("button", "Resume"),
+        ("button", "Confirm resume"),
+        ("button", RESUME_CONFIRM_LABEL),
+        ("message", f"/job {job_id}"),
+        ("button", "Cancel job"),
+        ("button", CANCEL_CONFIRM_LABEL),
+    ]
 
 
 class HarnessBase(unittest.TestCase):
@@ -117,6 +210,23 @@ class HarnessBase(unittest.TestCase):
             monitor_running_func=lambda _path: False,
             **kwargs,
         )
+
+    def _write_evidence(self, harness: LiveAcceptanceHarness) -> Path:
+        path = Path(harness.manifest["paths"]["telegram_evidence"])
+        payload = json.loads(path.read_text())
+        payload.update(
+            {
+                "operator": "Regression Test Operator",
+                "started_at_utc": "2026-11-01T12:00:00Z",
+                "finished_at_utc": "2026-11-01T12:05:00Z",
+                "no_success_observed": True,
+                "production_untouched": True,
+                "qortium_unchanged": True,
+                "notes": "Offline fake-API regression test.",
+            }
+        )
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        return path
 
 
 class PrepareTests(HarnessBase):
@@ -267,6 +377,173 @@ class FakeWorkerTests(HarnessBase):
         self.assertIn("non-synthetic", result.stderr)
 
 
+class E7LifecycleTests(HarnessBase):
+    def _drive(self, harness: LiveAcceptanceHarness, actions: list[tuple[str, str]]) -> ScriptedApi:
+        api = ScriptedApi(actions)
+        config = harness._load_config()
+        service, state, _config, _recording, _router, _jobs = harness._build_service(
+            config, api=api
+        )
+        try:
+            guard = 0
+            while api.index < len(api.actions):
+                service.run(max_iterations=1)
+                guard += 1
+                if guard > 100:
+                    raise AssertionError("scripted acceptance flow did not finish")
+        finally:
+            state.close()
+        return api
+
+    def _messages(self, harness: LiveAcceptanceHarness) -> list[dict]:
+        import sqlite3
+
+        database = Path(harness.manifest["paths"]["monitor_state"]) / "monitor.db"
+        connection = sqlite3.connect(database)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT message_id, body, delivery_state, delivered_attempt "
+                "FROM owner_messages WHERE job_id = ? ORDER BY created_at",
+                (harness.job_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [dict(row) for row in rows]
+
+    def _invocations(self, harness: LiveAcceptanceHarness) -> list[dict]:
+        path = Path(harness.manifest["paths"]["job_state"]) / "fake_invocations.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_default_e1_e6_run_still_stops_after_the_first_cancel(self) -> None:
+        harness = self.prepare()
+        self.assertEqual(harness.manifest["acceptance_mode"], MODE_E1_E6)
+        api = ScriptedApi(e1_e6_actions(harness.job_id))
+        result = harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        self.assertEqual(result["acceptance_mode"], MODE_E1_E6)
+        self.assertEqual(result["observed_state"], "CANCELLED")
+        self.assertEqual(result["cancellations"], 1)
+        self.assertFalse(result["instruction_delivered"])
+        self.assertEqual(api.index, len(api.actions))
+
+        evidence = self._write_evidence(harness)
+        report = harness.verify(evidence)
+        self.assertEqual(report["acceptance_mode"], MODE_E1_E6)
+        self.assertEqual(report["instruction_state"], "queued")
+        self.assertNotIn("e7_two_cancellations", report["checks"])
+
+    def test_e7_waits_for_resume_then_stops_only_after_second_cancel(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_E7)
+        self.assertEqual(harness.manifest["acceptance_mode"], MODE_E7)
+        api = ScriptedApi(e7_actions(harness.job_id))
+        result = harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        self.assertEqual(result["acceptance_mode"], MODE_E7)
+        self.assertEqual(result["observed_state"], "CANCELLED")
+        self.assertEqual(result["cancellations"], 2)
+        self.assertTrue(result["instruction_delivered"])
+
+        messages = self._messages(harness)
+        matching = [item for item in messages if SYNTHETIC_MARKER in item["body"]]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["delivery_state"], "delivered")
+        self.assertEqual(matching[0]["delivered_attempt"], 2)
+
+        invocations = self._invocations(harness)
+        self.assertEqual(
+            len([item for item in invocations if item["args"][:2] == ["cancel", harness.job_id]]),
+            2,
+        )
+        self.assertEqual(
+            len([item for item in invocations if item["args"][:2] == ["resume", harness.job_id]]),
+            1,
+        )
+
+        evidence = self._write_evidence(harness)
+        report = harness.verify(evidence)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["acceptance_mode"], MODE_E7)
+        self.assertEqual(report["final_state"], "CANCELLED")
+        self.assertEqual(report["instruction_state"], "delivered")
+        self.assertTrue(report["checks"]["e7_two_cancellations"])
+        self.assertTrue(report["checks"]["e7_exactly_once_delivery"])
+
+    def test_expect_resume_flag_requires_an_e7_prepared_fixture(self) -> None:
+        harness = self.prepare()
+        with self.assertRaisesRegex(AcceptanceError, "--mode e7"):
+            harness.run(
+                api=ScriptedApi([]),
+                expect_resume=True,
+                timeout_seconds=5,
+                sleep=lambda _seconds: None,
+            )
+
+    def test_e7_run_times_out_instead_of_polling_forever(self) -> None:
+        from unittest import mock
+
+        harness = self.prepare(acceptance_mode=MODE_E7)
+        with mock.patch(
+            "devmonitor.acceptance.time.monotonic", side_effect=[100.0, 2000.0]
+        ):
+            with self.assertRaisesRegex(AcceptanceError, "timed out.*e7 lifecycle"):
+                harness.run(
+                    api=ScriptedApi([]),
+                    timeout_seconds=0,
+                    sleep=lambda _seconds: None,
+                )
+
+    def test_verify_rejects_incomplete_e7_after_one_cancel(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_E7)
+        self._drive(harness, e1_e6_actions(harness.job_id))
+        evidence = self._write_evidence(harness)
+        with self.assertRaisesRegex(AcceptanceError, "E7 requires"):
+            harness.verify(evidence)
+
+    def test_verify_rejects_duplicate_e7_delivery(self) -> None:
+        import sqlite3
+
+        harness = self.prepare(acceptance_mode=MODE_E7)
+        api = ScriptedApi(e7_actions(harness.job_id))
+        harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        evidence = self._write_evidence(harness)
+        self.assertTrue(harness.verify(evidence)["ok"])
+
+        database = Path(harness.manifest["paths"]["monitor_state"]) / "monitor.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "INSERT INTO owner_messages(message_id, job_id, user_id, chat_id, body, "
+                "created_at, delivery_state, delivered_at, delivered_attempt) "
+                "VALUES(?, ?, ?, ?, ?, ?, 'delivered', ?, 2)",
+                (
+                    "duplicate-e7",
+                    harness.job_id,
+                    1001,
+                    2002,
+                    DEFAULT_INSTRUCTION,
+                    1,
+                    2,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaisesRegex(AcceptanceError, "exactly one owner instruction"):
+            harness.verify(evidence)
+
+    def test_verify_rejects_e7_false_success(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_E7)
+        api = ScriptedApi(e7_actions(harness.job_id))
+        harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        evidence = self._write_evidence(harness)
+
+        job_path = Path(harness.manifest["paths"]["job_state"]) / "jobs" / harness.job_id / "job.json"
+        job = json.loads(job_path.read_text())
+        job["state"] = "SUCCESS"
+        job_path.write_text(json.dumps(job))
+        with self.assertRaisesRegex(AcceptanceError, "must never report a development success"):
+            harness.verify(evidence)
+
+
 class FullFlowTests(HarnessBase):
     def _load_and_build(self, harness: LiveAcceptanceHarness):
         config = harness._load_config()
@@ -287,23 +564,6 @@ class FullFlowTests(HarnessBase):
             raise AssertionError("no markup was sent")
         latest = max(candidates, key=lambda item: int(item.get("message_id") or 0))
         return latest["markup"]
-
-    def _write_evidence(self, harness: LiveAcceptanceHarness) -> Path:
-        path = Path(harness.manifest["paths"]["telegram_evidence"])
-        payload = json.loads(path.read_text())
-        payload.update(
-            {
-                "operator": "Regression Test Operator",
-                "started_at_utc": "2026-11-01T12:00:00Z",
-                "finished_at_utc": "2026-11-01T12:05:00Z",
-                "no_success_observed": True,
-                "production_untouched": True,
-                "qortium_unchanged": True,
-                "notes": "Offline fake-API regression test.",
-            }
-        )
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        return path
 
     def test_live_flow_queue_and_cancel_produces_verifiable_evidence(self) -> None:
         harness = self.prepare()

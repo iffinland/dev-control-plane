@@ -21,6 +21,12 @@ if any isolation invariant cannot be established.
 The operator runs the live part explicitly. This module does not send a Telegram
 message by itself; only an explicit ``run`` invocation starts the isolated
 poller after the live monitor has been stopped through its documented path.
+
+The default ``e1-e6`` mode stops at the first cancellation. The explicit ``e7``
+mode keeps polling after the first cancellation so the real Resume wizard can
+deliver exactly one queued instruction into synthetic attempt #2, and it stops
+only after a second cancellation. Verification rejects an incomplete E7
+lifecycle, duplicate deliveries and any synthetic success.
 """
 
 from __future__ import annotations
@@ -75,10 +81,33 @@ RESUME_CONFIRM_LABEL = "Confirm: Resume job"
 EVIDENCE_FILENAME = "telegram-evidence.json"
 JOURNAL_FILENAME = "telegram-journal.jsonl"
 REPORT_FILENAME = "report.json"
+MODE_E1_E6 = "e1-e6"
+MODE_E7 = "e7"
+ACCEPTANCE_MODES = (MODE_E1_E6, MODE_E7)
+DEFAULT_ACCEPTANCE_MODE = MODE_E1_E6
 
 
 class AcceptanceError(RuntimeError):
     """The acceptance harness refused or could not prove a safe outcome."""
+
+
+def _normalise_mode(value: object) -> str:
+    """Return a supported acceptance mode, defaulting legacy manifests to E1-E6."""
+
+    if value is None or value == "":
+        return DEFAULT_ACCEPTANCE_MODE
+    text = str(value)
+    if text not in ACCEPTANCE_MODES:
+        raise AcceptanceError(
+            "acceptance mode must be one of: " + ", ".join(ACCEPTANCE_MODES)
+        )
+    return text
+
+
+def manifest_mode(manifest: Mapping[str, Any]) -> str:
+    """Read the explicit mode recorded in a manifest, preserving old fixtures."""
+
+    return _normalise_mode(manifest.get("acceptance_mode"))
 
 
 def _utc_now() -> str:
@@ -685,6 +714,7 @@ def main():
             print("fake dev: only a RUNNING synthetic job can be cancelled",
                   file=sys.stderr)
             return 2
+        attempt_number = int(job.get("attempt_number") or 1)
         job["state"] = "CANCELLED"
         job["blocker"] = "synthetic acceptance cancellation"
         job["worker_alive"] = False
@@ -696,7 +726,7 @@ def main():
         save_jobs(jobs)
         write_job(job)
         append_event(job, "cancel_requested", "synthetic acceptance; no process signalled")
-        append_event(job, "cancel_observed", "attempt=1")
+        append_event(job, "cancel_observed", "attempt=%d" % attempt_number)
         append_event(job, "finished", "state=CANCELLED exit=0")
         print(json.dumps({
             "cancel_status": "cancelled",
@@ -768,8 +798,10 @@ class LiveAcceptanceHarness:
         source_config: str | Path,
         live_state_dir: str | Path | None = None,
         instruction: str = DEFAULT_INSTRUCTION,
+        acceptance_mode: str = DEFAULT_ACCEPTANCE_MODE,
         monitor_running_func: Any = monitor_running,
     ) -> "LiveAcceptanceHarness":
+        mode = _normalise_mode(acceptance_mode)
         target = Path(root).expanduser()
         if target.exists() and any(target.iterdir()):
             raise AcceptanceError("acceptance work directory must be empty")
@@ -916,7 +948,7 @@ class LiveAcceptanceHarness:
         )
         _write_text(
             evidence_dir / "TELEGRAM-EVIDENCE.md",
-            _evidence_instructions(job_id, instruction),
+            _evidence_instructions(job_id, instruction, mode),
             mode=0o600,
         )
 
@@ -928,6 +960,7 @@ class LiveAcceptanceHarness:
             "created_at": _utc_now(),
             "job_id": job_id,
             "project_id": SYNTHETIC_PROJECT_ID,
+            "acceptance_mode": mode,
             "instruction": instruction,
             "instruction_token": SYNTHETIC_MARKER,
             "paths": {
@@ -1127,6 +1160,12 @@ class LiveAcceptanceHarness:
     ) -> dict:
         self._check_source_unchanged()
         self._check_live_monitor_free()
+        mode = manifest_mode(self.manifest)
+        if expect_resume and mode != MODE_E7:
+            raise AcceptanceError(
+                "resume acceptance requires a fixture prepared with --mode e7; "
+                "re-prepare instead of extending an E1-E6 run"
+            )
         config = self._load_config()
         if api is None:
             if not confirm_live:
@@ -1178,12 +1217,19 @@ class LiveAcceptanceHarness:
         previous = install_shutdown_handlers(service) if api is None else {}
         deadline = time.monotonic() + max(30.0, float(timeout_seconds))
         observed = "RUNNING"
+        cancel_count = 0
+        delivered = False
         try:
             while True:
                 if time.monotonic() > deadline:
+                    detail = (
+                        f" after {cancel_count} cancellation(s)"
+                        if mode == MODE_E7
+                        else ""
+                    )
                     raise AcceptanceError(
-                        "timed out before the synthetic job was cancelled; no success "
-                        "is claimed"
+                        f"timed out{detail} before the synthetic job completed the "
+                        f"{mode} lifecycle; no success is claimed"
                     )
                 try:
                     service.run(max_iterations=1)
@@ -1199,16 +1245,25 @@ class LiveAcceptanceHarness:
                             f"Telegram polling failed: {exc.__class__.__name__}"
                         ) from exc
                     raise
-                observed = str(
-                    _read_job(self.job_state, self.job_id).get("state") or "UNKNOWN"
+                job = _read_job(self.job_state, self.job_id)
+                observed = str(job.get("state") or "UNKNOWN")
+                events = _read_events(self.job_state, self.job_id)
+                cancel_count = sum(
+                    1 for item in events if item.get("event") == "cancel_observed"
                 )
-                if observed == "CANCELLED":
-                    if not expect_resume or _has_delivered_message(
-                        self.monitor_state / "monitor.db",
-                        self.job_id,
-                        self.manifest["instruction_token"],
-                    ):
+                delivered = _has_delivered_message(
+                    self.monitor_state / "monitor.db",
+                    self.job_id,
+                    self.manifest["instruction_token"],
+                )
+                if mode == MODE_E7:
+                    # E7 is a two-cancellation lifecycle: the first cancel makes
+                    # the job resumable, the owner resumes it to deliver the queued
+                    # instruction, and only the second cancel ends this poller.
+                    if cancel_count >= 2 and observed == "CANCELLED":
                         break
+                elif observed == "CANCELLED":
+                    break
                 sleep(0.1)
         finally:
             if previous:
@@ -1216,10 +1271,17 @@ class LiveAcceptanceHarness:
             state.close()
         print(
             "acceptance: isolated poller stopped; "
-            f"synthetic job state={observed}",
+            f"synthetic job state={observed} mode={mode} "
+            f"cancellations={cancel_count} delivered={delivered}",
             file=sys.stderr,
         )
-        return {"job_id": self.job_id, "observed_state": observed}
+        return {
+            "job_id": self.job_id,
+            "observed_state": observed,
+            "acceptance_mode": mode,
+            "cancellations": cancel_count,
+            "instruction_delivered": delivered,
+        }
 
     # ---- verification --------------------------------------------------------
     def verify(
@@ -1227,6 +1289,7 @@ class LiveAcceptanceHarness:
     ) -> dict:
         self._check_source_unchanged()
         source = self.manifest.get("source") or {}
+        mode = manifest_mode(self.manifest)
         evidence_target = Path(
             evidence_path or self.manifest["paths"]["telegram_evidence"]
         )
@@ -1313,12 +1376,22 @@ class LiveAcceptanceHarness:
                 "resume delivery evidence is incomplete: "
                 + ", ".join(journal_report["resume"]["missing"])
             )
+        if mode == MODE_E7:
+            _verify_e7_lifecycle(
+                job=job,
+                events=events,
+                invocations=invocations,
+                matching=matching,
+                token=token,
+                journal_report=journal_report,
+            )
 
         report = {
             "ok": True,
             "kind": KIND,
             "synthetic": True,
             "job_id": self.job_id,
+            "acceptance_mode": mode,
             "final_state": state,
             "instruction_state": "delivered" if delivered else "queued",
             "source": {
@@ -1336,6 +1409,14 @@ class LiveAcceptanceHarness:
                 "source_config_unchanged": True,
                 "production_registry_unchanged": True,
                 "operator_attestations": True,
+                **(
+                    {
+                        "e7_two_cancellations": True,
+                        "e7_exactly_once_delivery": True,
+                    }
+                    if mode == MODE_E7
+                    else {}
+                ),
             },
             "verified_at": _utc_now(),
         }
@@ -1360,6 +1441,7 @@ class LiveAcceptanceHarness:
             "kind": KIND,
             "synthetic": True,
             "job_id": self.job_id,
+            "acceptance_mode": manifest_mode(self.manifest),
             "state": job.get("state"),
             "owner_messages": [
                 {
@@ -1397,6 +1479,126 @@ def _has_delivered_message(database: Path, job_id: str, token: str) -> bool:
         and token in str(item.get("body") or "")
         for item in messages
     )
+
+
+def _event_attempt(detail: object) -> int | None:
+    text = str(detail or "")
+    marker = "attempt="
+    if marker not in text:
+        return None
+    try:
+        return int(text.split(marker, 1)[1].split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _verify_e7_lifecycle(
+    *,
+    job: Mapping[str, Any],
+    events: Sequence[dict],
+    invocations: Sequence[dict],
+    matching: Sequence[dict],
+    token: str,
+    journal_report: Mapping[str, Any],
+) -> None:
+    """Prove the full cancel -> resume -> deliver -> cancel E7 lifecycle.
+
+    E7 is accepted only when exactly one queued instruction was delivered exactly
+    once, in synthetic attempt #2, after exactly one resume, and the poller ended
+    only after a second cancellation. Duplicate instructions, duplicate resume
+    deliveries and an incomplete first-cancel-only lifecycle are rejected.
+    """
+
+    if len(matching) != 1:
+        raise AcceptanceError(
+            "E7 requires exactly one owner instruction containing the synthetic "
+            f"token; found {len(matching)}"
+        )
+    instruction = matching[0]
+    if str(instruction.get("delivery_state") or "") != "delivered":
+        raise AcceptanceError(
+            "E7 requires the queued instruction to be delivered by the resume"
+        )
+    if int(instruction.get("delivered_attempt") or 0) != 2:
+        raise AcceptanceError(
+            "E7 exactly-once delivery must be recorded in synthetic attempt #2"
+        )
+
+    if int(job.get("attempt_number") or 0) != 2:
+        raise AcceptanceError("E7 must finish after synthetic attempt #2")
+    if int(job.get("resume_count") or 0) != 1:
+        raise AcceptanceError("E7 requires exactly one resume")
+    attempts = job.get("attempts")
+    numbers = (
+        [int(item.get("number") or 0) for item in attempts]
+        if isinstance(attempts, list)
+        else []
+    )
+    if numbers != [1, 2]:
+        raise AcceptanceError("E7 must record exactly two synthetic attempts: #1 then #2")
+
+    cancel_events = [item for item in events if item.get("event") == "cancel_observed"]
+    if len(cancel_events) != 2:
+        raise AcceptanceError(
+            "E7 requires exactly two recorded cancellations; "
+            f"found {len(cancel_events)}"
+        )
+    if [_event_attempt(item.get("detail")) for item in cancel_events] != [1, 2]:
+        raise AcceptanceError(
+            "E7 cancellations must be recorded after attempt #1 and attempt #2"
+        )
+    resume_events = [item for item in events if item.get("event") == "resume_requested"]
+    if len(resume_events) != 1:
+        raise AcceptanceError("E7 requires exactly one resume_requested event")
+    resumed_starts = [
+        item
+        for item in events
+        if item.get("event") == "attempt_started"
+        and "resume=True" in str(item.get("detail") or "")
+    ]
+    if len(resumed_starts) != 1:
+        raise AcceptanceError("E7 requires exactly one resumed attempt_started event")
+
+    def calls(kind: str) -> list[dict]:
+        return [
+            item
+            for item in invocations
+            if (item.get("args") or [])[:2] == [kind, job.get("id")]
+        ]
+
+    cancel_calls = calls("cancel")
+    if len(cancel_calls) != 2:
+        raise AcceptanceError(
+            f"E7 requires exactly two fake dev cancel calls; found {len(cancel_calls)}"
+        )
+    resume_calls = calls("resume")
+    if len(resume_calls) != 1:
+        raise AcceptanceError(
+            f"E7 requires exactly one fake dev resume call; found {len(resume_calls)}"
+        )
+    matching_prompts = [
+        item for item in resume_calls if token in str(item.get("stdin") or "")
+    ]
+    if len(matching_prompts) != 1:
+        raise AcceptanceError(
+            "E7 resume prompt must contain the queued owner instruction exactly once"
+        )
+    if str(matching_prompts[0].get("stdin") or "").count(token) != 1:
+        raise AcceptanceError(
+            "E7 resume prompt contains the queued instruction more than once"
+        )
+
+    if not journal_report.get("resume", {}).get("all_present"):
+        missing = (journal_report.get("resume") or {}).get("missing") or []
+        raise AcceptanceError(
+            "E7 resume delivery evidence is incomplete: " + ", ".join(missing)
+        )
+    e7_report = journal_report.get("e7") or {}
+    if not e7_report.get("all_present"):
+        missing = e7_report.get("missing") or []
+        raise AcceptanceError(
+            "E7 Telegram evidence is incomplete: " + ", ".join(missing)
+        )
 
 
 def _parse_utc(value: object) -> bool:
@@ -1481,6 +1683,30 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
         or saw_text("Job resumed"),
     }
     resume_missing = [name for name, passed in resume_required.items() if not passed]
+
+    def count_text(fragment: str) -> int:
+        return sum(1 for text in outbound_texts if fragment in text)
+
+    def count_callback(label: str) -> int:
+        return sum(1 for item in callbacks if item == label)
+
+    e7_required = {
+        "resume_once": count_callback("Resume") == 1,
+        "resume_confirm_once": count_callback("Confirm resume") == 1,
+        "resume_final_confirm_once": count_callback(RESUME_CONFIRM_LABEL) == 1,
+        "cancel_confirm_twice": count_callback(CANCEL_CONFIRM_LABEL) == 2,
+        "cancel_result_twice": count_text("Cancel result: cancelled") == 2,
+        "resume_preview_exactly_one": count_text(
+            "Queued instructions for the next resume: 1"
+        )
+        == 1,
+        "resume_confirmation_exactly_one": count_text(
+            "Queued instructions included: 1"
+        )
+        == 1,
+        "resume_result_once": count_text("Job resumed") == 1,
+    }
+    e7_missing = [name for name, passed in e7_required.items() if not passed]
     return {
         "outbound_messages": len(outbound_texts),
         "message_updates": len(messages),
@@ -1493,6 +1719,11 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
             "required": resume_required,
             "missing": resume_missing,
             "all_present": not resume_missing,
+        },
+        "e7": {
+            "required": e7_required,
+            "missing": e7_missing,
+            "all_present": not e7_missing,
         },
         "message_ids": [
             entry.get("message_id")
@@ -1508,7 +1739,17 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
     }
 
 
-def _evidence_instructions(job_id: str, instruction: str) -> str:
+def _evidence_instructions(job_id: str, instruction: str, mode: str) -> str:
+    e7_row = (
+        "| E7 | Press `Resume`, then `Confirm resume`, then `Confirm: Resume job`; "
+        "then cancel the synthetic job again | The preview lists exactly one queued "
+        "instruction; after resume it is delivered once at attempt #2 and marked "
+        "`[delivered]`; the poller stops only after the second `Cancel result: "
+        "cancelled` |\n"
+        if mode == MODE_E7
+        else "| E7 | Not part of this E1-E6 fixture | Re-prepare with `--mode e7` "
+        "to exercise resume delivery |\n"
+    )
     return f"""# Telegram interaction evidence (synthetic)
 
 This file belongs to the isolated acceptance harness. Fill `telegram-evidence.json`
@@ -1517,6 +1758,7 @@ production job data.
 
 - Job ID: `{job_id}`
 - Synthetic marker: `{SYNTHETIC_MARKER}`
+- Acceptance mode: `{mode}`
 - Suggested instruction text: `{instruction}`
 
 Record these actual button interactions in Telegram. The harness also journals
@@ -1530,8 +1772,7 @@ the observed labels, message IDs, update IDs and timestamps automatically.
 | E4 | Send `/messages <job>` | The instruction is shown as `[queued]` for the next resume |
 | E5 | Open the job and press `Cancel job` | Preview says `Cancel this running job?` and shows the synthetic job only |
 | E6 | Press `Confirm: Cancel running job` | Reply says `Cancel result: cancelled`; state becomes `CANCELLED` |
-| E7 | Optional: press `Resume`, then `Confirm resume`, then `Confirm: Resume job` | Preview lists the queued instruction; after resume it is delivered at attempt #2; cancel the synthetic job again before stopping |
-
+{e7_row}
 In `telegram-evidence.json` set:
 
 - `operator`: your name or registered role;
@@ -1552,6 +1793,7 @@ def _report_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- Job ID: `{report.get('job_id')}`",
         f"- Synthetic: `{report.get('synthetic')}`",
+        f"- Acceptance mode: `{report.get('acceptance_mode')}`",
         f"- Final state: `{report.get('final_state')}`",
         f"- Instruction delivery: `{report.get('instruction_state')}`",
         f"- Verified at: `{report.get('verified_at')}`",

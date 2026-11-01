@@ -7,16 +7,17 @@
   "state": "owner_validation_pending",
   "state_revision": 1,
   "previous_state": "implementing",
-  "updated_at_utc": "2026-11-01T18:15:25Z",
+  "updated_at_utc": "2026-11-01T18:15:51Z",
   "next_actor": "owner",
   "application": {
     "repository": "/home/iffi/dev-workspace/control-plane",
     "branch": "agent/control-plane/workflow-v3-20261031",
     "commit": "6efcd2a1bb782910bd2e33b0f6711912f36b5e74",
     "base_commit": "6efcd2a1bb782910bd2e33b0f6711912f36b5e74",
+    "documentation_commit": "1fd710c38e61869ba5fbd18e19e4e1d473f340eb",
     "remote": "dev-control-plane",
-    "remote_sha": null,
-    "remote_sha_note": "The documentation commit and verified remote SHA are filled after the authorized push."
+    "remote_sha": "1fd710c38e61869ba5fbd18e19e4e1d473f340eb",
+    "remote_sha_note": "Verified for the documentation/task-evidence push. This status-only update is committed afterwards and becomes the final branch HEAD; the final handoff records that SHA."
   },
   "skills": {
     "loaded": [
@@ -31,7 +32,7 @@
     "created_or_updated": [],
     "harvest_result": "none — project-specific only; existing acceptance-evidence classes applied"
   },
-  "handoff_sync": "pending_push",
+  "handoff_sync": "pushed",
   "authorization": {
     "application_commit_push": true,
     "handoff_commit_push": true,
@@ -48,7 +49,9 @@
     "Execution guard check: PASS, one heavyweight execution and Qortium read-only",
     "Health check --expect running: passed; live monitor, no webhook, start preflight correctly NOT ready",
     "Owner-observed R-02 /start, /menu and /jobs denials, R-03 README preview/browsing, R-05 README.redacted.md download and R-07 replay pass recorded without retained identifiers",
-    "R-08 through R-10 real-Telegram/synthetic-backend E1-E7 formal pass recorded as RT/S, not production-worker evidence"
+    "R-08 through R-10 real-Telegram/synthetic-backend E1-E7 formal pass recorded as RT/S, not production-worker evidence",
+    "Documentation/task-evidence commit 1fd710c was pushed to dev-control-plane agent/control-plane/workflow-v3-20261031 and the remote SHA matched",
+    "Owner-dirty skills/README.md, two skills/qortium files and the untracked browser-thumbnail skill remain untouched and unstaged"
   ],
   "missing_evidence": [
     "The real E1-E7 and R-07 temporary evidence directories were cleaned; no message IDs, update IDs, timestamps or journals are retained and none were reconstructed.",

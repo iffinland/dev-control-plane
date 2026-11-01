@@ -4,7 +4,11 @@ Status: **P1 read-only observer, P2 authorized control, P3 cancellation plus
 queued owner messaging and P4 hardening implemented with an optional systemd
 user unit; P5 remains proposed.** Activation remains manual; see
 [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md) and the
-[P4 owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+[P4 owner acceptance report](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md). The owner has
+since performed real-Telegram/synthetic-backend E1-E7 and R-07 runs and specific
+owner-attested checks. The final evidence matrix, partial/unexecuted rows, risk
+register and sign-off section live in the P4 acceptance report. No
+production-worker or production-job acceptance is claimed.
 
 | Field | Value |
 | --- | --- |
@@ -17,7 +21,7 @@ user unit; P5 remains proposed.** Activation remains manual; see
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | P1 read-only observer, P2 authorized control, P3 additive cancellation plus queued owner messaging and P4 hardening are implemented in `tools/dev_monitor.py`, `tools/devmonitor/` and additive Workflow v3 changes. P3 adds the `CANCELLED` state, verified `dev cancel`, optional `dev resume --prompt-file -`, durable queued owner instructions with explicit delivery state, safe resume composition and explicit new-session confirmation. P4 adds detector-classification regression fixes, lifecycle-notification redaction, per-user/per-chat rate limits, an hourly start cap, atomic one-time confirmation claims, job-directory symlink resistance, isolated fault-injection tests and the real-runtime owner acceptance checklist. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
+| Implementation state | P1 read-only observer, P2 authorized control, P3 additive cancellation plus queued owner messaging and P4 hardening are implemented in `tools/dev_monitor.py`, `tools/devmonitor/` and additive Workflow v3 changes. P3 adds the `CANCELLED` state, verified `dev cancel`, optional `dev resume --prompt-file -`, durable queued owner instructions with explicit delivery state, safe resume composition and explicit new-session confirmation. P4 adds detector-classification regression fixes, lifecycle-notification redaction, per-user/per-chat rate limits, an hourly start cap, atomic one-time confirmation claims, job-directory symlink resistance, isolated fault-injection tests and the final real-runtime owner acceptance report. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 
@@ -1462,7 +1466,7 @@ P3 — cancel and messaging (implemented 2026-11-01):
 - The monitor exposes cancel only in control mode and only for a RUNNING job with
   a live worker.
 
-P4 — hardening and operations (implemented 2026-11-01; owner acceptance pending):
+P4 — hardening and operations (implemented 2026-11-01; final acceptance report recorded, owner sign-off pending):
 
 - Detector regression: a Python/Node `FileNotFoundError` or a bare
   `No such file or directory` for an ordinary data file is classified as a
@@ -1483,9 +1487,11 @@ P4 — hardening and operations (implemented 2026-11-01; owner acceptance pendin
   polling fault-injection, atomic-claim and fake-CLI start/queue/cancel/resume
   integration tests. The detector regression is covered in `test_detect.py`.
 - The English runbook includes incident response, token rotation and the
-  [real-runtime owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+  [final real-runtime owner acceptance report](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
 - P4 adds no new job semantics, no listener, no Qortium/VPS change and no
-  automatic scheduler. Real-runtime R-01 through R-16 remain owner-executed.
+  automatic scheduler. R-01 through R-16 are recorded in the final report:
+  R-07 through R-10 passed real-Telegram/synthetic-backend verification, several
+  surfaces are owner-attested, and the unexecuted rows remain owner actions.
 
 P5 — optional advanced:
 
@@ -1588,15 +1594,21 @@ tree.
 ### 9.2 Real-runtime owner acceptance
 
 These require the owner's real bot, real Telegram account and the VPS. They are
-not committed credentials and are not part of CI. The maintained P4 checklist
-with preflight, evidence capture and sign-off is
+not committed credentials and are not part of CI. The maintained P4 report with
+preflight, evidence capture, the R-01 through R-16 matrix, risk register and
+sign-off is
 [QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
-As of 2026-11-01 the owner completed the real-bot P3 E1-E7 run with the isolated
-synthetic backend and `verify` passed; that is real-Telegram/synthetic-backend
-evidence for Queue instruction, cancellation and Resume delivery only, not
-production-worker acceptance. Its temporary evidence was cleaned, so no journal
-or identifiers are retained. The remaining P4 rows, including token rotation and
-deliberate fault injection, stay owner-only and explicitly unexecuted.
+As of 2026-11-01 the owner completed the real-bot P3 E1-E7 and R-07 isolated
+synthetic runs and `verify` passed. That is real-Telegram/synthetic-backend
+evidence for Queue instruction, two cancellations, Resume delivery and
+confirmation replay only, not production-worker acceptance. The owner also
+observed the R-02 `/start`, `/menu` and `/jobs` denials, R-03 workspace README
+preview/browsing and an R-05 `README.redacted.md` download on Android; R-05
+redaction correctness and source-hash invariance were not manually demonstrated.
+The temporary evidence directories were cleaned, so no journal or identifiers
+are retained. The remaining rows, including token rotation, deliberate fault
+injection, production-worker cancellation and host-invariant comparison, stay
+owner-only and explicitly unexecuted or accepted as documented exceptions.
 
 | ID | Scenario | Expected evidence |
 | --- | --- | --- |

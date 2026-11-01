@@ -2,12 +2,15 @@
 
 Status: **implemented and covered by isolated regression tests, including the
 R-07 duplicate-confirmation mode. The implementing agent did not execute a live
-Telegram run. The owner later completed E1-E7 through the actual authorized bot
-with the isolated synthetic worker; Queue instruction, two cancellations, Resume
-and exactly-once delivery into synthetic attempt #2 passed `verify`. The
-temporary evidence directory was cleaned up, so no journal, message IDs, update
-IDs, timestamps or report are retained in this repository. R-07 is implemented
-and scripted-tested but its real-bot run remains an owner action.**
+Telegram run. The owner later completed both E1-E7 and the R-07 isolated
+synthetic replay through the actual authorized bot with the isolated synthetic
+worker. E1-E7 passed `verify` with Queue instruction, two cancellations, Resume
+and exactly-once delivery into synthetic attempt #2. R-07 passed `verify` with
+exactly one cancellation, two rejected/deduplicated replay attempts, final
+`CANCELLED`, successful cleanup and the monitor active afterwards. The temporary
+evidence directories were cleaned up, so no journal, message IDs, update IDs,
+timestamps or report are retained in this repository. These are real-Telegram /
+synthetic-backend results, not production-worker acceptance.**
 
 | Field | Value |
 | --- | --- |
@@ -376,7 +379,7 @@ no-listener and no-Qortium-change checks.
 The harness does not replace the P4 checklist and does not authorize a live
 production job.
 
-### 11.1 Verified synthetic E1-E7 results reused by P4
+### 11.1 Verified synthetic E1-E7 and R-07 results reused by P4
 
 The repository has verified automated E1-E7 synthetic coverage in
 [`tools/test_p3_live_acceptance.py`](../../tools/test_p3_live_acceptance.py):
@@ -397,15 +400,18 @@ The P4 acceptance matrix cites the automated results as **S — synthetic P3
 E1-E7/R-07**. They prove the synthetic queue/cancel/resume and
 confirmation-replay contract only.
 
-The P4 matrix separately records a later **RT/S — real Telegram with synthetic
-backend** observation: the owner completed E1-E7 through the actual authorized
+The P4 matrix separately records later **RT/S — real Telegram with synthetic
+backend** observations. The owner completed E1-E7 through the actual authorized
 bot and the isolated synthetic worker, and `verify` passed. That run proves the
 observed real Telegram Queue-instruction, two-cancellation, Resume and
-attempt-#2 delivery round-trip against the synthetic backend. It does **not**
-prove real production-job delivery, real OpenCode execution, a retained journal or
-every P4 row. Its temporary evidence directory was cleaned, so this repository
-retains no `telegram-evidence.json`, journal, message/update IDs or timestamps;
-those values must not be reconstructed. Do not present this RT/S result as
+attempt-#2 delivery round-trip against the synthetic backend. The owner also
+completed the R-07 mode and `verify` passed: exactly one cancellation, two
+rejected/deduplicated replay attempts, final `CANCELLED`, successful cleanup and
+the monitor active afterwards. These runs do **not** prove real production-job
+delivery, real OpenCode execution, a retained journal or every P4 row. Their
+temporary evidence directories were cleaned, so this repository retains no
+`telegram-evidence.json`, journal, message/update IDs or timestamps; those values
+must not be reconstructed. Do not present these RT/S results as
 production-worker evidence.
 
 ## 12. Troubleshooting

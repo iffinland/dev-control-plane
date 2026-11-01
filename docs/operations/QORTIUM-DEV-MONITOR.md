@@ -741,11 +741,15 @@ The unit can be syntax-checked without installing it:
 systemd-analyze verify deploy/systemd/user/qortium-dev-monitor.service
 ```
 
-## 10. Deferred to later phases
+## 10. Acceptance status and later phases
 
-- P4 real-runtime acceptance remains pending until the owner executes the
-  [owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md). Automated
-  hardening, detector corrections and fault-injection tests are implemented.
+- The [P4 owner acceptance report](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md) records
+  the owner's real-Telegram/synthetic-backend R-07 and E1-E7 passes, the
+  owner-attested unauthorized-account denial, README browsing and redacted
+  download, the partial rows and the unexecuted exceptions. Automated hardening,
+  detector corrections and fault-injection tests are implemented. Production-
+  worker acceptance, real token rotation, deliberate network-fault injection and
+  host-invariant comparisons are not claimed.
 - P5: optional read-only latest assistant message, richer queues and search.
 
 P4 does not expose manual acceptance, live prompt injection, arbitrary process
@@ -755,11 +759,12 @@ acceptance; Workflow v3 criteria remain authoritative.
 ## 11. P4 owner acceptance
 
 Use the dedicated
-[real-runtime owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
-It expands the P3 cancel/queue smoke checks into R-01 through R-16 and covers
-authorization, replay, redaction, traversal/symlink resistance, restart
-persistence, polling fault recovery, token rotation and the no-listener /
-no-Qortium-change invariant.
+[final owner acceptance report](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md). It expands
+the P3 cancel/queue smoke checks into R-01 through R-16 and covers authorization,
+replay, redaction, traversal/symlink resistance, restart persistence, polling
+fault recovery, token rotation and the no-listener / no-Qortium-change invariant.
+It keeps automated, scripted, real-Telegram/synthetic-backend, owner-attested and
+unexecuted results distinct, and lists the remaining owner actions and risks.
 
 For a deterministic synthetic backend, use the
 [P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md).

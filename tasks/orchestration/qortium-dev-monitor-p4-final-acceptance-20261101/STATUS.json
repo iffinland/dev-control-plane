@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "project": "control-plane/control-plane",
+  "task": "qortium-dev-monitor-p4-final-acceptance",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "owner_validation_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-11-01T18:15:25Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/workflow-v3-20261031",
+    "commit": "6efcd2a1bb782910bd2e33b0f6711912f36b5e74",
+    "base_commit": "6efcd2a1bb782910bd2e33b0f6711912f36b5e74",
+    "remote": "dev-control-plane",
+    "remote_sha": null,
+    "remote_sha_note": "The documentation commit and verified remote SHA are filled after the authorized push."
+  },
+  "skills": {
+    "loaded": [
+      "skills/shared/capability-harvest/SKILL.md",
+      "skills/shared/workflow-v3-completion-contract/SKILL.md"
+    ],
+    "freshness": [
+      "capability-harvest: shared, verified-runtime, last checked 2026-09-13",
+      "workflow-v3-completion-contract: shared, candidate, last checked 2026-11-01",
+      "Current monitor source, P3/P4 tests, runbooks and task history re-read at base 6efcd2a with Python 3.13."
+    ],
+    "created_or_updated": [],
+    "harvest_result": "none — project-specific only; existing acceptance-evidence classes applied"
+  },
+  "handoff_sync": "pending_push",
+  "authorization": {
+    "application_commit_push": true,
+    "handoff_commit_push": true,
+    "source": "Workflow v3 default project policy: dev-control-plane remote, agent/* branch, automatic push enabled; no merge/deploy/service/QDN/wallet action."
+  },
+  "evidence": [
+    "Full unittest discovery: 474 tests, OK (246.164s)",
+    "P4 monitor suite: 25 tests, OK",
+    "P3 live acceptance suite: 29 tests, OK",
+    "Control-plane validator: 100 active Markdown files, 442 relative links, 85 required files",
+    "Skills validator: 23 active skills indexed exactly once",
+    "Security validator: self-test passed; 241 files scanned",
+    "Agent permission validator: PASS, 338 rules / 98 checks",
+    "Execution guard check: PASS, one heavyweight execution and Qortium read-only",
+    "Health check --expect running: passed; live monitor, no webhook, start preflight correctly NOT ready",
+    "Owner-observed R-02 /start, /menu and /jobs denials, R-03 README preview/browsing, R-05 README.redacted.md download and R-07 replay pass recorded without retained identifiers",
+    "R-08 through R-10 real-Telegram/synthetic-backend E1-E7 formal pass recorded as RT/S, not production-worker evidence"
+  ],
+  "missing_evidence": [
+    "The real E1-E7 and R-07 temporary evidence directories were cleaned; no message IDs, update IDs, timestamps or journals are retained and none were reconstructed.",
+    "R-05 secret-removal correctness and independent source-hash comparison were not manually demonstrated.",
+    "Production-worker cancellation, real token rotation, deliberate network-fault injection and host-invariant comparisons remain unexecuted or explicit exceptions.",
+    "This job did not restart the monitor, send Telegram messages, change owner credentials, or modify Qortium/VPS settings."
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "deepseek/deepseek-flash",
+    "guard_command": "python3 /home/iffi/dev-workspace/control-plane/tools/opencode_guard.py check",
+    "timeout_seconds": 14400,
+    "stop_condition": "documentation, validation, scoped commit, push and remote-SHA confirmation complete",
+    "checkpoints": [
+      "phase boundary guard check"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": null,
+    "acceptance_evidence": []
+  },
+  "blocker": null
+}

@@ -32,6 +32,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import opencode_guard
 import session_state
 
 from .store import safe_text
@@ -78,6 +79,14 @@ WHITESPACE_WARNING_RE = re.compile(
 )
 OWNER_ONLY_WHITESPACE_MESSAGE = (
     "a whitespace check reported only pre-existing owner changes outside the task scope"
+)
+GUARD_CHECK_WARN_STATUS = "opencode-guard: warn"
+GUARD_CHECK_ERROR_MARKERS = (
+    "opencode-guard: refuse",
+    "opencode-guard: error",
+    "opencode-guard: failed",
+    "traceback (most recent call last):",
+    "guarderror:",
 )
 RUNTIME_PREFIXES = (
     "error:",
@@ -488,7 +497,13 @@ def scan_text(text: str, owner_paths: Iterable[str] = ()) -> list[Issue]:
         if classified:
             kind, excerpt = classified
             body = "\n".join(failure_lines[1:])
-            if kind == "failed_command" and _owner_only_whitespace_failure(
+            if kind == "failed_command" and _is_informational_guard_warn(
+                failure_lines[0], body, None
+            ):
+                # Console blocks carry no exit status; require the explicit
+                # check-mode WARN status line and reject refusal/error output.
+                pass
+            elif kind == "failed_command" and _owner_only_whitespace_failure(
                 failure_lines[0], body, owner_paths
             ):
                 _append(
@@ -512,6 +527,12 @@ def scan_text(text: str, owner_paths: Iterable[str] = ()) -> list[Issue]:
         if not stripped:
             if current_kind == "failure":
                 failure_lines.append(clean)
+            continue
+        if current_kind == "failure" and clean.lower().startswith("opencode-guard:"):
+            # A failed tool block can contain the guard's own status line,
+            # which otherwise looks like a section header. Keep it as evidence
+            # so check-mode WARN can be distinguished from REFUSE/ERROR.
+            failure_lines.append(clean)
             continue
         if clean.startswith(SECTION_PREFIXES):
             flush_failure()
@@ -793,6 +814,91 @@ def _unwrap_tokens(tokens: list[str]) -> list[str]:
     return tokens
 
 
+def _segment_tokens(segment: str) -> list[str]:
+    try:
+        tokens = shlex.split(segment, comments=False, posix=True)
+    except ValueError:
+        tokens = segment.split()
+    return _unwrap_tokens(tokens)
+
+
+def _is_guard_check_segment(segment: str) -> bool:
+    tokens = _segment_tokens(segment)
+    for index, token in enumerate(tokens):
+        if token.rsplit("/", 1)[-1] != "opencode_guard.py":
+            continue
+        following = tokens[index + 1 :]
+        subcommand = next((item for item in following if not item.startswith("-")), "")
+        return subcommand == "check"
+    return False
+
+
+def _is_auxiliary_segment(segment: str) -> bool:
+    tokens = _segment_tokens(segment)
+    if not tokens:
+        return True
+    first = tokens[0]
+    if first in AUXILIARY_COMMANDS:
+        return True
+    if first == "git" and len(tokens) > 1 and tokens[1] in {"status", "diffstat"}:
+        return True
+    return False
+
+
+def _is_guard_check_command(command: str) -> bool:
+    """True when a shell command is only ``opencode_guard.py check``.
+
+    Only the guard's informational check mode qualifies. ``run`` mode returns
+    the child's exit code and is never treated as an informational warning.
+    Auxiliary setup such as ``cd`` is allowed, but a compound command that also
+    runs an unrelated operation is refused so its exit status cannot be
+    mistaken for the guard's warning.
+    """
+
+    text = str(command or "").strip()
+    if text.startswith("✗ "):
+        text = text[2:]
+    if text.lower().endswith(" failed"):
+        text = text[:-7]
+    found = False
+    for segment in _shell_segments(text):
+        if _is_guard_check_segment(segment):
+            found = True
+            continue
+        if not _is_auxiliary_segment(segment):
+            return False
+    return found
+
+
+def _is_informational_guard_warn(
+    command: str, output: str, exit_code: int | None
+) -> bool:
+    """True for the guard's documented check-mode ``WARN`` result.
+
+    ``opencode_guard.py check`` exits ``10`` (``EXIT_WARN``) when RAM, disk,
+    load or the one-session limit only warrants a warning. That is not a failed
+    command. The guard's own title/process line can contain arbitrary prompt
+    text, so this narrow classification deliberately requires the check
+    subcommand, exit code 10 and the explicit ``opencode-guard: WARN`` status
+    line, and refuses output that reports a refusal or guard error. Console-log
+    blocks have no exit status; the same status-line and command evidence is
+    still required there.
+    """
+
+    if exit_code is not None and exit_code != opencode_guard.EXIT_WARN:
+        return False
+    if not _is_guard_check_command(command):
+        return False
+    lines = [
+        _strip_ansi(line).strip().lower()
+        for line in str(output or "").splitlines()
+    ]
+    if GUARD_CHECK_WARN_STATUS not in lines:
+        return False
+    body = "\n".join(lines)
+    return not any(marker in body for marker in GUARD_CHECK_ERROR_MARKERS)
+
+
 def _segment_signature(segment: str) -> tuple[str, ...] | None:
     try:
         tokens = shlex.split(segment, comments=False, posix=True)
@@ -862,6 +968,11 @@ def _event_tool_issue(part: dict) -> tuple[str, str] | None:
         return None
     if status == "completed" and exit_code not in (None, 0):
         body = (error + "\n" + output).strip()
+        if tool in EXECUTION_TOOLS and _is_informational_guard_warn(
+            _tool_command(part), body, exit_code
+        ):
+            # Check-mode WARN is an expected preflight result, not a failure.
+            return None
         found = _output_signal(body)
         if found:
             return found

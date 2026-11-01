@@ -89,7 +89,13 @@ resume.
    any mixed result, any unparsed output and any other failed test/build/
    validation/permission command still fails; intervening failures are
    recovered only by later successful evidence for the same operation, and
-   `git diff --check` over the task-owned diff is the useful check.
+   `git diff --check` over the task-owned diff is the useful check. Separately,
+   `opencode_guard.py check` exit `10` with the explicit
+   `opencode-guard: WARN` status line is informational, not a failed command;
+   the current job's own OpenCode process and load warning commonly trigger it.
+   Only that check subcommand and status are exempt. A guard `REFUSE`, guard
+   error/usage failure, non-zero `run`-mode exit or any other command exiting
+   `10` still fails.
 4. **Never merge without authorization.** A merge commit in the job range fails
    the contract unless `authorization.merge` is true.
 5. **Verify delivery.** First verify the recorded policy still matches the
@@ -168,6 +174,9 @@ pattern suggests.
 - Treating a whole-tree `git diff --check` failure as a task failure when every
   reported path is a pre-existing owner path, or over-correcting by suppressing
   all failed commands and hiding real test/build/validation failures.
+- Treating `opencode_guard.py check` exit `10` / `opencode-guard: WARN` as a
+  failed command, or over-correcting by ignoring guard `REFUSE`, guard errors,
+  `run`-mode non-zero exits or other commands that exit `10`.
 - Parsing dirty paths with a fixed `line[3:]` after a whole-output `strip()`,
   which truncates the first path (`skills/README.md` -> `kills/README.md`).
 - Using a protected branch without separate authorization.
@@ -193,7 +202,12 @@ evidence initialization, job-specific structured validation (no fabricated or
 copied evidence) and NUL-safe dirty-path parsing with a narrow legacy repair.
 It also gained owner-path attribution for failed whole-tree `git diff --check`
 commands after a verified job was falsely classified `FAILED` solely by a
-pre-existing owner skill edit.
+pre-existing owner skill edit. A later verified job was falsely classified
+`FAILED` when `opencode_guard.py check` returned its documented warning exit
+`10` because the job's own OpenCode process occupied the one-session slot; the
+detector now treats only that explicit, evidenced check-mode WARN as
+informational while preserving guard refusals, errors and ordinary non-zero
+exits as failures.
 Maturity stays `candidate` until a real job completes through the mandatory
 default with an authorized push and verified remote SHA. Re-check after any
 change to job schema, check IDs, override policy or state mapping; update the

@@ -840,6 +840,79 @@ class CliTestCase(unittest.TestCase):
         ).stdout
         self.assertIn(f" M {owner}", status)
 
+    def test_guard_check_warn_does_not_fail_verified_job(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 10},
+                                "output": (
+                                    "opencode-guard: WARN\n"
+                                    "  RAM: 7.41 GiB available of 11.69 GiB; swap 0.00 GiB\n"
+                                    "  disk: 140.02 GiB available\n"
+                                    "  heavyweight OpenCode: 1 (maximum 1)\n"
+                                    "    pid 677298 rss 424 MiB: opencode run --agent "
+                                    "opencode-development --title 'failed_command detector'\n"
+                                    "  WARN: 5-minute load average 5.37 exceeds the 5.00 "
+                                    "warning threshold\n"
+                                ),
+                                "input": {
+                                    "command": "python3 tools/opencode_guard.py check"
+                                },
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertEqual(stored["completion_contract"]["state"], "VERIFIED")
+        self.assertEqual(payload["issues"], [])
+
+    def test_guard_check_refuse_still_fails_verified_job(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 20},
+                                "output": (
+                                    "opencode-guard: REFUSE\n"
+                                    "  REFUSE: available RAM 0.82 GiB is below the "
+                                    "1.50 GiB refusal threshold\n"
+                                ),
+                                "input": {
+                                    "command": "python3 tools/opencode_guard.py check"
+                                },
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertEqual(stored["completion_contract"]["state"], "VERIFIED")
+        self.assertIn(
+            "failed_command", {issue["kind"] for issue in payload["issues"]}
+        )
+
     def test_task_whitespace_check_fails_even_when_contract_verifies(self) -> None:
         self.set_export(
             [

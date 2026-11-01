@@ -412,6 +412,17 @@ normal failure classification. Owner dirt remains preserved and uncommitted, so
 `git diff --check` run over the whole worktree is not evidence about the job's
 own diff; use the scoped task diff for that check.
 
+`opencode_guard.py check` exit `10` (`EXIT_WARN`) is an informational preflight
+result, not a failed command. The guard returns it for a documented warning such
+as RAM/disk headroom, load above the warning threshold, or the one-session limit
+being occupied by this job's own OpenCode process. The detector treats it as
+informational only when the command is the guard's `check` subcommand and the
+output contains the explicit `opencode-guard: WARN` status line. A guard
+`REFUSE` (exit `20`), a guard error/usage failure, a non-zero `run`-mode exit or
+any other command exiting `10` still fails. The guard's informational process
+line can include the job title and prompt text, so the check-mode status line and
+subcommand are the evidence; prompt words are not treated as failures.
+
 Recovered issues remain visible in `dev status` and `report.md` with recovery
 evidence. The context-aware log fallback cannot prove same-operation recovery, so
 it stays conservative; the owner-path attribution above also applies to its
@@ -663,7 +674,10 @@ configuration.
   then resume. The job retains the blocking evidence.
 - Worker disappeared: `dev status` reconciles it; resume continues.
 - Resource WARN/REFUSE from the guard: stop starting new work and write a
-  recoverable handoff. Do not signal Qortium or any process by name.
+  recoverable handoff. A check-mode `WARN` caused by this job's own OpenCode
+  process is informational and does not fail the job, but do not start another
+  heavy session; a `REFUSE` or guard error remains blocking/failing. Do not
+  signal Qortium or any process by name.
 - To stop new work, wait for the current job or interrupt the guard only inside
   the job it owns. Do not use `pkill`, `killall` or `tmux kill-server`.
 
@@ -699,10 +713,13 @@ commands that must not clear a failure. Owner-path attribution is covered on
 both the structured and console paths: a whole-tree whitespace check naming only
 pre-existing owner files becomes a non-blocking warning, while a task-owned
 whitespace warning, a mixed owner/task result, an unparsed error, or any other
-failed command still fails even when the completion contract verifies. The
-detection tests include the actual documentation, source/diff and failed-tool log
-examples from the permissions job, plus the recovered/unresolved structured-event
-matrix. `test_session_lifecycle.py` covers structured completion evidence,
+failed command still fails even when the completion contract verifies. Guard
+check-mode regressions prove that `opencode-guard: WARN` with exit `10` (including
+the job's own heavyweight process and load warning) is informational on both the
+structured and console paths, while `REFUSE`, guard errors, `run`-mode exit `10`
+and ordinary non-zero commands still fail. The detection tests include the actual
+documentation, source/diff and failed-tool log examples from the permissions job,
+plus the recovered/unresolved structured-event matrix. `test_session_lifecycle.py` covers structured completion evidence,
 active-tool safety, attempt scoping and total-vs-attempt duration reporting. The
 permission tests parse the agent Markdown and exercise the last-match wildcard
 model, approved tooling roots, exact directory-root matching, Qortium diagnostics

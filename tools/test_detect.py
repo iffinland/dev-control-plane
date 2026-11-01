@@ -606,6 +606,134 @@ class StructuredEventTests(unittest.TestCase):
         self.assertIsNone(detect.scan_session(None))
 
 
+class GuardCheckWarnTests(unittest.TestCase):
+    """Check-mode guard WARN is informational, not a failed command.
+
+    Job ``20261101T103720Z-fix-workflow-v3-failure-detectio-57bae68c`` called
+    ``opencode_guard.py check`` twice while its own OpenCode process was running.
+    The guard returned its documented exit ``10`` (``EXIT_WARN``) because the
+    job's own session occupied the one-session slot and load was above the
+    warning threshold. RAM and disk were available and the process was the job's
+    own child, so this was not a failed command. A real refusal, guard error or
+    ordinary non-zero command must still fail.
+    """
+
+    COMMAND = (
+        "python3 /home/iffi/dev-workspace/control-plane/tools/opencode_guard.py check"
+    )
+    WARN_OUTPUT = (
+        "opencode-guard: WARN\n"
+        "  RAM: 7.41 GiB available of 11.69 GiB; swap 0.00 GiB\n"
+        "  load: 6.74 5.37 4.25\n"
+        "  disk: 140.02 GiB available\n"
+        "  heavyweight OpenCode: 1 (maximum 1)\n"
+        "    pid 677298 rss 424 MiB: opencode run --agent opencode-development "
+        "--model deepseek/deepseek-flash --title 'Fix Workflow v3 false FAILED "
+        "classification; failed_command detector' 'RAM and disk were available'\n"
+        "  Qortium (read-only): pid 299485 rss 3325 MiB\n"
+        "  WARN: 5-minute load average 5.37 exceeds the 5.00 warning threshold\n"
+    )
+
+    @staticmethod
+    def payload(command: str, output: str, exit_code: int) -> dict:
+        return {
+            "info": {"id": "ses_test"},
+            "messages": [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": exit_code},
+                                "output": output,
+                                "input": {"command": command},
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_check_mode_warn_exit_is_informational(self) -> None:
+        issues = detect.scan_events(
+            self.payload(self.COMMAND, self.WARN_OUTPUT, 10)
+        )
+        self.assertEqual(issues, [])
+
+    def test_compound_check_command_with_options_is_informational(self) -> None:
+        command = (
+            "cd /home/iffi/dev-workspace/control-plane && "
+            "python3 tools/opencode_guard.py check --refuse-ram-gib 1.5"
+        )
+        issues = detect.scan_events(
+            self.payload(command, self.WARN_OUTPUT, 10)
+        )
+        self.assertEqual(issues, [])
+
+    def test_console_check_mode_warn_block_is_informational(self) -> None:
+        log = f"✗ {self.COMMAND} failed\n{self.WARN_OUTPUT}"
+        self.assertEqual(detect.scan_text(log), [])
+
+    def test_check_mode_refuse_is_still_a_failure(self) -> None:
+        output = (
+            "opencode-guard: REFUSE\n"
+            "  RAM: 0.82 GiB available of 11.69 GiB; swap 0.00 GiB\n"
+            "  REFUSE: available RAM 0.82 GiB is below the 1.50 GiB refusal threshold\n"
+        )
+        issues = detect.scan_events(self.payload(self.COMMAND, output, 20))
+        self.assertEqual(
+            {issue.kind for issue in issues},
+            {"failed_command"},
+        )
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_check_mode_guard_error_is_still_a_failure(self) -> None:
+        output = "opencode-guard: ERROR\ncannot read /proc/meminfo\n"
+        issues = detect.scan_events(self.payload(self.COMMAND, output, 1))
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_console_check_mode_refuse_is_still_a_failure(self) -> None:
+        log = (
+            f"✗ {self.COMMAND} failed\n"
+            "opencode-guard: REFUSE\n"
+            "  REFUSE: 5-minute load average is above the refusal threshold\n"
+        )
+        self.assertEqual(detect.highest_severity(detect.scan_text(log)), "failed")
+
+    def test_check_mode_warn_without_status_line_is_not_excused(self) -> None:
+        issues = detect.scan_events(
+            self.payload(
+                self.COMMAND,
+                "  RAM: 7.41 GiB available\n  disk: 140.02 GiB available\n",
+                10,
+            )
+        )
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_guard_check_compound_with_real_command_is_not_excused(self) -> None:
+        command = f"{self.COMMAND}; npm test"
+        issues = detect.scan_events(
+            self.payload(command, self.WARN_OUTPUT + "FAILED (failures=1)\n", 10)
+        )
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_run_mode_exit_10_is_not_informational(self) -> None:
+        command = "python3 tools/opencode_guard.py run -- opencode run --agent x"
+        issues = detect.scan_events(
+            self.payload(command, self.WARN_OUTPUT, 10)
+        )
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_ordinary_nonzero_exit_10_is_not_informational(self) -> None:
+        issues = detect.scan_events(
+            self.payload("python3 tools/check_something.py", "opencode-guard: WARN\n", 10)
+        )
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+
 class OwnerChangeAttributionTests(unittest.TestCase):
     """A whole-tree whitespace check must not turn owner dirt into a job failure.
 

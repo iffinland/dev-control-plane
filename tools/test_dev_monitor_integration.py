@@ -19,6 +19,7 @@ sys.path.insert(0, str(TOOLS))
 
 from devmonitor.api import (  # noqa: E402
     TelegramRateLimited,
+    TelegramRequestError,
     TelegramStaleCallback,
     TelegramTransientError,
 )
@@ -92,6 +93,31 @@ class StaleAckApi(FakeApi):
         self.ack_attempts.append(callback_query_id)
         raise TelegramStaleCallback(
             "Bad Request: query is too old and response timeout expired or query ID is invalid"
+        )
+
+
+class TransientAckApi(FakeApi):
+    """Fake API whose first callback acknowledgement times out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_attempts: list[str] = []
+        self.failures = 1
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> bool:
+        self.ack_attempts.append(callback_query_id)
+        if self.failures:
+            self.failures -= 1
+            raise TelegramTransientError("timed out while answering a callback query")
+        return super().answer_callback_query(callback_query_id, text)
+
+
+class NotModifiedApi(FakeApi):
+    """Fake API that reports an edit with unchanged text and markup."""
+
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        raise TelegramRequestError(
+            "Telegram rejected the request (400): Bad Request: message is not modified"
         )
 
 
@@ -350,6 +376,29 @@ class MonitorIntegrationTests(unittest.TestCase):
             any(action == "callback_ack" and result == "stale" for action, result in audits)
         )
 
+    def test_callback_ack_timeout_still_runs_every_action_in_the_batch(self) -> None:
+        api = TransientAckApi()
+        _router, service = self._components_with(api)
+        api.updates = [[callback_update(210, "jl:0"), callback_update(211, "h")]]
+        service.run(max_iterations=1)
+        self.assertEqual(api.ack_attempts, ["cb-210", "cb-211"])
+        self.assertEqual(len(api.edited), 2)
+        self.assertEqual(self.state.next_offset(), 212)
+        audits = self._audit_rows()
+        self.assertNotIn(("update_dead_letter", "error"), audits)
+        self.assertTrue(
+            any(action == "callback_ack" and result == "transient" for action, result in audits)
+        )
+
+    def test_refresh_with_unchanged_status_reports_no_changes(self) -> None:
+        api = NotModifiedApi()
+        router, _service = self._components_with(api)
+        ref = self.state.get_or_create_job_ref(self.running["id"], CHAT_ID)
+        router.handle(callback_update(220, f"j:{ref}:r"))
+        self.assertEqual(api.edited, [])
+        self.assertIn("No changes", api.sent[-1]["text"])
+        self.assertIn("unchanged", api.sent[-1]["text"])
+
     def test_duplicate_callback_update_runs_action_once(self) -> None:
         api = StaleAckApi()
         _router, service = self._components_with(api)
@@ -374,6 +423,20 @@ class MonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(restarted_api.ack_attempts, ["cb-400"])
         self.assertEqual(restarted_api.edited, [])
         self.assertEqual(self.state.next_offset(), 401)
+        self.assertNotIn(("update_dead_letter", "error"), self._audit_rows())
+
+    def test_duplicate_message_after_restart_does_not_repeat_the_command(self) -> None:
+        first_api = FakeApi()
+        _first_router, first_service = self._components_with(first_api)
+        update = message_update(410, "/jobs")
+        first_service.process_update(update)
+        self.assertEqual(len(first_api.sent), 1)
+
+        restarted_api = FakeApi()
+        _restarted_router, restarted_service = self._components_with(restarted_api)
+        restarted_service.process_update(update)
+        self.assertEqual(restarted_api.sent, [])
+        self.assertEqual(self.state.next_offset(), 411)
         self.assertNotIn(("update_dead_letter", "error"), self._audit_rows())
 
     def test_stop_flag_stops_between_iterations(self) -> None:

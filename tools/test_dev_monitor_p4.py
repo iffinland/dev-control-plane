@@ -723,7 +723,7 @@ class PersistenceAndFaultTests(P4Base):
             service.run(max_iterations=1)
         self.assertEqual(self.state.next_offset(), 0)
 
-    def test_transient_action_failure_releases_the_update_for_retry(self) -> None:
+    def test_transient_action_failure_is_not_replayed(self) -> None:
         service = MonitorService(
             self.config,
             self.api,
@@ -739,22 +739,33 @@ class PersistenceAndFaultTests(P4Base):
 
         def flaky(value):
             calls["count"] += 1
-            if calls["count"] == 1:
-                raise TelegramTransientError("outbound failure")
-            return original(value)
+            raise TelegramTransientError("outbound failure")
 
         self.router.handle = flaky
         try:
             with self.assertRaises(TelegramTransientError):
                 service.process_update(update)
-            self.assertEqual(self.state.next_offset(), 0)
+            self.assertEqual(self.state.next_offset(), 41)
+            # The update is claimed and past the offset, so a redelivery after a
+            # reconnect or restart must not apply the action a second time.
             service.process_update(update)
         finally:
             self.router.handle = original
 
-        self.assertEqual(calls["count"], 2)
+        self.assertEqual(calls["count"], 1)
         self.assertEqual(self.state.next_offset(), 41)
-        self.assertTrue(any("Qortium Dev Monitor" in item["text"] for item in self.api.sent))
+        self.assertEqual(self.api.sent, [])
+        self.assertTrue(
+            any(
+                action == "update_transient" and result == "error"
+                for action, result in (
+                    (row["action"], row["result"])
+                    for row in self.state.connection.execute(
+                        "SELECT action, result FROM audit ORDER BY id"
+                    )
+                )
+            )
+        )
 
     def test_job_directory_symlink_is_refused(self) -> None:
         job_id = "20261101T120000Z-p4-symlink-66666666"

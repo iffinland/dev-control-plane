@@ -12,6 +12,7 @@ from .api import (
     TelegramFatalError,
     TelegramRequestError,
     TelegramStaleCallback,
+    TelegramTransientError,
 )
 from .config import MonitorConfig
 from .control import ControlError, ControlManager
@@ -545,7 +546,7 @@ class Router:
             raise JobError("job reference is unknown or expired")
         action = parts[2] if len(parts) > 2 else ""
         if action in {"", "r"}:
-            self._edit_job(callback, decision, parts[1], job_id)
+            self._edit_job(callback, decision, parts[1], job_id, refresh=(action == "r"))
         elif action in {"lr", "lw"}:
             self._show_log(callback, decision, parts[1], job_id, "run" if action == "lr" else "worker")
         elif action == "p":
@@ -767,13 +768,27 @@ class Router:
         if isinstance(message_id, int):
             self.state.set_message_ref(job_id, chat_id, "job", message_id)
 
-    def _edit_job(self, callback: dict, decision: auth.AuthDecision, ref: str, job_id: str) -> None:
+    def _edit_job(
+        self,
+        callback: dict,
+        decision: auth.AuthDecision,
+        ref: str,
+        job_id: str,
+        *,
+        refresh: bool = False,
+    ) -> None:
         payload = self.jobs.job_status(job_id)
+        unchanged = (
+            "No changes: the job status is unchanged since the last refresh."
+            if refresh
+            else None
+        )
         self._edit(
             callback,
             decision,
             self._job_status_text(payload),
             self._job_menu_for(payload, ref),
+            unchanged_text=unchanged,
         )
 
     def _show_log(
@@ -781,7 +796,13 @@ class Router:
     ) -> None:
         payload = self.jobs.job_status(job_id)
         log = self.jobs.job_log(job_id, kind, secrets=self.config.secrets)
-        self._edit(callback, decision, render.logs_text(payload, log), menus.log_menu(ref, kind))
+        self._edit(
+            callback,
+            decision,
+            render.logs_text(payload, log),
+            menus.log_menu(ref, kind),
+            unchanged_text="No changes: the log window is unchanged since the last refresh.",
+        )
 
     def _show_report(self, callback: dict, decision: auth.AuthDecision, ref: str, job_id: str) -> None:
         payload = self.jobs.job_status(job_id)
@@ -1021,6 +1042,8 @@ class Router:
         decision: auth.AuthDecision,
         text: str,
         markup: dict | None = None,
+        *,
+        unchanged_text: str | None = None,
     ) -> None:
         chat_id = decision.chat_id or 0
         message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
@@ -1036,6 +1059,11 @@ class Router:
         except (TelegramFatalError, TelegramRequestError) as exc:
             lowered = str(exc).lower()
             if "not modified" in lowered:
+                # Telegram rejects an edit whose text and markup are unchanged.
+                # A Refresh click must not look like it did nothing, so provide
+                # explicit, separate feedback instead of silently swallowing it.
+                if unchanged_text:
+                    self._send(chat_id, unchanged_text, menus.back_to_main())
                 return
             if "not found" in lowered or "message to edit" in lowered:
                 self._send(chat_id, text, markup)
@@ -1062,6 +1090,16 @@ class Router:
             return True
         try:
             self.api.answer_callback_query(callback_id, self._safe(text) if text else None)
+        except TelegramTransientError as exc:
+            # A timed-out or network-failed acknowledgement is also only a UI
+            # convenience. Do not abandon the whole polling batch (and the
+            # callback's action) because one short acknowledgement did not
+            # complete. Telegram may still have received it, so a retry would
+            # mostly produce another stale acknowledgement.
+            self._remember_ack(callback_id)
+            if decision is not None:
+                self._audit(decision, "callback_ack", "transient", str(exc))
+            return False
         except TelegramRequestError as exc:
             # An acknowledgement is a UI convenience. Expired/already-used query
             # IDs and other request rejections must not dead-letter the update or

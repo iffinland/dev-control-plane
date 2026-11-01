@@ -632,8 +632,10 @@ Refresh behaviour:
 - Auto-refresh is opt-in. While enabled, active jobs refresh on a bounded cadence
   (default 30 seconds) for a bounded duration (for example 30 minutes), then
   switch off with a notice.
-- Telegram rate limits and `retry_after` are respected. "Message is not modified"
-  responses are ignored.
+- Telegram rate limits and `retry_after` are respected. A "Message is not
+  modified" response is not silently ignored: Refresh reports that the job
+  status is unchanged since the last refresh, so the button always has visible
+  feedback.
 - If the status message was deleted, the monitor recreates it and updates its
   reference.
 
@@ -1079,6 +1081,11 @@ cancel_job(job_id) -> JobResult        # Phase 3 only
   production validation rejects non-HTTPS.
 - `getUpdates` uses an offset, a timeout of 20-30 seconds and an explicit allowed
   update list (messages and callback queries).
+- Callback queries in a fetched batch are acknowledged before any handler runs,
+  with a short acknowledgement timeout. A stale, rejected, timed-out or
+  network-failed acknowledgement is best-effort: it is audited and the
+  associated action still executes. One slow acknowledgement must not block the
+  rest of the batch.
 - The token is part of the request URL. It must never appear in logs, exceptions,
   audit records or chat messages.
 - Handle:
@@ -1304,9 +1311,21 @@ it owns for that job. Name-based `kill`, `pkill`, `killall` and
 
 - `seen_updates(update_id)` is checked and inserted before side effects. A
   duplicate update is acknowledged without re-running the action.
-- Offset is advanced after successful handling or after a bounded dead-letter.
-  A crash may replay an update; state checks and one-time nonces make handlers
-  idempotent.
+- Offset is advanced after successful handling, a bounded dead-letter, or an
+  outbound Telegram failure that happened while attempting the action. The
+  update stays durably claimed in the last case, so a reconnect or restart
+  acknowledges the redelivery without replaying a partially committed action.
+  This is at-most-once action semantics, not exactly-once message delivery.
+- A poll-level `getUpdates` failure does not claim any update; the offset stays
+  unmoved and the loop backs off, so those updates are fetched again. An
+  in-handler transport failure triggers the same backoff after the action is
+  marked handled.
+- Batch callback acknowledgement is best-effort UI work, not action processing.
+  A failed acknowledgement neither releases an update nor aborts the actions of
+  the remaining authorized callbacks.
+- Distinct update IDs are distinct deliveries even when the owner sent the same
+  `/start` or `/menu` command twice; that is a duplicate command, not duplicate
+  processing. Only a repeated update ID is suppressed by `seen_updates`.
 - Start/resume uses a confirmation nonce and a project admission lock. A replayed
   confirm cannot create a second job.
 - Queued owner messages are delivered with a `delivered_attempt` marker; a retry
@@ -1510,6 +1529,9 @@ tree.
 | T-AUTH-06 | Authorization | Callback data changed to another job index | Only the caller's authorized state is resolved; mismatch rejected |
 | T-REPLAY-01 | Idempotency | Same update ID delivered twice | Action runs once; duplicate acknowledged |
 | T-REPLAY-02 | Idempotency | Confirm start twice with the same nonce | Exactly one job created |
+| T-REPLAY-03 | Idempotency | Redelivery after an in-handler Telegram timeout or restart | No second action; the claimed update is only acknowledged |
+| T-CALLBACK-01 | Callback acknowledgement | First acknowledgement in a batch times out | Remaining acknowledgements and every callback action still run once |
+| T-JOB-16 | Refresh | Job status text and markup are unchanged | Telegram "message is not modified" becomes explicit "No changes" feedback |
 | T-RATE-01 | Abuse | Exceed per-user action rate | Rate-limit response; no state change |
 | T-RATE-02 | Abuse | Telegram returns 429 with `retry_after` | Waits, retries, does not drop the update |
 | T-JOB-01 | Start | Wizard without acceptance criteria | Refused before CLI invocation |
@@ -1552,7 +1574,7 @@ tree.
 | T-OPS-05 | Config | Missing token or empty user allowlist | Refuses to start; no polling |
 | T-OPS-06 | Safety | Static scan of monitor source | No `sudo`, service mutation, name-based kill, shell wrapper or Qortium path writes |
 | T-OPS-07 | Safety | Monitor attempts no Qortium API or file write | No node access in tests or traces |
-| T-OPS-08 | Resilience | Telegram 5xx/timeout | Backoff; process stays alive; updates are not lost |
+| T-OPS-08 | Resilience | Telegram 5xx/timeout during poll or handler | Backoff; process stays alive; polled updates are retried and in-handler updates are not replayed |
 | T-OPS-09 | Resilience | Corrupt job file or deleted job dir | Sanitized error; monitor continues serving other jobs |
 | T-OPS-10 | Shutdown | Stop flag written | Monitor exits gracefully; running jobs continue |
 

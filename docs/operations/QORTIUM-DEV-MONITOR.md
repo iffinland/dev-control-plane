@@ -382,6 +382,11 @@ preview text, download a redacted text copy and, only when explicitly enabled, a
 confirmed binary download. Callback data contains opaque server-side references,
 never paths, job IDs, prompts or user IDs.
 
+Refresh always has visible feedback. When Telegram reports that the status text
+and buttons are unchanged, the monitor sends a short "No changes" message rather
+than silently swallowing the edit. The job status itself is still edited in
+place whenever it does change.
+
 ### 6.1 Start flow
 
 ```text
@@ -586,6 +591,32 @@ SQLite uses WAL mode and `synchronous=NORMAL` so the owner's read-only `status`
 command does not block the monitor writer. The polling offset and last-poll time
 are written in one transaction instead of two separate commits.
 
+### 7.2 Update acknowledgement and retry semantics
+
+- Every `getUpdates` batch is fetched with the durable offset. Callback queries
+  are acknowledged before any handler runs, using the short acknowledgement
+  timeout. A stale, rejected, timed-out or network-failed acknowledgement is
+  best-effort: it is audited and the action still runs. One failed
+  acknowledgement does not abort the batch.
+- An update is claimed in `seen_updates` before its handler runs. A duplicate
+  delivery is acknowledged without replaying the action, including after a
+  monitor restart.
+- A poll-level timeout or `5xx` claims no update; the offset stays unmoved and
+  the same batch is fetched after a bounded backoff.
+- A Telegram failure while a handler is running is different: the handler may
+  already have changed a wizard, consumed a confirmation, queued an instruction
+  or started a job. The monitor keeps the durable claim, advances past that
+  update and backs off. A redelivery is acknowledged only. This is at-most-once
+  action semantics, not exactly-once message delivery; the owner can repeat a
+  lost read-only action from the menu.
+- Start, resume and cancel still use one-time confirmation nonces and the
+  per-project admission lock, so a duplicate or stale callback cannot create a
+  second job or signal.
+- Repeated `/start` or `/menu` messages with different update IDs are separate
+  Telegram deliveries (a duplicate command), not duplicate processing. Duplicate
+  processing is the same update ID being dispatched again; `seen_updates` and
+  the saved offset prevent that.
+
 ## 8. Troubleshooting
 
 | Symptom | Action |
@@ -606,6 +637,9 @@ are written in one transaction instead of two separate commits.
 | No updates | Check `dev_monitor.py check`, confirm the bot was started, and inspect the stored offset with `dev_monitor.py status`. |
 | Menu feels slow | Search the journal for `timing slow` and read the label. Compare `telegram:*`, `cli:*`, `admission:*`, `lifecycle:*`, `docs:*` and `sqlite:*` lines before changing anything. |
 | Status is stale | Workflow v3 status reconciles a missing worker; refresh the job view. |
+| Refresh says "No changes" | Normal: the job status and buttons were identical to the previous message. The monitor sends this feedback because Telegram refuses an unchanged edit. |
+| Callback spinner expired | The action still runs; the audit records `callback_ack` with `stale` or `transient`. Inspect the journal for `ack:batch` latency, not the job action. |
+| `update_transient` in audit | An outbound Telegram call failed after the action was attempted. The offset advanced and the same update is not replayed; repeat the read-only action if its response was lost. |
 | Document refused | Absolute paths, `..`, backslashes, percent encodings, hidden names, symlinks and sensitive names are refused by design. |
 | Cancel refused | The job is not RUNNING with a live worker, or the guard identity no longer matches. Inspect `/status`; never signal by name. |
 | Cancel pending | Workflow v3 sent SIGTERM to the verified guard but it survived the grace period. No escalation is attempted; inspect status or retry `/cancel <job>`. |
@@ -643,10 +677,14 @@ The P4 suite adds isolated authorization/replay/rate-limit tests, trusted-root
 document fuzzing, symlink-swap and special-file tests, cross-boundary redaction
 checks, restart persistence, Telegram polling fault injection, notification
 dedupe after restart, atomic confirmation claims and a fake-CLI
-start/queue/cancel/resume integration flow. It also contains the detector
-regression that keeps a `FileNotFoundError` for a test fixture from being
-classified as `missing_dependency` while real missing commands/modules remain
-blocking.
+start/queue/cancel/resume integration flow. The reliability regressions cover a
+callback acknowledgement timeout that must not block the batch, duplicate
+message and callback updates after restart, stale callbacks that still run their
+action, an unchanged Refresh status that produces explicit feedback, and a
+transient in-handler failure that advances the offset without replaying the
+action. It also contains the detector regression that keeps a
+`FileNotFoundError` for a test fixture from being classified as
+`missing_dependency` while real missing commands/modules remain blocking.
 
 The complete automated gate is:
 
@@ -751,7 +789,8 @@ The P3 smoke path still applies inside that checklist:
 | `401`/`403` | Treat as fatal configuration/auth failure. Fix the owner-local token; the service exits `78` and does not hot-loop. |
 | `409 Conflict` | Another poller or a webhook is active. Stop the other poller or clear the webhook explicitly; never run two pollers. |
 | Repeated `429` | Honor `retry_after`, confirm only one monitor instance holds the lock, and inspect for a duplicate poller. |
-| Timeouts / `5xx` | The monitor backs off with jitter and keeps the offset unmoved, so the unhandled update is retried. |
+| Timeouts / `5xx` during polling | The monitor backs off with jitter and keeps the offset unmoved, so the unprocessed batch is fetched again. |
+| Timeout after an action was attempted | The update stays claimed and the offset advances, so the action is not replayed. The journal shows `update_transient`; repeat a lost read-only action from the menu. |
 | Service crash loop | Run `check`, inspect the journal, and verify the single-instance lock. Do not use a name-based kill. |
 
 ### 12.5 Monitor or state corruption

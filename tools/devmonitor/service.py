@@ -232,10 +232,25 @@ class MonitorService:
             return
         try:
             self.router.handle(update)
-        except (TelegramRateLimited, TelegramTransientError, TelegramFatalError):
-            # A transient outbound failure is retried by the loop; a fatal error
-            # stops the monitor. In both cases leave the offset unmoved.
-            self.state.release_update(update_id)
+        except (TelegramRateLimited, TelegramTransientError, TelegramFatalError) as exc:
+            # The update was claimed before dispatch. A handler may already have
+            # committed a state change or an action before the outbound Telegram
+            # call failed. Releasing the claim would replay the whole action on
+            # retry and could duplicate a wizard transition, queued instruction or
+            # job action. Keep the durable claim, advance past the update, and let
+            # the loop back off; a later redelivery is acknowledged only.
+            self.state.set_offset(update_id + 1)
+            if isinstance(exc, TelegramTransientError):
+                self.state.record_audit(
+                    "update_transient",
+                    "error",
+                    update_id=update_id,
+                    detail=redact_error(exc, self.config.secrets),
+                )
+                self.log(
+                    f"transient Telegram error while handling update {update_id}: "
+                    f"{redact_error(exc, self.config.secrets)}"
+                )
             raise
         except Exception as exc:  # noqa: BLE001 - dead-letter one bad update
             self.state.record_audit(

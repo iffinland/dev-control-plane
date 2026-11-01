@@ -1,5 +1,12 @@
 # Mandatory Workflow v3 completion contract — 2026-11-01
 
+> Superseded in part on 2026-11-01 by
+> [project-scoped delivery policy](2026-11-01-project-delivery-policy.md). The
+> mandatory contract remains, but new jobs now resolve the Git remote and
+> automatic-push authorization from `PROJECT-REGISTRY.md`; there is no global
+> `dev-control-plane` default. The historical details below describe the
+> preceding implementation.
+
 - Executing agent: `DeepSeek`
 - Report writer: `DeepSeek` (same as executor)
 - Job: `20261101T082730Z-enforce-workflow-v3-completion-c-e66d7249`

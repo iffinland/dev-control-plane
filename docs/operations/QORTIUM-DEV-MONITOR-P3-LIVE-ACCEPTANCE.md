@@ -1,12 +1,13 @@
 # Qortium Dev Monitor — P3 live Telegram acceptance harness
 
-Status: **implemented and covered by isolated regression tests. The implementing
-agent did not execute the live Telegram run. The owner later completed E1-E7
-through the actual authorized bot with the isolated synthetic worker; Queue
-instruction, two cancellations, Resume and exactly-once delivery into synthetic
-attempt #2 passed `verify`. The temporary evidence directory was cleaned up, so
-no journal, message IDs, update IDs, timestamps or report are retained in this
-repository.**
+Status: **implemented and covered by isolated regression tests, including the
+R-07 duplicate-confirmation mode. The implementing agent did not execute a live
+Telegram run. The owner later completed E1-E7 through the actual authorized bot
+with the isolated synthetic worker; Queue instruction, two cancellations, Resume
+and exactly-once delivery into synthetic attempt #2 passed `verify`. The
+temporary evidence directory was cleaned up, so no journal, message IDs, update
+IDs, timestamps or report are retained in this repository. R-07 is implemented
+and scripted-tested but its real-bot run remains an owner action.**
 
 | Field | Value |
 | --- | --- |
@@ -24,7 +25,7 @@ repository.**
 
 ## 1. Purpose
 
-The P3 live harness verifies the two P3 Telegram control flows end to end through
+The P3 live harness verifies the P3/P4 Telegram control flows end to end through
 the **real authorized Telegram bot**:
 
 1. **Queue instruction** stores an owner instruction durably and does not inject
@@ -34,6 +35,11 @@ the **real authorized Telegram bot**:
 3. **Resume delivery (E7 mode)** keeps the isolated poller alive after the first
    cancellation, delivers exactly one queued instruction into synthetic attempt
    #2 through the real Resume wizard, and stops only after a second cancellation.
+4. **Duplicate confirmation (R-07 mode)** keeps the isolated poller alive after
+   the first cancellation, replays the exact observed cancel confirmation once
+   as the same Telegram update and once as the same callback data under a new
+   update ID, and proves the underlying `dev cancel` still ran exactly once while
+   the synthetic job stayed `CANCELLED`.
 
 The harness exercises the real monitor router, authorization, callback handling,
 confirmation nonces, renderers and Telegram Bot API. It replaces only the
@@ -60,6 +66,8 @@ Proves, when the operator completes the run:
 - a queued instruction is stored with an explicit `queued` state and can be
   delivered exactly once through a resume;
 - the cancel path produces `CANCELLED` without a production job or process;
+- in R-07 mode, replaying the same confirmation or the same Telegram update
+  cannot consume the nonce or invoke `dev cancel` a second time;
 - the owner Telegram config and the production project registry are unchanged.
 
 Does not prove:
@@ -114,6 +122,7 @@ refuses to run while the production monitor holds it.
 | E7 is requested without an E7-prepared fixture | Refuse; re-prepare with `--mode e7` |
 | Synthetic job is missing, non-synthetic state appears, or the final state is not `CANCELLED` | Verification fails |
 | E7 has fewer than two cancellations, no exact attempt-#2 delivery, or a duplicate delivery | Verification fails |
+| R-07 has no original confirmation, a missing replay, a duplicate replay, a second cancel invocation, a reused nonce, or any synthetic `SUCCESS` | Verification fails |
 
 No refusal is silently downgraded to a partial success.
 
@@ -131,13 +140,21 @@ python3 tools/p3_live_acceptance.py prepare \
 
 The default `--mode e1-e6` preserves the original queue/cancel acceptance flow:
 the isolated poller stops at the first `CANCELLED`. For the full resume lifecycle,
-prepare explicitly with E7 mode:
+prepare explicitly with E7 mode. For the R-07 confirmation-replay check, prepare
+explicitly with R07 mode:
 
 ```bash
 python3 tools/p3_live_acceptance.py prepare \
   --work-dir /tmp/p3-telegram-live \
   --source-config "$HOME/.config/dev-control-plane/telegram.json" \
   --mode e7
+```
+
+```bash
+python3 tools/p3_live_acceptance.py prepare \
+  --work-dir /tmp/p3-telegram-r07 \
+  --source-config "$HOME/.config/dev-control-plane/telegram.json" \
+  --mode r07
 ```
 
 The mode is recorded in `manifest.json`; `run`, `status` and `verify` use that
@@ -199,6 +216,16 @@ temporary and cleanup removes it.
 Do not restart the poller halfway through E7. The lifecycle requires exactly one
 resume and exactly two cancellations in the same isolated run.
 
+In `r07` mode the poller also stays alive after the first cancellation. It
+automatically replays the exact `Confirm: Cancel running job` callback that the
+real bot delivered: first with the same Telegram `update_id` (the durable update
+dedupe path), then with the same callback data but a new synthetic `update_id`
+(the one-time nonce path). It then performs one more live poll iteration and
+stops. The whole run is still bounded by `--timeout`. The operator must not press
+the confirmation again; the harness emits the replay evidence itself. In the
+journal, the second replay is expected to show `Confirmation expired or already
+used.` and must not produce another `Cancel result: cancelled`.
+
 ## 7. Required Telegram interactions
 
 Perform these actions in the owner's authorized private chat with the real bot.
@@ -217,6 +244,7 @@ synthetic job's messages.
 | E5 | Return to the job and press `Cancel job` | Preview says `Cancel this running job?` and names only the synthetic job |
 | E6 | Press `Confirm: Cancel running job` | Reply says `Cancel result: cancelled`; the job view shows `CANCELLED` |
 | E7 | In `--mode e7`: press `Resume`, `Confirm resume`, `Confirm: Resume job`, then cancel the synthetic job again | Resume preview lists exactly one queued instruction; after resume it is delivered once at attempt #2 and marked `[delivered]`; the poller stops only after the second `Cancel result: cancelled` |
+| R-07 | In `--mode r07`: perform E1-E6 and press the cancel confirmation once. Do not press it again; leave the poller running. | The journal holds one original confirmation callback and two replays with the same callback-data digest. The second replay is refused as already used, the fake CLI records exactly one `cancel`, and the job stays `CANCELLED`. |
 
 E7 is mandatory for a fixture prepared with `--mode e7`. The fake resume prompt
 contains the queued instruction; it never starts OpenCode. The first cancel is
@@ -224,6 +252,12 @@ not a terminal acceptance result in E7 mode. Cancelling again is required so
 verification can prove exactly one delivery into attempt #2 and a terminal
 synthetic state with no success. A run that stops after the first cancel, resumes
 more than once, or records a duplicate instruction is not an E7 pass.
+
+R-07 is mandatory for a fixture prepared with `--mode r07`. Verification fails if
+the original confirmation, either replay record, the single consumed nonce, the
+single `dev cancel` invocation or the final `CANCELLED` state is missing, or if
+any evidence disagrees with the actual job events, invocation log or monitor
+database.
 
 ## 8. Evidence requirements
 
@@ -235,7 +269,11 @@ updates and outbound messages. It records:
 - callback button labels such as `Queue instruction`, `Cancel job` and
   `Confirm: Cancel running job`;
 - sanitized outbound text and button labels;
-- the presence of the synthetic instruction token.
+- the presence of the synthetic instruction token;
+- for R-07, the SHA-256 digest of the original confirmation callback data and
+  both replay records (same-update and same-callback/new-update), together with
+  the cancel-invocation count and job state observed after each replay. The raw
+  opaque nonce is never written to the journal.
 
 Edit `evidence/telegram-evidence.json` and replace every `UNRECORDED` value:
 
@@ -251,7 +289,10 @@ Edit `evidence/telegram-evidence.json` and replace every `UNRECORDED` value:
 
 Keep the `job_id` and `synthetic_marker` values. Do not edit the journal by hand
 to invent an interaction; verification cross-checks the job state, events, owner
-message table and fake resume prompt.
+message table, confirmation nonces, invocation log and fake resume prompt. For
+R-07 it also cross-checks that both replay records carry the same callback-data
+digest as the original confirmation and that the recorded outcomes match the
+actual single `dev cancel` invocation.
 
 ## 9. Verify
 
@@ -278,13 +319,26 @@ Verification passes only when all of the following hold:
   `delivered_attempt = 2`;
 - for E7, the journal shows exactly one Resume preview/confirmation pair, exactly
   one `Queued instructions included: 1`, and two cancel previews/results;
+- for R-07, exactly one original `Confirm: Cancel running job` callback and
+  exactly two replay records exist, both after the original and both carrying
+  the same callback-data digest; the same-update replay uses the original
+  `update_id` and the other uses a new `update_id`; each replay records one
+  cancel invocation before and after and `CANCELLED` after; the monitor database
+  contains exactly one `cancel_job` nonce for this job and it is consumed; the
+  job records exactly one `cancel_requested`, one `cancel_observed`, one
+  `finished state=CANCELLED`, and the invocation log has exactly one
+  `dev cancel` and no resume;
 - the journal contains the required buttons, callbacks and confirmation labels;
 - the operator evidence has no `UNRECORDED` value and all attestations are true.
 
 E7 verification fails closed when any of those conditions is missing, when more
 than one token-bearing instruction or resume is recorded (duplicate delivery), or
-when the synthetic job reaches `SUCCESS`. A report may say `delivered` only when
-the durable owner-message row proves attempt #2 delivery.
+when the synthetic job reaches `SUCCESS`. R-07 verification fails closed on a
+missing or duplicate replay, a second cancel invocation, a consumed nonce that
+does not match the single `cancel_job` confirmation, or any evidence that
+disagrees across the journal, event log, invocation log and monitor database. A
+report may say `delivered` only when the durable owner-message row proves attempt
+#2 delivery.
 
 A pass writes `evidence/report.json` and `evidence/REPORT.md`. Both are
 synthetic evidence and must never be presented as a real development delivery.
@@ -311,11 +365,13 @@ retry only after the production monitor is stopped deliberately.
 
 ## 11. Relationship to the P4 checklist
 
-Use this harness for R-08 (queue an instruction) and R-09 (cancel only the
-disposable job) when the owner wants a deterministic synthetic backend. The full
-P4 checklist remains authoritative for authorization, redaction, document
-traversal, restart persistence, polling faults, token rotation, no-listener and
-no-Qortium-change checks.
+Use this harness for R-07 (duplicate confirmation replay), R-08 (queue an
+instruction) and R-09 (cancel only the disposable job) when the owner wants a
+deterministic synthetic backend. The R-07 mode proves the real callback can be
+replayed without a second side effect; it does not authorize a production job.
+The full P4 checklist remains authoritative for authorization, redaction,
+document traversal, restart persistence, polling faults, token rotation,
+no-listener and no-Qortium-change checks.
 
 The harness does not replace the P4 checklist and does not authorize a live
 production job.
@@ -329,12 +385,17 @@ The repository has verified automated E1-E7 synthetic coverage in
   (`test_live_flow_queue_and_cancel_produces_verifiable_evidence`);
 - the explicit E7 two-cancellation lifecycle with exactly-once attempt-#2
   delivery (`test_e7_waits_for_resume_then_stops_only_after_second_cancel`);
+- the R-07 one-confirmation/two-replay flow with exactly one `dev cancel`,
+  one consumed nonce and a final `CANCELLED` state
+  (`test_r07_replays_same_update_and_same_callback_exactly_once`);
 - fail-closed rejection of incomplete E7, duplicate delivery, false success,
-  unrecorded evidence, changed sources and non-synthetic jobs;
+  missing R-07 replay evidence, duplicate cancel invocation/event, fabricated
+  replay outcomes, unrecorded evidence, changed sources and non-synthetic jobs;
 - the default E1-E6 run still stops after the first cancellation.
 
 The P4 acceptance matrix cites the automated results as **S — synthetic P3
-E1-E7**. They prove the synthetic queue/cancel/resume contract only.
+E1-E7/R-07**. They prove the synthetic queue/cancel/resume and
+confirmation-replay contract only.
 
 The P4 matrix separately records a later **RT/S — real Telegram with synthetic
 backend** observation: the owner completed E1-E7 through the actual authorized
@@ -364,6 +425,10 @@ production-worker evidence.
 | `E7 requires exactly two recorded cancellations` | The poller/operator stopped after the first cancel. Re-run E7 and perform the second cancel |
 | `E7 requires ... delivered by the resume` | The Resume wizard did not deliver the queued instruction; inspect the preview/journal and retry the resume |
 | `E7 requires exactly one owner instruction` | A duplicate token-bearing instruction was queued; clean up and re-prepare |
+| `R07 requires exactly two replay records` | `verify` found a missing or extra replay. Use `run` on an R07-prepared fixture; do not hand-edit the journal |
+| `R07 requires exactly one fake dev cancel` | The underlying cancel ran more than once. Treat this as a failed security row; do not edit the evidence to hide it |
+| `R07 ... does not carry the exact confirmation data` | The replay does not match the observed callback; discard the fixture and re-run |
+| `R07 ... confirmation nonce was not consumed` | The original confirmation did not reach the durable nonce path; re-run on a fresh fixture |
 | `no queued owner instruction contains ...` | The instruction text did not include the synthetic marker; repeat E3 |
 | `non-synthetic job found` | Do not mix production job state into the fixture; clean up and re-prepare |
 | `isolated monitor is still running` | Stop it with its stop flag or `Ctrl-C`, then clean up |

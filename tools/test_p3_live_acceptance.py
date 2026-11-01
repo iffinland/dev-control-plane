@@ -25,6 +25,7 @@ from devmonitor.acceptance import (  # noqa: E402
     EVIDENCE_FILENAME,
     MODE_E1_E6,
     MODE_E7,
+    MODE_R07,
     RESUME_CONFIRM_LABEL,
     SYNTHETIC_MARKER,
     SYNTHETIC_PROJECT_ID,
@@ -543,6 +544,218 @@ class E7LifecycleTests(HarnessBase):
         with self.assertRaisesRegex(AcceptanceError, "must never report a development success"):
             harness.verify(evidence)
 
+
+class R07ReplayTests(HarnessBase):
+    def _journal(self, harness: LiveAcceptanceHarness) -> list[dict]:
+        path = Path(harness.manifest["paths"]["journal"])
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _invocations(self, harness: LiveAcceptanceHarness) -> list[dict]:
+        path = Path(harness.manifest["paths"]["job_state"]) / "fake_invocations.jsonl"
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _confirmations(self, harness: LiveAcceptanceHarness) -> list[dict]:
+        import sqlite3
+
+        database = Path(harness.manifest["paths"]["monitor_state"]) / "monitor.db"
+        connection = sqlite3.connect(database)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT nonce, action, payload_json, used_at FROM confirmations"
+            ).fetchall()
+        finally:
+            connection.close()
+        return [dict(row) for row in rows]
+
+    def _drive_without_replay(
+        self, harness: LiveAcceptanceHarness, actions: list[tuple[str, str]]
+    ) -> ScriptedApi:
+        api = ScriptedApi(actions)
+        config = harness._load_config()
+        service, state, _config, _recording, _router, _jobs = harness._build_service(
+            config, api=api
+        )
+        try:
+            guard = 0
+            while api.index < len(api.actions):
+                service.run(max_iterations=1)
+                guard += 1
+                if guard > 100:
+                    raise AssertionError("scripted acceptance flow did not finish")
+        finally:
+            state.close()
+        return api
+
+    def test_r07_prepare_records_mode_and_keeps_e1_e6_flow(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        self.assertEqual(harness.manifest["acceptance_mode"], MODE_R07)
+        job = json.loads(
+            (
+                Path(harness.manifest["paths"]["job_state"])
+                / "jobs"
+                / harness.job_id
+                / "job.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(job["state"], "RUNNING")
+        self.assertTrue(job["synthetic"])
+        self.assertEqual(job["synthetic_marker"], SYNTHETIC_MARKER)
+
+    def test_r07_replays_same_update_and_same_callback_exactly_once(self) -> None:
+        import sqlite3
+
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        api = ScriptedApi(e1_e6_actions(harness.job_id))
+        result = harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        self.assertEqual(result["acceptance_mode"], MODE_R07)
+        self.assertEqual(result["observed_state"], "CANCELLED")
+        self.assertEqual(result["cancellations"], 1)
+        self.assertEqual(result["replays"], 2)
+        self.assertFalse(result["instruction_delivered"])
+        self.assertEqual(api.index, len(api.actions))
+
+        journal = self._journal(harness)
+        originals = [
+            item
+            for item in journal
+            if item.get("kind") == "callback"
+            and item.get("label") == CANCEL_CONFIRM_LABEL
+        ]
+        replays = [item for item in journal if item.get("kind") == "replay"]
+        self.assertEqual(len(originals), 1)
+        self.assertEqual(len(replays), 2)
+        self.assertEqual(
+            sorted(item["replay_mode"] for item in replays),
+            ["same_callback_new_update", "same_update"],
+        )
+        for item in replays:
+            self.assertEqual(item["data_sha256"], originals[0]["data_sha256"])
+            self.assertEqual(item["cancel_invocations_before"], 1)
+            self.assertEqual(item["cancel_invocations_after"], 1)
+            self.assertEqual(item["job_state_after"], "CANCELLED")
+        by_mode = {item["replay_mode"]: item for item in replays}
+        self.assertEqual(
+            by_mode["same_update"]["update_id"], originals[0]["update_id"]
+        )
+        self.assertNotEqual(
+            by_mode["same_callback_new_update"]["update_id"],
+            originals[0]["update_id"],
+        )
+
+        # The same-update replay went through the durable update dedupe path.
+        database = Path(harness.manifest["paths"]["monitor_state"]) / "monitor.db"
+        connection = sqlite3.connect(database)
+        try:
+            seen = connection.execute(
+                "SELECT COUNT(*) FROM seen_updates"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(seen, len(api.actions))
+
+        confirmations = self._confirmations(harness)
+        self.assertEqual(len(confirmations), 1)
+        self.assertEqual(confirmations[0]["action"], "cancel_job")
+        self.assertIsNotNone(confirmations[0]["used_at"])
+
+        cancel_calls = [
+            item
+            for item in self._invocations(harness)
+            if item["args"][:2] == ["cancel", harness.job_id]
+        ]
+        self.assertEqual(len(cancel_calls), 1)
+
+        evidence = self._write_evidence(harness)
+        report = harness.verify(evidence)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["acceptance_mode"], MODE_R07)
+        self.assertEqual(report["final_state"], "CANCELLED")
+        self.assertTrue(report["checks"]["r07_replay_observed"])
+        self.assertTrue(report["checks"]["r07_one_cancel_invocation"])
+        self.assertTrue(report["checks"]["r07_nonce_single_use"])
+        self.assertTrue(report["checks"]["r07_no_second_side_effect"])
+
+    def test_r07_verify_rejects_missing_replay_evidence(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        self._drive_without_replay(harness, e1_e6_actions(harness.job_id))
+        evidence = self._write_evidence(harness)
+        with self.assertRaisesRegex(AcceptanceError, "two replay records|same_update_replay_once"):
+            harness.verify(evidence)
+
+    def test_r07_verify_rejects_duplicate_cancel_invocation(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        api = ScriptedApi(e1_e6_actions(harness.job_id))
+        harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        evidence = self._write_evidence(harness)
+        self.assertTrue(harness.verify(evidence)["ok"])
+
+        invocations = Path(harness.manifest["paths"]["job_state"]) / "fake_invocations.jsonl"
+        with invocations.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {"args": ["cancel", harness.job_id, "--json"], "stdin": "", "ts": "2026-11-01T12:00:00Z"},
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        with self.assertRaisesRegex(AcceptanceError, "exactly one fake dev cancel"):
+            harness.verify(evidence)
+
+    def test_r07_verify_rejects_duplicate_cancel_event(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        api = ScriptedApi(e1_e6_actions(harness.job_id))
+        harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        evidence = self._write_evidence(harness)
+        self.assertTrue(harness.verify(evidence)["ok"])
+
+        events_path = (
+            Path(harness.manifest["paths"]["job_state"])
+            / "jobs"
+            / harness.job_id
+            / "events.jsonl"
+        )
+        with events_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "ts": "2026-11-01T12:00:00Z",
+                        "event": "cancel_observed",
+                        "detail": "attempt=1 duplicate",
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        with self.assertRaisesRegex(AcceptanceError, "exactly one cancel_observed"):
+            harness.verify(evidence)
+
+    def test_r07_verify_rejects_fabricated_replay_outcome(self) -> None:
+        harness = self.prepare(acceptance_mode=MODE_R07)
+        api = ScriptedApi(e1_e6_actions(harness.job_id))
+        harness.run(api=api, timeout_seconds=5, sleep=lambda _seconds: None)
+        evidence = self._write_evidence(harness)
+        self.assertTrue(harness.verify(evidence)["ok"])
+
+        journal_path = Path(harness.manifest["paths"]["journal"])
+        records = self._journal(harness)
+        for item in records:
+            if item.get("kind") == "replay" and item.get("replay_mode") == "same_update":
+                item["cancel_invocations_after"] = 2
+        journal_path.write_text(
+            "".join(json.dumps(item, sort_keys=True) + "\n" for item in records),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(AcceptanceError, "duplicate cancel invocation"):
+            harness.verify(evidence)
 
 class FullFlowTests(HarnessBase):
     def _load_and_build(self, harness: LiveAcceptanceHarness):

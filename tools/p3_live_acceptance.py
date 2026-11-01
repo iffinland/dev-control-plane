@@ -16,7 +16,10 @@ Typical operator sequence (the live monitor must be stopped first, manually):
     python3 tools/p3_live_acceptance.py cleanup --work-dir /tmp/p3-live
 
 For the full two-cancellation resume lifecycle, prepare with `--mode e7` before
-running. The default `e1-e6` mode stops the poller at the first cancellation and
+running. For the R-07 duplicate-confirmation check, prepare with `--mode r07`;
+the isolated poller then replays the exact observed cancel confirmation twice
+(same Telegram update, then same callback data under a new update ID) before it
+stops. The default `e1-e6` mode stops the poller at the first cancellation and
 keeps the original queue/cancel acceptance flow unchanged.
 
 `prepare`, `verify`, `status` and `cleanup` do not contact Telegram. Only `run`
@@ -40,6 +43,7 @@ from devmonitor.acceptance import (  # noqa: E402
     DEFAULT_ACCEPTANCE_MODE,
     DEFAULT_INSTRUCTION,
     MODE_E7,
+    MODE_R07,
     AcceptanceError,
     LiveAcceptanceHarness,
 )
@@ -67,6 +71,13 @@ def _print_prepare(harness: LiveAcceptanceHarness, source_config: Path) -> None:
             "  E7 mode keeps polling after the first cancel, requires the Resume "
             "flow to deliver the queued instruction into attempt #2, and stops "
             "only after the second cancellation."
+        )
+    elif manifest.get("acceptance_mode") == MODE_R07:
+        print(
+            "  R07 mode keeps polling after the first cancel, replays the exact "
+            "confirmation once as the same Telegram update and once as the same "
+            "callback data under a new update ID, then stops with the synthetic "
+            "job still CANCELLED and exactly one fake cancel invocation."
         )
     print("\nNext steps:")
     print("  1. Stop the production monitor through its documented path.")
@@ -182,8 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=ACCEPTANCE_MODES,
         default=DEFAULT_ACCEPTANCE_MODE,
         help=(
-            "e1-e6 (default: stop at the first cancellation) or e7 "
-            "(cancel, resume/deliver into attempt #2, then cancel again)"
+            "e1-e6 (default: stop at the first cancellation), e7 "
+            "(cancel, resume/deliver into attempt #2, then cancel again) or r07 "
+            "(cancel once, replay the same confirmation twice, prove one cancel)"
         ),
     )
     prepare.add_argument("--json", action="store_true")

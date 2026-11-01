@@ -32,6 +32,7 @@ lifecycle, duplicate deliveries and any synthetic success.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -83,8 +84,10 @@ JOURNAL_FILENAME = "telegram-journal.jsonl"
 REPORT_FILENAME = "report.json"
 MODE_E1_E6 = "e1-e6"
 MODE_E7 = "e7"
-ACCEPTANCE_MODES = (MODE_E1_E6, MODE_E7)
+MODE_R07 = "r07"
+ACCEPTANCE_MODES = (MODE_E1_E6, MODE_E7, MODE_R07)
 DEFAULT_ACCEPTANCE_MODE = MODE_E1_E6
+R07_REPLAY_MODES = ("same_update", "same_callback_new_update")
 
 
 class AcceptanceError(RuntimeError):
@@ -410,6 +413,23 @@ def _owner_messages(path: Path, job_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _read_confirmations(path: Path) -> list[dict]:
+    connection = _open_monitor_db(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            "SELECT nonce, action, payload_json, created_at, expires_at, used_at "
+            "FROM confirmations ORDER BY created_at"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise AcceptanceError(
+            f"confirmation state cannot be read: {exc.__class__.__name__}"
+        ) from exc
+    finally:
+        connection.close()
+    return [dict(row) for row in rows]
+
+
 def _read_journal(path: Path) -> list[dict]:
     if not path.is_file():
         return []
@@ -475,6 +495,53 @@ class RecordingTelegramApi:
         self.secrets = tuple(secrets)
         self.instruction_token = instruction_token
         self._labels: dict[str, str] = {}
+        self._callback_updates: dict[str, dict] = {}
+
+    @staticmethod
+    def _data_digest(data: str) -> str:
+        return (
+            hashlib.sha256(data.encode("utf-8")).hexdigest() if data else ""
+        )
+
+    def find_callback_update(self, label: str) -> dict | None:
+        """Return a private copy of the first observed callback for a label."""
+
+        update = self._callback_updates.get(label)
+        return copy.deepcopy(update) if isinstance(update, dict) else None
+
+    def record_replay(
+        self,
+        update: dict,
+        *,
+        replay_mode: str,
+        original_update_id: object,
+        cancel_invocations_before: int,
+        cancel_invocations_after: int,
+        job_state_after: str,
+    ) -> None:
+        """Record a deliberate replay of an observed confirmation callback."""
+
+        callback = update.get("callback_query")
+        callback = callback if isinstance(callback, dict) else {}
+        message = callback.get("message")
+        message = message if isinstance(message, dict) else {}
+        data = str(callback.get("data") or "")
+        self._record(
+            {
+                "kind": "replay",
+                "replay_mode": replay_mode,
+                "update_id": update.get("update_id"),
+                "original_update_id": original_update_id,
+                "callback_query_id": callback.get("id"),
+                "message_id": message.get("message_id"),
+                "label": self._labels.get(data, ""),
+                "head": data.split(":", 1)[0],
+                "data_sha256": self._data_digest(data),
+                "cancel_invocations_before": int(cancel_invocations_before),
+                "cancel_invocations_after": int(cancel_invocations_after),
+                "job_state_after": str(job_state_after),
+            }
+        )
 
     def _record(self, payload: dict[str, Any]) -> None:
         record = {"ts": _utc_now(), **payload}
@@ -511,14 +578,18 @@ class RecordingTelegramApi:
         if isinstance(callback, dict):
             data = str(callback.get("data") or "")
             message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+            label = self._labels.get(data, "")
+            if label:
+                self._callback_updates.setdefault(label, copy.deepcopy(update))
             self._record(
                 {
                     "kind": "callback",
                     "update_id": update.get("update_id"),
                     "callback_query_id": callback.get("id"),
                     "message_id": message.get("message_id"),
-                    "label": self._labels.get(data, ""),
+                    "label": label,
                     "head": data.split(":", 1)[0],
+                    "data_sha256": self._data_digest(data),
                 }
             )
             return
@@ -1149,6 +1220,85 @@ class LiveAcceptanceHarness:
         )
         return service, state, config, recording, router, jobs
 
+    def _cancel_invocation_count(self) -> int:
+        return sum(
+            1
+            for item in _read_invocations(self.job_state)
+            if (item.get("args") or [])[:2] == ["cancel", self.job_id]
+        )
+
+    def _r07_record_result(
+        self,
+        recording: RecordingTelegramApi,
+        update: dict,
+        *,
+        replay_mode: str,
+        original_update_id: object,
+        before: int,
+    ) -> None:
+        after = self._cancel_invocation_count()
+        job = _read_job(self.job_state, self.job_id)
+        recording.record_replay(
+            update,
+            replay_mode=replay_mode,
+            original_update_id=original_update_id,
+            cancel_invocations_before=before,
+            cancel_invocations_after=after,
+            job_state_after=str(job.get("state") or "UNKNOWN"),
+        )
+        if after != before:
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay invoked cancel again "
+                f"({before} -> {after}); no success is claimed"
+            )
+
+    def _r07_replay_same_update(
+        self,
+        recording: RecordingTelegramApi,
+        service: MonitorService,
+        update: dict,
+    ) -> None:
+        """Replay the exact observed Telegram update through the dedupe path."""
+
+        original_update_id = update.get("update_id")
+        before = self._cancel_invocation_count()
+        service.process_update(copy.deepcopy(update))
+        self._r07_record_result(
+            recording,
+            update,
+            replay_mode="same_update",
+            original_update_id=original_update_id,
+            before=before,
+        )
+
+    def _r07_replay_same_callback(
+        self,
+        recording: RecordingTelegramApi,
+        router: object,
+        update: dict,
+    ) -> None:
+        """Replay the same confirmation callback data under a new update ID."""
+
+        replay = copy.deepcopy(update)
+        original_update_id = update.get("update_id")
+        try:
+            # Keep the synthetic replay ID far from Telegram's normal sequence so
+            # it cannot collide with, or advance past, a real pending update.
+            replay["update_id"] = int(original_update_id) + 1_000_000  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            replay["update_id"] = 1_000_000
+        if replay.get("update_id") == original_update_id:
+            raise AcceptanceError("R07 replay did not use a new update ID")
+        before = self._cancel_invocation_count()
+        router.handle(replay)  # type: ignore[attr-defined]
+        self._r07_record_result(
+            recording,
+            replay,
+            replay_mode="same_callback_new_update",
+            original_update_id=original_update_id,
+            before=before,
+        )
+
     def run(
         self,
         *,
@@ -1209,7 +1359,7 @@ class LiveAcceptanceHarness:
                 )
         else:
             live_offset = None
-        service, state, _config, _api, _router, _jobs = self._build_service(
+        service, state, _config, recording, router, _jobs = self._build_service(
             config, api=api
         )
         if live_offset is not None:
@@ -1219,14 +1369,17 @@ class LiveAcceptanceHarness:
         observed = "RUNNING"
         cancel_count = 0
         delivered = False
+        r07_replays = 0
+        r07_cancel_update: dict | None = None
         try:
             while True:
                 if time.monotonic() > deadline:
-                    detail = (
-                        f" after {cancel_count} cancellation(s)"
-                        if mode == MODE_E7
-                        else ""
-                    )
+                    if mode == MODE_E7:
+                        detail = f" after {cancel_count} cancellation(s)"
+                    elif mode == MODE_R07:
+                        detail = f" after {cancel_count} cancellation(s) and {r07_replays} replay(s)"
+                    else:
+                        detail = ""
                     raise AcceptanceError(
                         f"timed out{detail} before the synthetic job completed the "
                         f"{mode} lifecycle; no success is claimed"
@@ -1262,6 +1415,51 @@ class LiveAcceptanceHarness:
                     # instruction, and only the second cancel ends this poller.
                     if cancel_count >= 2 and observed == "CANCELLED":
                         break
+                elif mode == MODE_R07:
+                    # R-07 deliberately keeps the poller alive after the first
+                    # cancellation. Replay the exact observed confirmation once
+                    # as the same Telegram update (update deduplication) and once
+                    # as the same callback data under a new update ID (nonce
+                    # single-use). Only then perform one more live poll iteration
+                    # and stop with the job still CANCELLED.
+                    if observed == "CANCELLED" and cancel_count >= 1:
+                        if r07_cancel_update is None:
+                            r07_cancel_update = recording.find_callback_update(
+                                CANCEL_CONFIRM_LABEL
+                            )
+                        if not isinstance(r07_cancel_update, dict):
+                            raise AcceptanceError(
+                                "R07 could not locate the observed cancel "
+                                "confirmation update to replay; no replay evidence "
+                                "is claimed"
+                            )
+                        if r07_replays == 0:
+                            self._r07_replay_same_update(
+                                recording, service, r07_cancel_update
+                            )
+                            r07_replays = 1
+                            sleep(0.1)
+                            continue
+                        if r07_replays == 1:
+                            self._r07_replay_same_callback(
+                                recording, router, r07_cancel_update
+                            )
+                            r07_replays = 2
+                            sleep(0.1)
+                            continue
+                        # This iteration has already run the poller after both
+                        # replays. Prove the duplicate confirmation did not mutate.
+                        if str(job.get("state") or "") != "CANCELLED":
+                            raise AcceptanceError(
+                                "R07 replay changed the synthetic job away from "
+                                "CANCELLED; no success is claimed"
+                            )
+                        if self._cancel_invocation_count() != 1:
+                            raise AcceptanceError(
+                                "R07 replay invoked the underlying cancel more than "
+                                "once; no success is claimed"
+                            )
+                        break
                 elif observed == "CANCELLED":
                     break
                 sleep(0.1)
@@ -1272,7 +1470,8 @@ class LiveAcceptanceHarness:
         print(
             "acceptance: isolated poller stopped; "
             f"synthetic job state={observed} mode={mode} "
-            f"cancellations={cancel_count} delivered={delivered}",
+            f"cancellations={cancel_count} delivered={delivered} "
+            f"replays={r07_replays}",
             file=sys.stderr,
         )
         return {
@@ -1281,6 +1480,7 @@ class LiveAcceptanceHarness:
             "acceptance_mode": mode,
             "cancellations": cancel_count,
             "instruction_delivered": delivered,
+            "replays": r07_replays,
         }
 
     # ---- verification --------------------------------------------------------
@@ -1385,6 +1585,18 @@ class LiveAcceptanceHarness:
                 token=token,
                 journal_report=journal_report,
             )
+        elif mode == MODE_R07:
+            _verify_r07_replay(
+                job=job,
+                events=events,
+                invocations=invocations,
+                matching=matching,
+                journal=journal,
+                journal_report=journal_report,
+                confirmations=_read_confirmations(
+                    self.monitor_state / "monitor.db"
+                ),
+            )
 
         report = {
             "ok": True,
@@ -1415,6 +1627,16 @@ class LiveAcceptanceHarness:
                         "e7_exactly_once_delivery": True,
                     }
                     if mode == MODE_E7
+                    else {}
+                ),
+                **(
+                    {
+                        "r07_replay_observed": True,
+                        "r07_one_cancel_invocation": True,
+                        "r07_nonce_single_use": True,
+                        "r07_no_second_side_effect": True,
+                    }
+                    if mode == MODE_R07
                     else {}
                 ),
             },
@@ -1601,6 +1823,188 @@ def _verify_e7_lifecycle(
         )
 
 
+def _payload_job_id(payload_json: object) -> str:
+    try:
+        payload = json.loads(str(payload_json))
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("job_id") or "")
+
+
+def _verify_r07_replay(
+    *,
+    job: Mapping[str, Any],
+    events: Sequence[dict],
+    invocations: Sequence[dict],
+    matching: Sequence[dict],
+    journal: Sequence[dict],
+    journal_report: Mapping[str, Any],
+    confirmations: Sequence[dict],
+) -> None:
+    """Prove one confirmation plus replay causes exactly one cancellation.
+
+    R-07 is accepted only when the observed cancel confirmation was replayed
+    both as the same Telegram update and as the same callback data under a new
+    update ID, the durable nonce was consumed exactly once, the underlying fake
+    ``dev cancel`` ran exactly once, and the synthetic job stayed ``CANCELLED``.
+    """
+
+    if len(matching) != 1:
+        raise AcceptanceError(
+            "R07 requires exactly one owner instruction containing the synthetic "
+            f"token; found {len(matching)}"
+        )
+    if str(matching[0].get("delivery_state") or "") != "queued":
+        raise AcceptanceError(
+            "R07 must finish with the owner instruction queued; resume is not part "
+            "of the confirmation-replay acceptance"
+        )
+    if int(job.get("resume_count") or 0) != 0:
+        raise AcceptanceError("R07 must not record a resume")
+    if int(job.get("attempt_number") or 1) != 1:
+        raise AcceptanceError("R07 must remain in synthetic attempt #1")
+
+    cancel_events = [item for item in events if item.get("event") == "cancel_observed"]
+    if len(cancel_events) != 1:
+        raise AcceptanceError(
+            "R07 requires exactly one cancel_observed event; "
+            f"found {len(cancel_events)}"
+        )
+    request_events = [
+        item for item in events if item.get("event") == "cancel_requested"
+    ]
+    if len(request_events) != 1:
+        raise AcceptanceError(
+            "R07 requires exactly one cancel_requested event; "
+            f"found {len(request_events)}"
+        )
+    finished_events = [item for item in events if item.get("event") == "finished"]
+    if len(finished_events) != 1 or "state=CANCELLED" not in str(
+        finished_events[0].get("detail") or ""
+    ):
+        raise AcceptanceError(
+            "R07 requires exactly one finished state=CANCELLED event"
+        )
+    if any(
+        "state=SUCCESS" in str(item.get("detail") or "")
+        for item in events
+    ):
+        raise AcceptanceError("R07 event journal contains a SUCCESS transition")
+
+    def calls(kind: str) -> list[dict]:
+        return [
+            item
+            for item in invocations
+            if (item.get("args") or [])[:2] == [kind, job.get("id")]
+        ]
+
+    cancel_calls = calls("cancel")
+    if len(cancel_calls) != 1:
+        raise AcceptanceError(
+            f"R07 requires exactly one fake dev cancel call; found {len(cancel_calls)}"
+        )
+    if calls("resume"):
+        raise AcceptanceError("R07 must not invoke fake dev resume")
+
+    if len(confirmations) != 1:
+        raise AcceptanceError(
+            "R07 requires exactly one durable confirmation nonce in the isolated "
+            f"state; found {len(confirmations)}"
+        )
+    confirmation = confirmations[0]
+    if str(confirmation.get("action") or "") != "cancel_job":
+        raise AcceptanceError("R07 confirmation nonce is not scoped to cancel_job")
+    if _payload_job_id(confirmation.get("payload_json")) != str(job.get("id") or ""):
+        raise AcceptanceError("R07 confirmation nonce belongs to another job")
+    if confirmation.get("used_at") is None:
+        raise AcceptanceError("R07 cancel confirmation nonce was not consumed")
+
+    original_callbacks = [
+        item
+        for item in journal
+        if item.get("kind") == "callback"
+        and item.get("label") == CANCEL_CONFIRM_LABEL
+    ]
+    if len(original_callbacks) != 1:
+        raise AcceptanceError(
+            "R07 requires exactly one original cancel confirmation callback; "
+            f"found {len(original_callbacks)}"
+        )
+    original = original_callbacks[0]
+    original_hash = str(original.get("data_sha256") or "")
+    if not original_hash:
+        raise AcceptanceError(
+            "R07 original confirmation callback has no callback-data digest"
+        )
+
+    replays = [item for item in journal if item.get("kind") == "replay"]
+    if len(replays) != 2:
+        raise AcceptanceError(
+            f"R07 requires exactly two replay records; found {len(replays)}"
+        )
+    by_mode: dict[str, dict] = {}
+    for replay_mode in R07_REPLAY_MODES:
+        found = [
+            item for item in replays if item.get("replay_mode") == replay_mode
+        ]
+        if len(found) != 1:
+            raise AcceptanceError(
+                f"R07 missing or duplicate replay evidence: {replay_mode}"
+            )
+        by_mode[replay_mode] = found[0]
+
+    for replay_mode, item in by_mode.items():
+        if str(item.get("label") or "") != CANCEL_CONFIRM_LABEL:
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay is not the cancel confirmation"
+            )
+        if str(item.get("data_sha256") or "") != original_hash:
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay does not carry the exact confirmation data"
+            )
+        if item.get("original_update_id") != original.get("update_id"):
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay does not reference the original update"
+            )
+        if item.get("cancel_invocations_before") != 1 or item.get(
+            "cancel_invocations_after"
+        ) != 1:
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay records a duplicate cancel invocation"
+            )
+        if str(item.get("job_state_after") or "") != "CANCELLED":
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay changed the synthetic job state"
+            )
+
+    if by_mode["same_update"].get("update_id") != original.get("update_id"):
+        raise AcceptanceError(
+            "R07 same-update replay did not use the original Telegram update ID"
+        )
+    if by_mode["same_callback_new_update"].get("update_id") == original.get(
+        "update_id"
+    ):
+        raise AcceptanceError(
+            "R07 same-callback replay must use a different update ID"
+        )
+
+    original_index = journal.index(original)
+    for replay_mode, item in by_mode.items():
+        if journal.index(item) <= original_index:
+            raise AcceptanceError(
+                f"R07 {replay_mode} replay is not recorded after the original callback"
+            )
+
+    r07_report = journal_report.get("r07") or {}
+    if not r07_report.get("all_present"):
+        missing = r07_report.get("missing") or []
+        raise AcceptanceError(
+            "R07 Telegram evidence is incomplete: " + ", ".join(missing)
+        )
+
+
 def _parse_utc(value: object) -> bool:
     if not isinstance(value, str) or value in {"", "UNRECORDED"}:
         return False
@@ -1647,6 +2051,7 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
     buttons: set[str] = set()
     callbacks: list[str] = []
     messages: list[str] = []
+    replay_entries: list[dict] = []
     for entry in entries:
         kind = entry.get("kind")
         if kind == "outbound":
@@ -1657,6 +2062,8 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
             callbacks.append(str(entry.get("label") or ""))
         elif kind == "message":
             messages.append(str(entry.get("text") or ""))
+        elif kind == "replay":
+            replay_entries.append(entry)
 
     def saw_text(fragment: str) -> bool:
         return any(fragment in text for text in outbound_texts)
@@ -1707,6 +2114,67 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
         "resume_result_once": count_text("Job resumed") == 1,
     }
     e7_missing = [name for name, passed in e7_required.items() if not passed]
+
+    original_cancel_confirms = [
+        entry
+        for entry in entries
+        if entry.get("kind") == "callback"
+        and entry.get("label") == CANCEL_CONFIRM_LABEL
+    ]
+
+    def count_replay(replay_mode: str) -> int:
+        return sum(
+            1
+            for item in replay_entries
+            if item.get("replay_mode") == replay_mode
+        )
+
+    same_update_replays = [
+        item for item in replay_entries if item.get("replay_mode") == "same_update"
+    ]
+    same_callback_replays = [
+        item
+        for item in replay_entries
+        if item.get("replay_mode") == "same_callback_new_update"
+    ]
+    replay_after_original = bool(
+        original_cancel_confirms
+        and len(replay_entries) == 2
+        and all(
+            entries.index(item) > entries.index(original_cancel_confirms[0])
+            for item in replay_entries
+        )
+    )
+    r07_required = {
+        "original_confirmation_once": len(original_cancel_confirms) == 1,
+        "same_update_replay_once": count_replay("same_update") == 1,
+        "same_callback_replay_once": count_replay(
+            "same_callback_new_update"
+        )
+        == 1,
+        "replays_after_original": replay_after_original,
+        "cancel_result_once": count_text("Cancel result: cancelled") == 1,
+        "no_second_cancel_result": count_text("Cancel result: cancelled") <= 1,
+        "same_update_ids_match": bool(
+            same_update_replays
+            and original_cancel_confirms
+            and same_update_replays[0].get("update_id")
+            == original_cancel_confirms[0].get("update_id")
+        ),
+        "same_callback_uses_new_update_id": bool(
+            same_callback_replays
+            and original_cancel_confirms
+            and same_callback_replays[0].get("update_id")
+            != original_cancel_confirms[0].get("update_id")
+        ),
+        "same_callback_data": bool(
+            same_callback_replays
+            and original_cancel_confirms
+            and same_callback_replays[0].get("data_sha256")
+            == original_cancel_confirms[0].get("data_sha256")
+        ),
+    }
+    r07_missing = [name for name, passed in r07_required.items() if not passed]
     return {
         "outbound_messages": len(outbound_texts),
         "message_updates": len(messages),
@@ -1725,6 +2193,12 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
             "missing": e7_missing,
             "all_present": not e7_missing,
         },
+        "r07": {
+            "required": r07_required,
+            "missing": r07_missing,
+            "all_present": not r07_missing,
+            "replay_records": replay_entries,
+        },
         "message_ids": [
             entry.get("message_id")
             for entry in entries
@@ -1740,16 +2214,32 @@ def _analyse_journal(entries: Sequence[dict], token: str) -> dict:
 
 
 def _evidence_instructions(job_id: str, instruction: str, mode: str) -> str:
-    e7_row = (
-        "| E7 | Press `Resume`, then `Confirm resume`, then `Confirm: Resume job`; "
-        "then cancel the synthetic job again | The preview lists exactly one queued "
-        "instruction; after resume it is delivered once at attempt #2 and marked "
-        "`[delivered]`; the poller stops only after the second `Cancel result: "
-        "cancelled` |\n"
-        if mode == MODE_E7
-        else "| E7 | Not part of this E1-E6 fixture | Re-prepare with `--mode e7` "
-        "to exercise resume delivery |\n"
-    )
+    if mode == MODE_E7:
+        extra_rows = (
+            "| E7 | Press `Resume`, then `Confirm resume`, then `Confirm: Resume job`; "
+            "then cancel the synthetic job again | The preview lists exactly one queued "
+            "instruction; after resume it is delivered once at attempt #2 and marked "
+            "`[delivered]`; the poller stops only after the second `Cancel result: "
+            "cancelled` |\n"
+        )
+    elif mode == MODE_R07:
+        extra_rows = (
+            "| R-07 | Do not press the confirmation a second time. After E6 the "
+            "isolated poller automatically replays the exact observed confirmation "
+            "twice: once with the same Telegram `update_id` and once with the same "
+            "callback data under a new synthetic `update_id`. Leave the poller "
+            "running until it exits. | The journal records one original "
+            "`Confirm: Cancel running job` callback plus exactly two `replay` "
+            "entries with the same callback-data digest. The second confirmation "
+            "shows `Confirmation expired or already used.` and no second "
+            "`Cancel result: cancelled`. The synthetic job stays `CANCELLED` and "
+            "the fake CLI records exactly one `cancel` call. |\n"
+        )
+    else:
+        extra_rows = (
+            "| E7 | Not part of this E1-E6 fixture | Re-prepare with `--mode e7` "
+            "to exercise resume delivery |\n"
+        )
     return f"""# Telegram interaction evidence (synthetic)
 
 This file belongs to the isolated acceptance harness. Fill `telegram-evidence.json`
@@ -1772,7 +2262,7 @@ the observed labels, message IDs, update IDs and timestamps automatically.
 | E4 | Send `/messages <job>` | The instruction is shown as `[queued]` for the next resume |
 | E5 | Open the job and press `Cancel job` | Preview says `Cancel this running job?` and shows the synthetic job only |
 | E6 | Press `Confirm: Cancel running job` | Reply says `Cancel result: cancelled`; state becomes `CANCELLED` |
-{e7_row}
+{extra_rows}
 In `telegram-evidence.json` set:
 
 - `operator`: your name or registered role;

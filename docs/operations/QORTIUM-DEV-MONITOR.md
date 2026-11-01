@@ -713,7 +713,11 @@ the real monitor router without contacting Telegram, starting OpenCode, editing
 the production registry or touching the live monitor state. The explicit
 `--mode e7` lifecycle is also covered: the isolated poller stays active after the
 first cancellation, the Resume wizard delivers exactly one queued instruction
-into attempt #2, and only the second cancellation ends the run. See the
+into attempt #2, and only the second cancellation ends the run. The explicit
+`--mode r07` lifecycle replays the exact cancel confirmation as the same Telegram
+update and as the same callback data under a new update ID; verification proves
+one consumed nonce, one `dev cancel` invocation and a final `CANCELLED` state.
+See the
 [P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md).
 
 The complete automated gate is:

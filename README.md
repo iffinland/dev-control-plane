@@ -93,6 +93,7 @@ cross-project and control-plane material belongs under `workspace/`. See the
 - [Phase 1 migration record](docs/migration/2026-10-30-phase1-control-plane.md)
 - [Workflow v3 migration record](docs/migration/2026-10-31-workflow-v3.md)
 - [Legacy repository consolidation inventory](docs/migration/2026-11-01-legacy-consolidation.md)
+- [Mandatory completion contract record](docs/migration/2026-11-01-mandatory-completion-contract.md)
 - [Workflow v3 completion contract](docs/operations/DEV-WORKFLOW-V3.md#executable-completion-contract)
 - [Completion contract skill](skills/shared/workflow-v3-completion-contract/SKILL.md)
 - [Agent roles](roles/)

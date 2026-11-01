@@ -174,14 +174,15 @@ class CompletionContractTests(unittest.TestCase):
             result = contract.evaluate({"repo": str(repo.root)}, spec)
             self.assertNotIn("clean_tree", result["failed_checks"])
 
-    def test_protected_branch_without_authorization_fails(self) -> None:
+    def test_protected_branch_without_authorization_is_pending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo, base = make_repo(Path(directory), branch="main")
             repo.write("TASK.md", EVIDENCE)
             repo.commit("implement")
             spec = spec_for(base, branch="main")
             result = contract.evaluate({"repo": str(repo.root)}, spec)
-            self.assertIn("protected_branch", result["failed_checks"])
+            self.assertEqual(result["state"], "PENDING", result)
+            self.assertIn("protected_branch", result["pending_checks"])
 
     def test_push_without_authorization_is_pending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -273,6 +274,98 @@ class CompletionContractTests(unittest.TestCase):
             path.write_text("{not json", encoding="utf-8")
             with self.assertRaises(contract.ContractError):
                 contract.load_contract(path)
+
+    def test_default_contract_requires_every_mandatory_check(self) -> None:
+        spec = contract.build_default_contract(
+            branch="agent/test/job",
+            base_sha="a" * 40,
+            dirty_paths=["owner/file.md", "owner/"],
+            authorization={"push": True},
+        )
+        for check in contract.MANDATORY_REQUIREMENTS:
+            self.assertTrue(spec["require"][check], check)
+        self.assertEqual(spec["evidence_files"], ["TASK.md"])
+        self.assertEqual(spec["allowed_dirty_paths"], ["owner/file.md", "owner/"])
+        self.assertEqual(spec["forbidden_paths"], ["owner/file.md", "owner/"])
+        self.assertTrue(spec["authorization"]["push"])
+
+    def test_prepare_contract_never_disables_mandatory_checks(self) -> None:
+        weak = {
+            "version": 1,
+            "evidence_files": ["TASK.md"],
+            "require": {"push": False},
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.prepare_contract(
+                weak,
+                branch="agent/test/job",
+                base_sha="a" * 40,
+            )
+
+    def test_prepare_contract_keeps_explicit_constraints_and_adds_defaults(self) -> None:
+        explicit = {
+            "version": 1,
+            "evidence_files": ["TASK.md", "STATUS.json"],
+            "allowed_paths": ["src/"],
+            "require": {"commit": True},
+        }
+        prepared, source = contract.prepare_contract(
+            explicit,
+            branch="agent/test/job",
+            base_sha="a" * 40,
+            dirty_paths=["owner/file.md"],
+        )
+        self.assertEqual(source, "file")
+        self.assertEqual(prepared["evidence_files"], ["TASK.md", "STATUS.json"])
+        self.assertEqual(prepared["allowed_paths"], ["src/"])
+        self.assertIn("owner/file.md", prepared["allowed_dirty_paths"])
+        for check in contract.MANDATORY_REQUIREMENTS:
+            self.assertTrue(prepared["require"][check], check)
+
+    def test_load_contract_rejects_weakening(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "evidence_files": ["TASK.md"],
+                        "require": {"capability_harvest": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(contract.ContractError):
+                contract.load_contract(path)
+            path.write_text(
+                json.dumps({"version": 1, "evidence_files": []}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(contract.ContractError):
+                contract.load_contract(path)
+
+    def test_legacy_job_without_contract_stays_backwards_compatible(self) -> None:
+        job = {
+            "acceptance_criteria": [
+                {"id": "AC1", "kind": "command", "required": True}
+            ]
+        }
+        verification = {"AC1": {"verified": True}}
+        self.assertIsNone(runner.verify_contract(job))
+        state, blocker = runner.evaluate_state(job, 0, [], verification, None)
+        self.assertEqual(state, "SUCCESS", blocker)
+
+    def test_new_job_without_evaluated_contract_cannot_succeed(self) -> None:
+        job = {
+            "acceptance_criteria": [
+                {"id": "AC1", "kind": "command", "required": True}
+            ],
+            "completion_contract_required": True,
+        }
+        verification = {"AC1": {"verified": True}}
+        state, blocker = runner.evaluate_state(job, 0, [], verification, None)
+        self.assertEqual(state, "FAILED")
+        self.assertIn("mandatory completion contract", blocker or "")
 
 
 if __name__ == "__main__":

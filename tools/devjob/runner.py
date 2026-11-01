@@ -325,6 +325,7 @@ def _new_job(
     notifications_enabled: bool,
     preflight_payload: dict,
     contract_spec: dict | None = None,
+    contract_source: str | None = None,
 ) -> dict:
     from .store import new_job_id
 
@@ -370,6 +371,8 @@ def _new_job(
         "acceptance_criteria": criteria,
         "verification": {},
         "completion_contract_spec": spec or None,
+        "completion_contract_source": contract_source if spec else None,
+        "completion_contract_required": bool(spec),
         "completion_contract": None,
         "detected_issues": [],
         "blocker": None,
@@ -427,14 +430,20 @@ def evaluate_state(
         return "BLOCKED", "no explicit acceptance criteria were recorded"
     if pending_manual:
         return "BLOCKED", "manual acceptance criteria are still pending owner verification"
-    if contract_failed:
-        return "FAILED", "the completion contract did not verify"
-    if contract_pending:
-        return "BLOCKED", "the completion contract is pending owner authorization"
+    # A genuine validation failure is more specific than a pending delivery
+    # authorization. Report the failure, never hide it behind BLOCKED.
     if failed:
         return "FAILED", "a failure condition was detected"
     if not all_verified:
         return "FAILED", "one or more required acceptance criteria did not verify"
+    if contract_failed:
+        return "FAILED", "the completion contract did not verify"
+    if contract_pending:
+        return "BLOCKED", "the completion contract is pending owner authorization"
+    if job.get("completion_contract_required") and contract_state != "VERIFIED":
+        if contract_state == "SKIPPED":
+            return "BLOCKED", "the mandatory completion contract was not evaluated"
+        return "FAILED", "the mandatory completion contract did not produce verified evidence"
     if guard_exit_code != 0:
         return "FAILED", f"the guarded command exited with code {guard_exit_code}"
     return "SUCCESS", None
@@ -535,6 +544,14 @@ def verify_contract(
 ) -> dict | None:
     spec = job.get("completion_contract_spec")
     if not spec:
+        if job.get("completion_contract_required"):
+            return {
+                "configured": True,
+                "state": "FAILED",
+                "checks": [],
+                "detail": "mandatory completion contract is missing from the job record",
+                "evaluated_at": utc_now(),
+            }
         return None
     if skip:
         return {
@@ -1201,6 +1218,11 @@ def create_job(
     proc_root: str | Path = "/proc",
     notifications_enabled: bool = True,
     contract_spec: dict | None = None,
+    contract_source: str | None = None,
+    contract_evidence: Iterable[str] | None = None,
+    contract_scope: Iterable[str] | None = None,
+    contract_authorization: dict | None = None,
+    contract_remote: str = contract.DEFAULT_REMOTE,
 ) -> dict:
     repo_path = Path(repo).expanduser().resolve()
     if not repo_path.is_dir():
@@ -1208,6 +1230,17 @@ def create_job(
     if not prompt.strip():
         raise JobError("prompt cannot be empty")
     payload = preflight(proc_root=proc_root, workspace=workspace)
+    snapshot = git_snapshot(repo_path)
+    prepared_spec, prepared_source = contract.prepare_contract(
+        contract_spec,
+        branch=snapshot.get("branch") or branch,
+        base_sha=snapshot.get("head"),
+        dirty_paths=contract.parse_dirty_paths(snapshot.get("status") or ""),
+        remote=contract_remote,
+        evidence_files=contract_evidence,
+        allowed_paths=contract_scope,
+        authorization=contract_authorization,
+    )
     job = _new_job(
         title=title,
         prompt=prompt,
@@ -1220,7 +1253,8 @@ def create_job(
         workspace=Path(workspace).expanduser(),
         notifications_enabled=notifications_enabled,
         preflight_payload=payload,
-        contract_spec=contract_spec,
+        contract_spec=prepared_spec,
+        contract_source=contract_source or prepared_source,
     )
     job["proc_root"] = str(proc_root)
     if payload.get("status") == "REFUSE" or payload.get("exit_code") == opencode_guard.EXIT_REFUSE:
@@ -1409,7 +1443,13 @@ def accept_job(
     append_event(job, "manual_acceptance", ", ".join(changed))
     guard_exit = int(job.get("exit_code") if job.get("exit_code") is not None else 1)
     issues = list(job.get("detected_issues") or [])
-    state, blocker = evaluate_state(job, guard_exit, issues, job.get("verification") or {})
+    state, blocker = evaluate_state(
+        job,
+        guard_exit,
+        issues,
+        job.get("verification") or {},
+        job.get("completion_contract"),
+    )
     job["state"] = state
     job["blocker"] = blocker
     if state == "SUCCESS":
@@ -1504,6 +1544,9 @@ def status_payload(job: dict) -> dict:
         "attempt_elapsed_seconds": attempt_info["attempt_elapsed_seconds"],
         "completion": job.get("completion"),
         "completion_contract": job.get("completion_contract"),
+        "completion_contract_source": job.get("completion_contract_source"),
+        "completion_contract_required": bool(job.get("completion_contract_required")),
+        "completion_contract_spec": job.get("completion_contract_spec"),
         "timeout_seconds": job.get("timeout_seconds"),
         "worker_pid": job.get("worker_pid"),
         "guard_pid": job.get("guard_pid"),
@@ -1570,11 +1613,21 @@ def render_status(job: dict) -> str:
     if payload["pending_criteria"]:
         lines.append(f"Pending:  {', '.join(payload['pending_criteria'])}")
     contract_payload = payload.get("completion_contract") or {}
+    contract_source = payload.get("completion_contract_source")
     if contract_payload.get("configured"):
-        lines.append(f"Contract: {contract_payload.get('state')}")
+        source = f" ({contract_source})" if contract_source else ""
+        lines.append(f"Contract: {contract_payload.get('state')}{source}")
         for check in contract_payload.get("checks") or []:
             if check.get("status") in {"failed", "pending"}:
                 lines.append(f"  - [{check.get('status')}] {check.get('id')}: {check.get('detail')}")
+    elif payload.get("completion_contract_required"):
+        lines.append(
+            "Contract: required"
+            + (f" ({contract_source})" if contract_source else "")
+            + " - not evaluated yet"
+        )
+    elif contract_source is None:
+        lines.append("Contract: legacy job (no mandatory contract recorded)")
     if payload["issues"]:
         lines.append("Issues:")
         for issue in payload["issues"][:10]:
@@ -1658,6 +1711,8 @@ def render_report(job: dict) -> str:
     if isinstance(contract_payload, dict) and contract_payload.get("configured"):
         lines.extend(["", "## Completion contract", ""])
         lines.append(f"- State: **{contract_payload.get('state')}**")
+        lines.append(f"- Source: `{job.get('completion_contract_source') or 'explicit'}`")
+        lines.append(f"- Required: {bool(job.get('completion_contract_required'))}")
         lines.append(f"- Evaluated: {contract_payload.get('evaluated_at') or '-'}")
         if contract_payload.get("branch"):
             lines.append(f"- Branch: `{contract_payload.get('branch')}`")

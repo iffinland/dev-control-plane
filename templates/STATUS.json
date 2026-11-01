@@ -49,6 +49,8 @@
   },
   "completion_contract": {
     "configured": false,
+    "source": null,
+    "required": false,
     "path": null,
     "state": null,
     "failed_checks": [],

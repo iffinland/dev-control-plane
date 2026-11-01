@@ -2,11 +2,16 @@
 
 ## Universal coordination (2026-09-13)
 
-Read `/home/iffi/VsCodec-Projects/AI-Orchestration/AGENTS.md` first.
-It owns shared roles (including Codex Local orchestration), agent branches,
-GitHub handoff and reference freshness. This workspace retains platform-specific
-execution and evidence rules. Older role summaries below are platform overlays;
-they do not override that shared coordination contract.
+Read `/home/iffi/dev-workspace/control-plane/AGENTS.md` first.
+It owns shared roles (including orchestration), agent branches, GitHub handoff
+and reference freshness. This workspace retains platform-specific execution and
+evidence rules. Older role summaries below are platform overlays; they do not
+override that shared coordination contract.
+
+> Provenance: migrated from `qortal-dev-workspace`. The original instruction
+> referenced the obsolete laptop path `/home/iffi/VsCodec-Projects/AI-Orchestration/AGENTS.md`;
+> the canonical control-plane path above replaces it. The legacy path remains
+> historical evidence only.
 
 > Naming: the workflow is named after the primary local implementation agent
 > model used in this environment. The roles are model-agnostic; any equivalent

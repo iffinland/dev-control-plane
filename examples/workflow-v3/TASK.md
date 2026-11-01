@@ -9,7 +9,10 @@
 
 ## Task-start contract
 
-Record the task-start evidence the completion contract will verify:
+Every new Workflow v3 job receives a mandatory completion contract
+automatically. Record this evidence in `TASK.md` (or the evidence files named at
+start); an explicit `--contract-file` may add constraints but cannot disable a
+mandatory check.
 
 - Skills discovered (paths, platform, maturity, freshness result):
 - Relevant documentation read (control-plane and project paths):
@@ -20,7 +23,9 @@ Record the task-start evidence the completion contract will verify:
 
 - In scope:
 - Out of scope:
-- Authorized external actions:
+- Authorized external actions (each separately, otherwise none):
+- Development-branch push authorized / remote:
+- Protected-branch, merge, deploy, QDN, wallet, destructive actions authorized:
 - Forbidden actions:
 
 ## Implementation
@@ -40,7 +45,7 @@ Record the task-start evidence the completion contract will verify:
 - Capability harvest result:
 - Documentation updates:
 - Scoped commit(s):
-- Authorized push and verified remote SHA:
+- Authorized push and verified remote SHA (or the exact pending authorization):
 
 Do not claim completion from OpenCode exit code 0, a build alone or a publish
 response alone. The job record's acceptance criteria and completion contract are

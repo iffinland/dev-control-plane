@@ -186,6 +186,12 @@ knowledge.
 
 ## 6. Executable Workflow v3 completion contract
 
+> Historical note: this section records the original **opt-in** contract. It was
+> superseded on 2026-11-01 by the mandatory default for new jobs; see
+> [`2026-11-01-mandatory-completion-contract.md`](2026-11-01-mandatory-completion-contract.md).
+> The current implementation is `tools/devjob/contract.py` plus the current
+> `WORKFLOW.md` / `DEV-WORKFLOW-V3.md`.
+
 The task-start and handoff rules are now machine-checked, not prompt advice:
 
 - `tools/devjob/contract.py` evaluates a JSON contract for skill discovery,

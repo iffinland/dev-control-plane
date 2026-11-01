@@ -34,7 +34,11 @@ Control mode (explicit owner configuration only):
 - Start wizard: title, prompt, mandatory acceptance criteria, timeout, optional
   branch label, exact confirmation preview and one-time confirmation.
 - Fixed-shape `dev start` invocation with `--no-notify --json` and the prompt on
-  standard input.
+  standard input. The monitor never passes `--contract-file` or an authorization
+  weakening flag: every monitor-started job receives the CLI's mandatory default
+  completion contract. Push, protected-branch and merge authorization therefore
+  remain separate owner decisions; without them a completed job is truthfully
+  reported as `BLOCKED`, not `SUCCESS`.
 - Resume wizard with optional instruction, explicit `--new-session`/`--force`
   toggles and one-time confirmation.
 - Per-project admission locking plus global execution-guard awareness. Only one
@@ -393,9 +397,15 @@ never paths, job IDs, prompts or user IDs.
 -> per-project admission lock
 -> project-active and global-guard check
 -> dev start --no-notify --json (prompt over stdin)
+   -> mandatory default completion contract recorded in job.json
 -> RUNNING: STARTED notification and job actions
 -> BLOCKED/refusal: sanitized reason, no STARTED
 ```
+
+Job status includes the completion-contract state and any failed or pending
+check. A green build, a passing test suite or an OpenCode exit `0` is never
+reported as `SUCCESS` when task-start evidence, the scoped commit, the
+authorized development-branch push or the verified remote SHA is missing.
 
 The monitor uses only the configured agent/model allowlists, a registered
 repository realpath, an integer timeout capped at eight hours and argument arrays

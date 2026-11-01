@@ -21,7 +21,7 @@ Authorized external actions (exact repo, branch, operation; otherwise none):
   operation authorized (each separately; default none):
 Unattended execution authorization (only when explicitly granted):
 - Agent profile / guard command / maximum wall-clock:
-- Completion contract file:
+- Mandatory default completion contract / optional --contract-file override (override cannot weaken checks):
 - Resource limits / stop condition:
 - Checkpoint cadence and recovery:
 Forbidden actions (unattended):

@@ -95,7 +95,7 @@ header date, not the date of the underlying platform revision.
 | [`skills/qortium/home2-qdn-publishing/SKILL.md`](qortium/home2-qdn-publishing/SKILL.md) | `qortium` | `verified-runtime` | Home 2 source-token publishing: select/stage and publish as separate phases, token-only publish, refused inline/path/fee fields, ten-item batch with distinct tokens, per-item result, unknown-outcome and proof-of-work-deadline handling, Unicode source filenames, owner release-archive path and served-bundle-hash gate. | `2026-09-18` |
 | [`skills/shared/app-bootstrap/SKILL.md`](shared/app-bootstrap/SKILL.md) | `shared` | `verified-reference` | Functional app shell before product-specific branding. | `2026-09-13` |
 | [`skills/shared/capability-harvest/SKILL.md`](shared/capability-harvest/SKILL.md) | `shared` | `verified-runtime` | Post-task decision to promote a finding into this library. | `2026-09-13` |
-| [`skills/shared/workflow-v3-completion-contract/SKILL.md`](shared/workflow-v3-completion-contract/SKILL.md) | `shared` | `candidate` | Machine-checked task-start evidence, scoped commit, explicit authorization and verified remote SHA for Workflow v3 jobs. | `2026-11-01` |
+| [`skills/shared/workflow-v3-completion-contract/SKILL.md`](shared/workflow-v3-completion-contract/SKILL.md) | `shared` | `candidate` | Mandatory default task-start evidence, dirty-owner preservation, scoped commit, explicit authorization and verified remote SHA for every new Workflow v3 job; overrides never weaken checks and legacy jobs keep their state. | `2026-11-01` |
 
 Qortal and Qortium skills are not interchangeable. A Qortal bridge/QDN behavior
 must not be assumed for Qortium, or the reverse.

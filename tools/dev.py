@@ -104,15 +104,30 @@ def command_start(args: argparse.Namespace) -> int:
         manual=args.manual_criterion,
         files=args.acceptance_file,
     )
+    from devjob import contract as contract_module
+
     contract_spec = None
     if args.contract_file:
-        from devjob import contract as contract_module
-
         contract_spec = contract_module.load_contract(args.contract_file)
+    authorization = {
+        "push": bool(args.authorize_push),
+        "protected_branch": bool(args.authorize_protected_branch),
+        "merge": bool(args.authorize_merge),
+    }
     timeout = runner.parse_duration(args.timeout)
     repo = Path(args.repo).expanduser().resolve()
     snapshot = runner.git_snapshot(repo)
     branch = args.branch or snapshot.get("branch") or None
+    prepared_spec, contract_source = contract_module.prepare_contract(
+        contract_spec,
+        branch=snapshot.get("branch") or branch,
+        base_sha=snapshot.get("head"),
+        dirty_paths=contract_module.parse_dirty_paths(snapshot.get("status") or ""),
+        remote=args.remote,
+        evidence_files=args.evidence_file or None,
+        allowed_paths=args.scope or None,
+        authorization=authorization,
+    )
     if args.dry_run:
         payload = runner.preflight(proc_root=args.proc_root, workspace=args.workspace)
         print(
@@ -126,7 +141,8 @@ def command_start(args: argparse.Namespace) -> int:
                     "agent": args.agent,
                     "model": args.model,
                     "criteria": criteria,
-                    "completion_contract": contract_spec,
+                    "completion_contract": prepared_spec,
+                    "completion_contract_source": contract_source,
                     "notifications_enabled": not args.no_notify,
                     "preflight": payload,
                 },
@@ -148,6 +164,11 @@ def command_start(args: argparse.Namespace) -> int:
         proc_root=args.proc_root,
         notifications_enabled=not args.no_notify,
         contract_spec=contract_spec,
+        contract_source=contract_source,
+        contract_evidence=args.evidence_file or None,
+        contract_scope=args.scope or None,
+        contract_authorization=authorization,
+        contract_remote=args.remote,
     )
     _print_job_started(job, args.json)
     return 0 if job.get("state") == "RUNNING" else 20
@@ -353,7 +374,39 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--contract-file",
         default=None,
-        help="JSON completion contract; required for machine-checked delivery evidence",
+        help="optional JSON contract override; mandatory checks always stay enabled",
+    )
+    start.add_argument(
+        "--evidence-file",
+        action="append",
+        default=[],
+        help="relative evidence file for task-start/delivery proof; repeatable (default: TASK.md)",
+    )
+    start.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="allowed changed path prefix for the scoped commit; repeatable",
+    )
+    start.add_argument(
+        "--remote",
+        default="dev-control-plane",
+        help="Git remote used to verify the pushed development branch",
+    )
+    start.add_argument(
+        "--authorize-push",
+        action="store_true",
+        help="explicitly authorize pushing the job branch to the configured remote",
+    )
+    start.add_argument(
+        "--authorize-protected-branch",
+        action="store_true",
+        help="explicitly authorize working on a protected branch",
+    )
+    start.add_argument(
+        "--authorize-merge",
+        action="store_true",
+        help="explicitly authorize merge commits in the job range",
     )
     start.add_argument("--timeout", default="8h", help="wall-clock timeout (maximum 8h; default 8h)")
     start.add_argument("--agent", default=os.environ.get("DEV_AGENT", runner.DEFAULT_AGENT))

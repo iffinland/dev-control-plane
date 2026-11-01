@@ -421,23 +421,20 @@ class JobFacade:
         )
 
     # ---- mutating CLI surfaces (P2 control) --------------------------------------
-    def start_job(
+    def _start_args(
         self,
         *,
         repo: str | Path,
         title: str,
-        prompt: str,
         command_criteria: Sequence[tuple[str, str]],
         manual_criteria: Sequence[str],
         timeout_seconds: int,
         agent: str,
         model: str,
         branch: str | None = None,
-    ) -> dict:
+    ) -> list[str]:
         if not command_criteria and not manual_criteria:
             raise JobError("at least one acceptance criterion is required")
-        if not prompt.strip():
-            raise JobError("prompt is required")
         args = [
             "start",
             "--repo",
@@ -465,7 +462,76 @@ class JobFacade:
                 "--json",
             ]
         )
+        return args
+
+    def start_job(
+        self,
+        *,
+        repo: str | Path,
+        title: str,
+        prompt: str,
+        command_criteria: Sequence[tuple[str, str]],
+        manual_criteria: Sequence[str],
+        timeout_seconds: int,
+        agent: str,
+        model: str,
+        branch: str | None = None,
+    ) -> dict:
+        if not prompt.strip():
+            raise JobError("prompt is required")
+        args = self._start_args(
+            repo=repo,
+            title=title,
+            command_criteria=command_criteria,
+            manual_criteria=manual_criteria,
+            timeout_seconds=timeout_seconds,
+            agent=agent,
+            model=model,
+            branch=branch,
+        )
+        # The monitor deliberately does not pass --contract-file: every new job
+        # receives the CLI's mandatory default contract and cannot weaken it.
         return self._json_result(args, input_text=prompt)
+
+    def preview_start(
+        self,
+        *,
+        repo: str | Path,
+        title: str,
+        prompt: str,
+        command_criteria: Sequence[tuple[str, str]],
+        manual_criteria: Sequence[str],
+        timeout_seconds: int,
+        agent: str,
+        model: str,
+        branch: str | None = None,
+    ) -> dict:
+        """Return the CLI ``--dry-run`` plan, including the mandatory contract."""
+
+        if not prompt.strip():
+            raise JobError("prompt is required")
+        args = self._start_args(
+            repo=repo,
+            title=title,
+            command_criteria=command_criteria,
+            manual_criteria=manual_criteria,
+            timeout_seconds=timeout_seconds,
+            agent=agent,
+            model=model,
+            branch=branch,
+        )
+        args.insert(-1, "--dry-run")
+        # A dry-run may legitimately exit 20 when the execution guard refuses
+        # (for example while another heavyweight run is active). The contract
+        # plan is still valid evidence for this preview.
+        completed = self._run(args, input_text=prompt, allow_nonzero=True)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise JobError("Workflow v3 CLI returned invalid dry-run JSON") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("completion_contract"), dict):
+            raise JobError("Workflow v3 dry-run did not include a completion contract")
+        return payload
 
     def resume_job(
         self,

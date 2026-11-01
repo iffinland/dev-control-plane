@@ -66,9 +66,20 @@ def make_empty_proc(root: Path) -> Path:
     return proc
 
 
+CONTRACT_EVIDENCE = """# Task
+
+## Task-start contract
+
+- Skills discovered: `skills/shared/app-bootstrap/SKILL.md`, freshness last checked 2026-11-01.
+- Documentation read: `WORKFLOW.md` and `docs/operations/DEV-WORKFLOW-V3.md`.
+- Capability harvest: project-specific; no reusable update needed.
+- Documentation update: none needed for this fixture.
+"""
+
 FAKE_OPENCODE = r'''#!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -85,6 +96,35 @@ def find_arg(name):
         if value == name:
             return args[index + 1]
     return None
+
+
+def deliver():
+    """Emulate a scoped commit plus authorized development-branch push."""
+
+    with open(os.path.join(repo, "delivery.txt"), "a", encoding="utf-8") as handle:
+        handle.write("delivered\n")
+    for name in ("delivery.txt", "impl.txt"):
+        if os.path.exists(os.path.join(repo, name)):
+            subprocess.run(["git", "-C", repo, "add", name], check=False)
+    subprocess.run(
+        ["git", "-C", repo, "commit", "-m", "fake contract delivery"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    branch = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if branch:
+        subprocess.run(
+            ["git", "-C", repo, "push", "dev-control-plane", f"HEAD:{branch}"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 if args[:2] == ["session", "list"]:
@@ -129,12 +169,14 @@ if mode == "incomplete":
     print("The implementation is incomplete")
     sys.exit(0)
 if mode == "noise":
+    deliver()
     print("auto-rejected in a non-interactive run. The full model, the development policy")
     print('     @unittest.skipUnless(shutil.which("opencode"), "opencode is not installed")')
     print('+        self.assertNotIn(\'"ssh *": deny\', text)')
     print("fake opencode run completed")
     sys.exit(0)
 if mode == "hang":
+    deliver()
     now = int(time.time() * 1000)
     payload = {
         "info": {"id": "ses_fake123", "title": title or "fake", "time": {"updated": now}},
@@ -166,10 +208,12 @@ if mode == "resume":
     if session:
         with open(os.path.join(repo, "impl.txt"), "w", encoding="utf-8") as handle:
             handle.write("complete\n")
+        deliver()
     sys.exit(0)
 if mode == "exit1":
     print("a command failed with exit code 1")
     sys.exit(1)
+deliver()
 print("fake opencode run completed")
 sys.exit(0)
 '''
@@ -207,6 +251,55 @@ class CliTestCase(unittest.TestCase):
         self.env["DEV_SESSION_POLL_SECONDS"] = "0.1"
         self.env["DEV_SESSION_IDLE_SECONDS"] = "0.2"
         self.env["DEV_SESSION_CONFIRM_SECONDS"] = "0.2"
+        self.env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                "GIT_CONFIG_NOSYSTEM": "1",
+            }
+        )
+        # A default Workflow v3 job requires a real scoped commit, evidence and
+        # a verified remote SHA, so the fixture provides a Git repository,
+        # durable task evidence and a bare development remote.
+        self.branch = "agent/test/job"
+        remote = self.root / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "init", str(self.repo)],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", self.branch],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        (self.repo / "TASK.md").write_text(CONTRACT_EVIDENCE, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, env=self.env)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "baseline"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "add", "dev-control-plane", str(remote)],
+            check=True,
+            env=self.env,
+        )
 
     def set_export(self, messages: list[dict]) -> None:
         path = self.root / "opencode-export.json"
@@ -251,6 +344,8 @@ class CliTestCase(unittest.TestCase):
         criterion: str | None = None,
         manual: str | None = None,
         timeout: str = "10s",
+        authorize_push: bool = True,
+        extra_args: list[str] | None = None,
     ) -> dict:
         self.env["FAKE_OPENCODE_MODE"] = mode
         args = [
@@ -274,6 +369,10 @@ class CliTestCase(unittest.TestCase):
             "--no-notify",
             "--json",
         ]
+        if authorize_push:
+            args.append("--authorize-push")
+        if extra_args:
+            args.extend(extra_args)
         if manual:
             args.extend(["--manual-criterion", manual])
         result = self.cli(*args)
@@ -802,6 +901,170 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         payload = json.loads(accepted.stdout)
         self.assertEqual(payload["state"], "SUCCESS", payload)
+
+    def test_default_contract_is_mandatory_and_truthful(self) -> None:
+        job = self.start(mode="success", authorize_push=False)
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "BLOCKED", payload)
+        contract = payload["completion_contract"]
+        self.assertEqual(contract["state"], "PENDING", contract)
+        self.assertIn("remote_sha", contract["pending_checks"])
+        self.assertTrue(payload["completion_contract_required"])
+        self.assertEqual(payload["completion_contract_source"], "default")
+        spec = payload["completion_contract_spec"]
+        for check in (
+            "skill_discovery",
+            "freshness",
+            "documentation_loading",
+            "capability_harvest",
+            "documentation_updates",
+            "clean_tree",
+            "commit",
+            "no_merge_commits",
+            "push",
+        ):
+            self.assertTrue(spec["require"][check], check)
+        self.assertFalse(spec["authorization"]["push"])
+        report = self.cli("report", "--state-dir", str(self.state), job["id"])
+        self.assertEqual(report.returncode, 0, report.stdout + report.stderr)
+        self.assertIn("## Completion contract", report.stdout)
+        self.assertIn("PENDING", report.stdout)
+
+    def test_default_contract_ignores_preexisting_owner_dirty_files(self) -> None:
+        owner = self.repo / "owner-notes.txt"
+        owner.write_text("owner work in progress\n", encoding="utf-8")
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        spec = payload["completion_contract_spec"]
+        self.assertIn("owner-notes.txt", spec["allowed_dirty_paths"])
+        self.assertIn("owner-notes.txt", spec["forbidden_paths"])
+        self.assertEqual(owner.read_text(encoding="utf-8"), "owner work in progress\n")
+        names = subprocess.run(
+            ["git", "-C", str(self.repo), "show", "--name-only", "--format=", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout
+        self.assertNotIn("owner-notes.txt", names)
+
+    def test_dry_run_includes_default_contract(self) -> None:
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "default-contract",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "work",
+            "--criterion",
+            "true",
+            "--proc-root",
+            str(self.proc),
+            "--workspace",
+            str(self.workspace),
+            "--dry-run",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        contract = payload["completion_contract"]
+        self.assertEqual(payload["completion_contract_source"], "default")
+        self.assertEqual(contract["branch"], self.branch)
+        self.assertEqual(contract["evidence_files"], ["TASK.md"])
+        self.assertTrue(contract["base_sha"])
+        self.assertEqual(contract["allowed_dirty_paths"], [])
+        for check in ("skill_discovery", "freshness", "push", "commit"):
+            self.assertTrue(contract["require"][check], check)
+
+    def test_explicit_contract_cannot_disable_mandatory_checks(self) -> None:
+        weak = self.root / "weak-contract.json"
+        weak.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "evidence_files": ["TASK.md"],
+                    "require": {"push": False, "skill_discovery": False},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "weak-contract",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "work",
+            "--criterion",
+            "true",
+            "--proc-root",
+            str(self.proc),
+            "--workspace",
+            str(self.workspace),
+            "--contract-file",
+            str(weak),
+            "--dry-run",
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("may not disable mandatory checks", result.stderr)
+
+    def test_explicit_contract_can_customize_but_keeps_mandatory_checks(self) -> None:
+        custom = self.root / "custom-contract.json"
+        custom.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "evidence_files": ["TASK.md"],
+                    "allowed_paths": ["delivery.txt"],
+                    "authorization": {"push": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "custom-contract",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "work",
+            "--criterion",
+            "true",
+            "--proc-root",
+            str(self.proc),
+            "--workspace",
+            str(self.workspace),
+            "--contract-file",
+            str(custom),
+            "--dry-run",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        contract = payload["completion_contract"]
+        self.assertEqual(payload["completion_contract_source"], "file")
+        self.assertEqual(contract["allowed_paths"], ["delivery.txt"])
+        self.assertTrue(contract["authorization"]["push"])
+        for check in (
+            "skill_discovery",
+            "freshness",
+            "documentation_loading",
+            "capability_harvest",
+            "documentation_updates",
+            "clean_tree",
+            "commit",
+            "no_merge_commits",
+            "push",
+        ):
+            self.assertTrue(contract["require"][check], check)
 
     def test_start_requires_explicit_acceptance(self) -> None:
         result = self.cli(

@@ -176,6 +176,18 @@ def job_status_text(payload: dict, *, queued_instructions: int = 0) -> str:
     pending = payload.get("pending_criteria") or []
     if pending:
         lines.append("Pending criteria: " + ", ".join(str(item) for item in pending[:20]))
+    contract = payload.get("completion_contract") or {}
+    if isinstance(contract, dict) and contract.get("configured"):
+        source = payload.get("completion_contract_source")
+        suffix = f" ({source})" if source else ""
+        lines.append(f"Contract: {contract.get('state') or 'UNKNOWN'}{suffix}")
+        for check in contract.get("checks") or []:
+            if isinstance(check, dict) and check.get("status") in {"failed", "pending"}:
+                lines.append(
+                    f"  [{check.get('status')}] {check.get('id')}: {check.get('detail')}"
+                )
+    elif payload.get("completion_contract_required"):
+        lines.append("Contract: required - not evaluated yet")
     issues = payload.get("issues") or []
     if issues:
         lines.append(f"Detected issues: {len(issues)}")

@@ -121,6 +121,7 @@ dev start \
   --criterion "unit tests::npm test -- --runInBand" \
   --criterion "build::npm run build" \
   --manual-criterion "owner checks the settings page in the live app" \
+  --authorize-push \
   --timeout 8h
 ```
 
@@ -133,7 +134,18 @@ dev start ... --criterion "pytest::python3 -m pytest -q"
 # A JSON acceptance file: array of strings or {kind,label,command} objects
 dev start ... --acceptance-file acceptance.json
 
-# Validate without starting a job
+# Name the durable task-start evidence file (default: TASK.md)
+dev start ... --evidence-file TASK.md --evidence-file STATUS.json
+
+# Restrict the scoped commit to exact path prefixes
+dev start ... --scope src/ --scope tests/ --scope TASK.md
+
+# Explicitly grant a separately authorized external action
+dev start ... --authorize-push
+dev start ... --authorize-protected-branch
+dev start ... --authorize-merge
+
+# Validate without starting a job (prints the mandatory default contract)
 dev start ... --dry-run
 
 # Disable Telegram for one job
@@ -167,14 +179,35 @@ dev start \
 
 ## Executable completion contract
 
-Acceptance commands prove that the requested behavior works. The optional
-`--contract-file` adds harness-checked delivery evidence so the task-start and
-handoff rules are not prompt advice only.
+Acceptance commands prove that the requested behavior works. In addition, every
+**new** Workflow v3 job receives a mandatory completion contract. There is no
+start surface—including `dev start` and the Telegram Dev Monitor—that can omit
+it. A passing test suite or OpenCode exit `0` therefore cannot by itself produce
+`SUCCESS`.
+
+The default contract automatically records the job's real branch and starting
+`HEAD`, uses `TASK.md` as task-start evidence, uses the
+`dev-control-plane` remote, and treats every pre-existing dirty owner path as
+both `allowed_dirty_paths` and `forbidden_paths`. Owner work is preserved and is
+never staged, rewritten, discarded or required to be cleaned.
 
 ```bash
-dev start ... --contract-file examples/workflow-v3/contract.json
-dev start ... --contract-file contract.json --dry-run   # validate/print the plan
+# The default contract is created automatically; --dry-run prints it.
+dev start ... --dry-run
+
+# Authorize the development-branch push separately.
+dev start ... --authorize-push
+
+# The monitor uses the same default and has no weakening override.
+
+# An explicit file may add evidence, scope, authorization or a different remote.
+dev start ... --contract-file contract.json --dry-run
 ```
+
+An explicit `--contract-file` may customize only within owner policy. It may add
+evidence files, tighten `allowed_paths`, add `forbidden_paths` or explicitly
+authorize an action; it may **not** set a mandatory `require` check to `false` or
+remove all evidence files. The harness rejects such a file before a job starts.
 
 The contract is a JSON object. A reusable example is
 [`examples/workflow-v3/contract.json`](../../examples/workflow-v3/contract.json).
@@ -196,10 +229,11 @@ The contract is a JSON object. A reusable example is
     "documentation_updates": true,
     "clean_tree": true,
     "commit": true,
+    "no_merge_commits": true,
     "push": true
   },
   "authorization": {
-    "push": false,
+    "push": true,
     "protected_branch": false,
     "merge": false,
     "deploy": false,
@@ -210,8 +244,10 @@ The contract is a JSON object. A reusable example is
 }
 ```
 
-At job completion the harness evaluates the contract in the job repository and
-records the result in `job.json`, `dev status` and `report.md`:
+The default contract already enables every mandatory check, so an explicit file
+that omits `require` still gets them. At job completion the harness evaluates
+the contract in the job repository and records the result in `job.json`,
+`dev status`, the monitor job status and `report.md`:
 
 | Check | What must be evidenced |
 | --- | --- |
@@ -228,30 +264,34 @@ records the result in `job.json`, `dev status` and `report.md`:
 | `remote_sha` | When `authorization.push` is true, the configured remote branch SHA equals local `HEAD`. When false, the result is `PENDING` (`handoff_sync=pending_authorization`), not a silent success. |
 
 A contract `FAILED` makes the job `FAILED`. A contract `PENDING` (for example a
-required but unauthorized push) makes the job `BLOCKED`. Contract checks never
-grant authority; each external action still requires its own explicit
-`authorization` flag. A configured contract whose evidence is missing cannot
-reach `SUCCESS` even when OpenCode exits `0`.
+required but unauthorized push) makes the job `BLOCKED`. A required acceptance
+or validation failure takes precedence over a pending authorization, so a
+genuine failure is never hidden behind `BLOCKED`. Contract checks never grant
+authority; each external action still requires its own explicit `authorization`
+flag. A new job whose mandatory contract is missing, skipped or not verified
+cannot reach `SUCCESS`, even when OpenCode exits `0` with a green test suite.
 
 The contract is evaluated after the acceptance commands and before the final
 state is computed. Cancelled, timed-out and guard-refused runs skip it and
-remain resumable.
+remain resumable. Jobs created before the mandatory rule have no recorded
+contract; they retain legacy behavior on status and resume rather than being
+retroactively failed or granted a new contract.
 
 ## Job states and acceptance
 
 | State | Meaning |
 | --- | --- |
 | `RUNNING` | The detached worker is active, or state has not yet been reconciled. |
-| `SUCCESS` | The guard completed the run (process exit `0`, or a confirmed session completion stopped a hung CLI), every required criterion verified, and no unresolved blocking/failure detector fired. |
+| `SUCCESS` | The guard completed the run (process exit `0`, or a confirmed session completion stopped a hung CLI), every required criterion verified, the mandatory completion contract verified, and no unresolved blocking/failure detector fired. |
 | `FAILED` | A required criterion failed, an unresolved failure detector fired, or the process exited non-zero. |
-| `BLOCKED` | The guard refused, an unresolved permission/dependency/marker blocked the run, or manual acceptance is pending. |
+| `BLOCKED` | The guard refused, an unresolved permission/dependency/marker blocked the run, manual acceptance is pending, or a required external action still lacks explicit authorization. |
 | `TIMEOUT` | The guard reached the wall-clock limit (exit code `124`). |
 | `CANCELLED` | An owner cancel request was verified and delivered to the job's own guard; acceptance commands are skipped and the job remains resumable. |
 
 `SUCCESS` is computed from evidence, not from the OpenCode exit code alone. A
 run that exits `0` but fails an acceptance command, reports an incomplete
-implementation, leaves a permission denial unresolved or fails/pends a configured
-completion contract is `FAILED` or `BLOCKED`.
+implementation, leaves a permission denial unresolved, has no git commit, or
+fails/pends the mandatory completion contract is `FAILED` or `BLOCKED`.
 
 Detected signals include:
 
@@ -549,18 +589,26 @@ python3 tools/validate_skills.py
 python3 tools/validate_security.py .
 ```
 
-The CLI tests use a disposable fake `opencode` executable and a synthetic procfs
-root, including a hung-CLI-after-`finish=stop` regression case. They include
-recovered and unresolved permission rejections, recovered same-operation command
-failures and unrelated successful commands that must not clear a failure. The
+The CLI tests use a disposable fake `opencode` executable, a temporary Git
+repository and remote, and a synthetic procfs root, including a
+hung-CLI-after-`finish=stop` regression case. They prove that a new job without
+push authorization ends `BLOCKED` with a `PENDING` contract, that the default
+contract is mandatory, that pre-existing owner files are preserved, that a weak
+`--contract-file` is rejected, and that an explicit contract may customize while
+keeping mandatory checks. They also include recovered and unresolved permission
+rejections, recovered same-operation command failures and unrelated successful
+commands that must not clear a failure. The
 detection tests include the actual documentation, source/diff and failed-tool log
 examples from the permissions job, plus the recovered/unresolved structured-event
 matrix. `test_session_lifecycle.py` covers structured completion evidence,
 active-tool safety, attempt scoping and total-vs-attempt duration reporting. The
 permission tests parse the agent Markdown and exercise the last-match wildcard
 model, approved tooling roots, exact directory-root matching, Qortium diagnostics
-and hard boundaries; they also record the known wrapper/script limitations. They
-do not start a model session, contact Telegram or touch Qortium.
+and hard boundaries; they also record the known wrapper/script limitations. The
+completion-contract tests cover default/override policy, legacy-job compatibility
+and truthful state mapping; the monitor facade test proves a monitor preview gets
+the same mandatory default. They do not start a model session, contact Telegram
+or touch Qortium.
 
 ## Known limits
 

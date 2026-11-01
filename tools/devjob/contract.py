@@ -14,6 +14,7 @@ authorization matches the observed Git state.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
@@ -22,7 +23,33 @@ from typing import Iterable
 
 PROTECTED_BRANCH_NAMES = {"main", "master", "trunk", "release", "production"}
 DEFAULT_REMOTE = "dev-control-plane"
+DEFAULT_EVIDENCE_FILES = ("TASK.md",)
 MAX_EVIDENCE_BYTES = 1_500_000
+
+# These checks are not configurable for a new Workflow v3 job.  An explicit
+# contract file may add constraints (more evidence, narrower paths, extra
+# forbidden paths), but it may never turn a mandatory delivery check off.
+MANDATORY_REQUIREMENTS = (
+    "skill_discovery",
+    "freshness",
+    "documentation_loading",
+    "capability_harvest",
+    "documentation_updates",
+    "clean_tree",
+    "commit",
+    "no_merge_commits",
+    "push",
+)
+
+AUTHORIZATION_KEYS = (
+    "push",
+    "protected_branch",
+    "merge",
+    "deploy",
+    "qdn_write",
+    "wallet_transaction",
+    "destructive",
+)
 
 # Paths that must never be committed by an autonomous job.  This is a
 # path-level guard; the repository Git hook performs the content-level secret
@@ -81,7 +108,7 @@ class ContractError(ValueError):
     """The completion contract itself is invalid."""
 
 
-def load_contract(path: str | Path) -> dict:
+def load_contract(path: str | Path, *, enforce_policy: bool = True) -> dict:
     target = Path(path).expanduser()
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
@@ -92,6 +119,8 @@ def load_contract(path: str | Path) -> dict:
     if not isinstance(data, dict):
         raise ContractError("completion contract must be a JSON object")
     validate_spec(data)
+    if enforce_policy:
+        ensure_mandatory(data)
     return data
 
 
@@ -109,13 +138,161 @@ def validate_spec(spec: dict) -> None:
     require = spec.get("require")
     if require is not None and not isinstance(require, dict):
         raise ContractError("require must be an object")
+    for key, value in (require or {}).items():
+        if not isinstance(key, str) or not isinstance(value, bool):
+            raise ContractError("require entries must be boolean check flags")
     authorization = spec.get("authorization")
     if authorization is not None and not isinstance(authorization, dict):
         raise ContractError("authorization must be an object")
+    for key, value in (authorization or {}).items():
+        if not isinstance(key, str) or not isinstance(value, bool):
+            raise ContractError("authorization entries must be boolean flags")
     for key in ("allowed_paths", "forbidden_paths", "allowed_dirty_paths", "protected_branches"):
         value = spec.get(key)
         if value is not None and not isinstance(value, list):
             raise ContractError(f"{key} must be a list of path prefixes/branch names")
+
+
+def ensure_mandatory(spec: dict) -> None:
+    """Reject an explicit contract that disables a mandatory delivery check."""
+
+    require = spec.get("require") or {}
+    weakened = [key for key in MANDATORY_REQUIREMENTS if require.get(key) is False]
+    if weakened:
+        raise ContractError(
+            "completion contract may not disable mandatory checks: " + ", ".join(weakened)
+        )
+    evidence = spec.get("evidence_files", spec.get("evidence_file"))
+    if evidence == []:
+        raise ContractError("completion contract may not remove task-start evidence files")
+
+
+def parse_dirty_paths(status_text: str) -> list[str]:
+    """Return normalized paths from ``git status --porcelain`` output."""
+
+    paths: list[str] = []
+    for line in str(status_text or "").splitlines():
+        if len(line) < 4 or not line.strip():
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        path = path.strip().strip('"')
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _authorization_value(value: object) -> bool:
+    return bool(value)
+
+
+def build_default_contract(
+    *,
+    branch: str | None,
+    base_sha: str | None,
+    dirty_paths: Iterable[str] | None = None,
+    remote: str = DEFAULT_REMOTE,
+    evidence_files: Iterable[str] | None = None,
+    allowed_paths: Iterable[str] | None = None,
+    authorization: dict | None = None,
+) -> dict:
+    """Build the mandatory contract applied to a new Workflow v3 job."""
+
+    dirty = [str(item) for item in dirty_paths or [] if str(item).strip()]
+    evidence = [str(item) for item in evidence_files or DEFAULT_EVIDENCE_FILES if str(item).strip()]
+    scope = [str(item) for item in allowed_paths or [] if str(item).strip()]
+    auth = {key: False for key in AUTHORIZATION_KEYS}
+    for key, value in (authorization or {}).items():
+        if key in auth:
+            auth[key] = _authorization_value(value)
+    return {
+        "version": 1,
+        "branch": branch or None,
+        "base_sha": base_sha or None,
+        "remote": remote or DEFAULT_REMOTE,
+        "evidence_files": evidence,
+        "allowed_paths": scope,
+        # Pre-existing owner changes are preserved, not staged or committed.
+        # They are also forbidden so a job cannot silently absorb them.
+        "forbidden_paths": dirty,
+        "allowed_dirty_paths": dirty,
+        "require": {key: True for key in MANDATORY_REQUIREMENTS},
+        "authorization": auth,
+    }
+
+
+def prepare_contract(
+    spec: dict | None,
+    *,
+    branch: str | None,
+    base_sha: str | None,
+    dirty_paths: Iterable[str] | None = None,
+    remote: str = DEFAULT_REMOTE,
+    evidence_files: Iterable[str] | None = None,
+    allowed_paths: Iterable[str] | None = None,
+    authorization: dict | None = None,
+) -> tuple[dict, str]:
+    """Normalize a default or explicit contract without weakening it.
+
+    Returns ``(spec, source)`` where source is ``default`` or ``file``.
+    """
+
+    if spec is None:
+        return (
+            build_default_contract(
+                branch=branch,
+                base_sha=base_sha,
+                dirty_paths=dirty_paths,
+                remote=remote,
+                evidence_files=evidence_files,
+                allowed_paths=allowed_paths,
+                authorization=authorization,
+            ),
+            "default",
+        )
+    if not isinstance(spec, dict):
+        raise ContractError("completion contract must be a JSON object")
+    validate_spec(spec)
+    ensure_mandatory(spec)
+    prepared = copy.deepcopy(spec)
+    prepared.setdefault("version", 1)
+    if prepared.get("version") != 1:
+        raise ContractError("unsupported completion contract version")
+    if not prepared.get("branch"):
+        prepared["branch"] = branch or None
+    if not prepared.get("base_sha"):
+        prepared["base_sha"] = base_sha or None
+    if not prepared.get("remote"):
+        prepared["remote"] = remote or DEFAULT_REMOTE
+    if prepared.get("evidence_files") is None and prepared.get("evidence_file") is None:
+        prepared["evidence_files"] = [
+            str(item) for item in evidence_files or DEFAULT_EVIDENCE_FILES if str(item).strip()
+        ]
+    if prepared.get("evidence_file") is not None and prepared.get("evidence_files") is None:
+        value = prepared.pop("evidence_file")
+        prepared["evidence_files"] = [value] if isinstance(value, str) else list(value)
+    if prepared.get("allowed_paths") is None and allowed_paths:
+        prepared["allowed_paths"] = [str(item) for item in allowed_paths if str(item).strip()]
+    dirty = [str(item) for item in dirty_paths or [] if str(item).strip()]
+    if dirty:
+        declared_dirty = [str(item) for item in prepared.get("allowed_dirty_paths") or []]
+        prepared["allowed_dirty_paths"] = list(dict.fromkeys([*declared_dirty, *dirty]))
+    require = dict(prepared.get("require") or {})
+    for key in MANDATORY_REQUIREMENTS:
+        require[key] = True
+    prepared["require"] = require
+    auth = {key: False for key in AUTHORIZATION_KEYS}
+    for key, value in (prepared.get("authorization") or {}).items():
+        if key in auth:
+            auth[key] = _authorization_value(value)
+    for key, value in (authorization or {}).items():
+        if key in auth and value:
+            # CLI flags may grant an action explicitly; they never revoke a
+            # grant that the owner put in the contract file.
+            auth[key] = True
+    prepared["authorization"] = auth
+    return prepared, "file"
 
 
 def _run_git(repo: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -272,8 +449,8 @@ def _branch_checks(repo: Path, spec: dict) -> tuple[list[dict], str]:
             {
                 "id": "protected_branch",
                 "label": "protected branch authorization",
-                "status": "failed",
-                "severity": "failed",
+                "status": "pending",
+                "severity": "pending",
                 "detail": f"branch {branch} is protected and no protected-branch authorization was recorded",
             }
         )

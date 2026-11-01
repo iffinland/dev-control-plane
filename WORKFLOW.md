@@ -146,9 +146,10 @@ under `tasks/`.
 
 ### Executable completion contract
 
-For Workflow v3 jobs, the completion contract is machine-checked, not prompt
-advice. A job started with `dev start --contract-file ...` must record in its
-evidence files:
+For every **new** Workflow v3 job, the completion contract is mandatory and
+machine-checked, not prompt advice. Both `dev start` and Telegram Dev Monitor
+starts receive the same default contract; there is no start surface that can
+omit it. The job must record in its evidence files:
 
 1. task-start skill discovery and the freshness/compatibility result;
 2. the control-plane, platform-pack and project documentation actually read;
@@ -162,8 +163,17 @@ merge commit without merge authorization, changed paths outside the declared
 scope, uncommitted changes outside declared owner paths, and secret-bearing
 paths or diff patterns. A failed contract makes the job `FAILED`; a pending
 authorization (for example an unauthorized required push) makes it `BLOCKED`.
-Contract checks never grant authority: push, protected-branch, merge, deploy,
-QDN, wallet and destructive actions each remain separately authorized. See the
+Genuine acceptance or validation failures take precedence over pending
+authorization and always remain `FAILED`. Contract checks never grant
+authority: push, protected-branch, merge, deploy, QDN, wallet and destructive
+actions each remain separately authorized.
+
+`dev start --contract-file ...` may customize evidence files, allowed paths,
+remote or explicit authorization, but it can never disable a mandatory check.
+Pre-existing owner changes are recorded as allowed dirty paths and forbidden
+commit paths; they are preserved, never staged, rewritten or required to be
+cleaned. Jobs created before this rule keep their recorded contract state, and
+resuming such a legacy job does not retroactively add or weaken one. See the
 [Workflow v3 contract](docs/operations/DEV-WORKFLOW-V3.md#executable-completion-contract).
 
 ## Authorized unattended/overnight sessions

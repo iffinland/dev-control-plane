@@ -193,6 +193,16 @@ class StartWizardTests(ControlBase):
         self.assertTrue(any("STARTED" in item["text"] for item in self.api.sent))
         self.assertTrue(any("Job started" in item["text"] for item in self.api.edited))
 
+    def test_start_uses_cli_default_contract_without_weakening_overrides(self) -> None:
+        confirm = self.advance_to_preview()
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertNotIn("--contract-file", args)
+        self.assertNotIn("--authorize-push", args)
+        self.assertNotIn("--authorize-merge", args)
+        self.assertNotIn("--authorize-protected-branch", args)
+        self.assertIn("--json", args)
+
     def test_duplicate_confirmation_callback_creates_one_job(self) -> None:
         confirm = self.advance_to_preview()
         self.confirm(confirm)

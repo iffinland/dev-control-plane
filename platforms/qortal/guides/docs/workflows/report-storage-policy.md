@@ -1,5 +1,14 @@
 # Report Storage Policy
 
+> Provenance: migrated from `qortal-dev-workspace`. The original file used the
+> obsolete laptop root `/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/`.
+> The active paths below are corrected to the canonical control-plane/central
+> report tree. The original root remains historical provenance only and is
+> recorded in
+> [`docs/migration/2026-11-01-legacy-consolidation.md`](../../../../../docs/migration/2026-11-01-legacy-consolidation.md).
+> The central [`docs/REPORT-STORAGE-POLICY.md`](../../../../../docs/REPORT-STORAGE-POLICY.md)
+> remains authoritative for report routing.
+
 ## Purpose
 
 Define the single canonical location for AI-generated Qortal work reports so
@@ -9,18 +18,18 @@ separated from durable project documentation.
 ## Canonical report root
 
 ```
-/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/docs/<project-slug>/
+/home/iffi/dev-workspace/docs/<project>/<category>/
 ```
 
 Agents MUST NOT place these reports in an individual application repository's
 `docs/` directory.
 
-**OWNER DECISION (bootstrap, 2026-09-11).** For Qortal, the canonical report
-root is inside this workspace repository, under `docs/<project-slug>/`. The
-sibling Qortium workspace used a separate root outside its repository; Qortal
-retains this report location independently of node transport. Consequence: report files
-may become git-tracked. Therefore report content MUST NOT contain secrets,
-credentials, private keys, wallet seeds or private user data.
+**Historical bootstrap decision (2026-09-11).** The original Qortal guide kept
+reports inside the workspace repository. That routing is superseded by the
+central control-plane policy: use
+`/home/iffi/dev-workspace/docs/<project>/<category>/`. The historical decision is
+retained as provenance. Report content MUST NOT contain secrets, credentials,
+private keys, wallet seeds or private user data.
 
 ## Issue report location
 
@@ -88,7 +97,7 @@ Use lowercase kebab-case throughout.
 ### Workspace report storage
 
 ```
-/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/docs/<project-slug>/
+/home/iffi/dev-workspace/docs/<project>/<category>/
 ```
 
 For:
@@ -143,7 +152,7 @@ Every final report MUST include the exact absolute path where it was saved:
 
 ```
 Report saved:
-/home/iffi/VsCodec-Projects/Qortal/qortal-dev-workspace/docs/<project-slug>/<type>/<filename>
+/home/iffi/dev-workspace/docs/<project>/<category>/<type>/<filename>
 ```
 
 If no report file was created, state:
@@ -161,7 +170,7 @@ Every report MUST name the agent that actually executed the task — the
 implementer or validator that produced the evidence — not the orchestrator that
 dispatched or curated it and not a template default. This is the Qortal
 application of the universal rule in
-`/home/iffi/VsCodec-Projects/AI-Orchestration/GIT-AND-HANDOFF.md`.
+`/home/iffi/dev-workspace/control-plane/GIT-AND-HANDOFF.md`.
 
 - The author field states the real executor (`DeepSeek`, `Codex`, `ChatGPT`, or
   another registered role). When a different agent wrote or curated the artifact,

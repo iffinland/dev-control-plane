@@ -149,6 +149,17 @@ task controllers and status files remain under `tasks/` as defined by
 
 ## Evidence and safety
 
+Every new Workflow v3 job—whether started by `dev start` or the Telegram Dev
+Monitor—must pass the mandatory completion contract before it can be `SUCCESS`.
+A passing test suite or OpenCode exit `0` is not delivery evidence. Task-start
+skill/freshness/documentation evidence, capability harvest, documentation
+maintenance, a scoped commit, an authorized development-branch push and the
+verified remote SHA are required; missing authorization yields `BLOCKED` and
+genuine validation failures yield `FAILED`. An explicit `--contract-file` may
+add constraints but must never disable a mandatory check. Pre-existing owner
+changes are preserved and never staged or required to be cleaned, and jobs
+created before this rule keep their recorded contract state on resume.
+
 The former blanket Qortal “no SSH tunnel” policy is superseded. An explicitly
 configured and verified tunnel may provide read-only node access. It does not
 prove host/bridge/account behavior, replace real host validation, or authorize

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -138,6 +139,66 @@ class JobFacadeTests(unittest.TestCase):
         self.assertTrue(batch.skipped_existing)
         self.assertEqual(batch.events, ())
         self.assertEqual(batch.offset, events.stat().st_size)
+
+    def test_preview_start_gets_the_mandatory_default_contract(self) -> None:
+        repo = self.root / "contract-repo"
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                "GIT_CONFIG_NOSYSTEM": "1",
+            }
+        )
+        subprocess.run(["git", "init", str(repo)], check=True, env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-C", str(repo), "checkout", "-b", "agent/test/job"],
+            check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        (repo / "TASK.md").write_text(
+            "# Task\n\n- Skills: `skills/shared/app-bootstrap/SKILL.md`, last checked 2026-11-01.\n"
+            "- Documentation read: `WORKFLOW.md`.\n"
+            "- Capability harvest: project-specific.\n"
+            "- Documentation update: none.\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "baseline"],
+            check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        facade = JobFacade(
+            self.root / "contract-state", dev_script=TOOLS / "dev.py"
+        )
+        payload = facade.preview_start(
+            repo=repo,
+            title="monitor contract preview",
+            prompt="Do the work.",
+            command_criteria=(("tests", "true"),),
+            manual_criteria=(),
+            timeout_seconds=600,
+            agent="opencode-development",
+            model="deepseek/deepseek-flash",
+        )
+        contract = payload["completion_contract"]
+        self.assertEqual(payload["completion_contract_source"], "default")
+        self.assertEqual(contract["branch"], "agent/test/job")
+        self.assertTrue(contract["base_sha"])
+        for check in (
+            "skill_discovery",
+            "freshness",
+            "documentation_loading",
+            "capability_harvest",
+            "documentation_updates",
+            "clean_tree",
+            "commit",
+            "no_merge_commits",
+            "push",
+        ):
+            self.assertTrue(contract["require"][check], check)
 
     def test_report_is_bounded(self) -> None:
         (self.state_root / "jobs" / self.running["id"] / "report.md").write_text(

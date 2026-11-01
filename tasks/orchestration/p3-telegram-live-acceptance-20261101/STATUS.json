@@ -41,7 +41,7 @@
     "Focused harness suite: tools/test_p3_live_acceptance.py, 16 tests, OK",
     "Control-plane validator: 100 active Markdown files, 440 relative links, 85 required files",
     "Skills validator: 23 active skills indexed exactly once",
-    "Security validator: self-test passed; 233 files scanned",
+    "Security validator: self-test passed; 234 files scanned",
     "Agent permission validator: PASS, 338 rules / 98 checks",
     "Execution guard check: WARN only (one heavyweight execution and load warning; no refusal)",
     "Application commit a26360c contains only the harness, tests, runbook, validator list and task artifacts; owner-dirty skills paths and the untracked browser-thumbnail directory remain unstaged",

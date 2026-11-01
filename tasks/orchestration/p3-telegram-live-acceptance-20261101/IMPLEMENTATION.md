@@ -111,7 +111,7 @@ Results:
 - Agent permission validator: PASS (338 rules, 98 checks).
 - Focused harness suite: 16 tests, OK.
 - Skills validator: 23 active skills indexed exactly once.
-- Security validator self-test and full scan: passed (231 files).
+- Security validator self-test and full scan: passed (234 files).
 - Execution guard: `WARN` only (current OpenCode process occupies the one
   heavyweight slot and load average exceeded the warning threshold); no refusal.
 

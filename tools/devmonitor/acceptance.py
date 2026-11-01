@@ -1417,6 +1417,12 @@ def _validate_evidence(evidence: dict, manifest: dict) -> None:
     operator = evidence.get("operator")
     if not isinstance(operator, str) or not operator.strip() or operator == "UNRECORDED":
         raise AcceptanceError("Telegram evidence must record the operator")
+    lowered_operator = operator.strip().lower()
+    if any(
+        token in lowered_operator
+        for token in ("unrecorded", "not recorded", "todo", "tbd", "pending")
+    ):
+        raise AcceptanceError("Telegram evidence operator is still a placeholder")
     for field_name in ("started_at_utc", "finished_at_utc"):
         if not _parse_utc(evidence.get(field_name)):
             raise AcceptanceError(

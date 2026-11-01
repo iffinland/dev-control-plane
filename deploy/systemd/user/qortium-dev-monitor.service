@@ -11,6 +11,7 @@ Type=simple
 WorkingDirectory=/home/iffi/dev-workspace/control-plane
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment="PATH=/home/iffi/.opencode/bin:/home/iffi/.local/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=/usr/bin/python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py run
 Restart=on-failure
 RestartSec=5

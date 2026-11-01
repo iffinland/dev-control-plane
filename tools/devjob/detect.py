@@ -24,9 +24,11 @@ are not treated as runtime failures merely because they contain words such as
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shlex
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -70,6 +72,13 @@ SECTION_PREFIXES = (
 )
 DIFF_START_PREFIXES = ("diff --git ", "Index: ", "@@ ")
 DIFF_CONTENT_PREFIXES = ("+", "-", " ", "\\ No newline")
+WHITESPACE_WARNING_RE = re.compile(
+    r"^(.+?):\d+: (?:trailing whitespace\.|space before tab in indent\.|new blank line at EOF\.)$",
+    re.IGNORECASE,
+)
+OWNER_ONLY_WHITESPACE_MESSAGE = (
+    "a whitespace check reported only pre-existing owner changes outside the task scope"
+)
 RUNTIME_PREFIXES = (
     "error:",
     "fatal:",
@@ -461,7 +470,7 @@ def _iter_lines(path: Path, start_offset: int = 0) -> list[str]:
     return data.decode("utf-8", "replace").splitlines()
 
 
-def scan_text(text: str) -> list[Issue]:
+def scan_text(text: str, owner_paths: Iterable[str] = ()) -> list[Issue]:
     """Scan a default OpenCode console log with runtime-context awareness."""
 
     issues: list[Issue] = []
@@ -478,7 +487,21 @@ def scan_text(text: str) -> list[Issue]:
         classified = _classify_failure_block(failure_lines, failure_tool)
         if classified:
             kind, excerpt = classified
-            _append(issues, seen, kind, failure_line, excerpt)
+            body = "\n".join(failure_lines[1:])
+            if kind == "failed_command" and _owner_only_whitespace_failure(
+                failure_lines[0], body, owner_paths
+            ):
+                _append(
+                    issues,
+                    seen,
+                    kind,
+                    failure_line,
+                    excerpt,
+                    severity="warning",
+                    message=OWNER_ONLY_WHITESPACE_MESSAGE,
+                )
+            else:
+                _append(issues, seen, kind, failure_line, excerpt)
         failure_lines = []
         failure_tool = "bash"
 
@@ -594,6 +617,116 @@ def _tool_command(part: dict) -> str:
     if not isinstance(raw_input, dict):
         return ""
     return str(raw_input.get("command") or "")
+
+
+def _tool_output(part: dict) -> str:
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return ""
+    error = str(state.get("error") or "")
+    output = str(state.get("output") or "")
+    return (error + "\n" + output).strip()
+
+
+def _normalize_repo_path(value: str) -> str:
+    path = str(value or "").strip().replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path.rstrip("/")
+
+
+def _path_is_owner(path: str, owner_paths: Iterable[str]) -> bool:
+    candidate = _normalize_repo_path(path)
+    if not candidate:
+        return False
+    for owner in owner_paths:
+        raw_owner = str(owner or "").strip()
+        normalized = _normalize_repo_path(raw_owner)
+        if not normalized:
+            continue
+        if raw_owner.replace("\\", "/").endswith("/"):
+            if candidate == normalized or candidate.startswith(normalized + "/"):
+                return True
+        elif candidate == normalized:
+            return True
+    return False
+
+
+def _is_git_diff_check(command: str) -> bool:
+    text = str(command or "").strip()
+    if text.startswith("✗ "):
+        text = text[2:]
+    if text.lower().endswith(" failed"):
+        text = text[:-7]
+    for segment in _shell_segments(text):
+        try:
+            tokens = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        tokens = _unwrap_tokens(tokens)
+        if not tokens or tokens[0] != "git":
+            continue
+        index = 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            option = tokens[index]
+            if option in {
+                "-C",
+                "-c",
+                "--git-dir",
+                "--work-tree",
+                "--namespace",
+                "--exec-path",
+            } and index + 1 < len(tokens):
+                index += 2
+            else:
+                index += 1
+        if (
+            index < len(tokens)
+            and tokens[index] == "diff"
+            and "--check" in tokens[index + 1 :]
+        ):
+            return True
+    return False
+
+
+def _unquote_git_path(path: str) -> str:
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        try:
+            return str(ast.literal_eval(path))
+        except (SyntaxError, ValueError):
+            return path[1:-1]
+    return path
+
+
+def _owner_only_whitespace_failure(
+    command: str, output: str, owner_paths: Iterable[str]
+) -> bool:
+    """True when a ``git diff --check`` failure is entirely owner-owned.
+
+    The repository is intentionally dirty before the job starts. A whole-tree
+    whitespace check therefore reports those owner paths even when the task's
+    own diff is clean. Only that specific, path-attributable case is downgraded.
+    Any task-owned path, any unparsed output, or any other command keeps the
+    failure so genuine whitespace and command failures still block SUCCESS.
+    """
+
+    owners = [str(item) for item in owner_paths or () if str(item).strip()]
+    if not owners or not _is_git_diff_check(command):
+        return False
+    paths: list[str] = []
+    for raw in str(output or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        match = WHITESPACE_WARNING_RE.match(line)
+        if match:
+            paths.append(_unquote_git_path(match.group(1)))
+            continue
+        # git diff --check echoes the offending diff line with a +/- prefix.
+        if line.startswith(("+", "-")):
+            continue
+        return False
+    return bool(paths) and all(_path_is_owner(path, owners) for path in paths)
 
 
 def _shell_segments(command: str) -> list[str]:
@@ -737,7 +870,11 @@ def _event_tool_issue(part: dict) -> tuple[str, str] | None:
     return None
 
 
-def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
+def scan_events(
+    payload: object,
+    since_ms: int | None = None,
+    owner_paths: Iterable[str] = (),
+) -> list[Issue]:
     """Scan structured OpenCode session-export events.
 
     The function reads only tool state and assistant text. User prompts, tool
@@ -749,6 +886,10 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
     A permission denial with no later success remains blocking. A failed command
     is recovered only when a later successful command performs the same
     operation; unrelated successful commands do not clear it.
+
+    ``owner_paths`` are the pre-existing dirty paths recorded at job start. They
+    are used only to attribute a failed ``git diff --check`` whose whole output
+    is owner-owned; other failed commands remain failures.
     """
 
     if not isinstance(payload, dict):
@@ -787,6 +928,7 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
                             "kind": found[0],
                             "excerpt": found[1],
                             "command": _tool_command(part),
+                            "output": _tool_output(part),
                         }
                     )
                 elif _tool_succeeded(part):
@@ -825,6 +967,23 @@ def scan_events(payload: object, since_ms: int | None = None) -> list[Issue]:
                 recovered = True
                 recovery = "a later tool call completed successfully"
         elif kind == "failed_command":
+            if _owner_only_whitespace_failure(
+                str(event.get("command") or ""),
+                str(event.get("output") or ""),
+                owner_paths,
+            ):
+                _append(
+                    issues,
+                    seen,
+                    kind,
+                    0,
+                    str(event["excerpt"]),
+                    severity="warning",
+                    message=OWNER_ONLY_WHITESPACE_MESSAGE,
+                )
+                if len(issues) >= MAX_ISSUES:
+                    break
+                continue
             signatures = _command_signatures(str(event.get("command") or ""))
             if signatures:
                 for item in later:
@@ -859,6 +1018,7 @@ def scan_session(
     cwd: str | Path | None = None,
     since_ms: int | None = None,
     timeout: int = SESSION_EXPORT_TIMEOUT,
+    owner_paths: Iterable[str] = (),
 ) -> list[Issue] | None:
     """Return structured issues, or ``None`` when export is unavailable.
 
@@ -884,11 +1044,15 @@ def scan_session(
         return None
     if not session_state.has_observable_events(payload):
         return None
-    return scan_events(payload, since_ms=since_ms)
+    return scan_events(payload, since_ms=since_ms, owner_paths=owner_paths)
 
 
-def scan_log(path: str | Path, start_offset: int = 0) -> list[Issue]:
-    return scan_text("\n".join(_iter_lines(Path(path), start_offset)))
+def scan_log(
+    path: str | Path,
+    start_offset: int = 0,
+    owner_paths: Iterable[str] = (),
+) -> list[Issue]:
+    return scan_text("\n".join(_iter_lines(Path(path), start_offset)), owner_paths=owner_paths)
 
 
 def highest_severity(issues: list[Issue | dict]) -> str | None:

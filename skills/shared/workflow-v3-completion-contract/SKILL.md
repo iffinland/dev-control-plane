@@ -82,7 +82,14 @@ resume.
    pre-existing dirty path in both `allowed_dirty_paths` and `forbidden_paths`.
    Never stage, rewrite, discard or demand cleanup of those owner changes, and
    commit only the job's declared scope. Explicit contracts may narrow
-   `allowed_paths` further.
+   `allowed_paths` further. A whole-tree `git diff --check` sees those owner
+   edits too: the detector attributes a failed check whose warning lines all
+   name recorded owner paths as a non-blocking `warning`, not a task failure.
+   This is not global failure suppression. Any warning under a non-owner path,
+   any mixed result, any unparsed output and any other failed test/build/
+   validation/permission command still fails; intervening failures are
+   recovered only by later successful evidence for the same operation, and
+   `git diff --check` over the task-owned diff is the useful check.
 4. **Never merge without authorization.** A merge commit in the job range fails
    the contract unless `authorization.merge` is true.
 5. **Verify delivery.** First verify the recorded policy still matches the
@@ -131,7 +138,12 @@ pattern suggests.
   removed initialized blocks and the narrow legacy path repair. Policy tests
   cover multiple project remotes, unknown projects, missing/ambiguous/mismatched
   remotes, non-GitHub URLs, `agent/*` matching, disabled automatic push,
-  unauthorized branches and failed pushes.
+  unauthorized branches and failed pushes. Detector tests cover owner-only
+  whitespace warnings, genuine task whitespace failures, mixed owner/task
+  output, unrelated failed commands, unparsed errors, and same-operation
+  recovery versus unrelated success; an integration test proves the contract
+  can stay `VERIFIED` while an owner-only warning yields `SUCCESS`, but a
+  task-owned whitespace failure still yields `FAILED`.
 - Default-contract tests prove every new CLI job gets the mandatory checks, a
   weak explicit contract is rejected, custom constraints survive, a monitor
   preview receives the same default, and legacy jobs remain compatible.
@@ -153,6 +165,9 @@ pattern suggests.
 - Marking an unauthorized push as success instead of `PENDING`, or hiding a real
   validation failure behind `BLOCKED`.
 - Committing unrelated owner changes to make the tree clean.
+- Treating a whole-tree `git diff --check` failure as a task failure when every
+  reported path is a pre-existing owner path, or over-correcting by suppressing
+  all failed commands and hiding real test/build/validation failures.
 - Parsing dirty paths with a fixed `line[3:]` after a whole-output `strip()`,
   which truncates the first path (`skills/README.md` -> `kills/README.md`).
 - Using a protected branch without separate authorization.
@@ -176,6 +191,9 @@ resolve a validated project-scoped remote/automatic-push policy while preserving
 legacy-job resume behavior. Later the same day it gained automatic per-job
 evidence initialization, job-specific structured validation (no fabricated or
 copied evidence) and NUL-safe dirty-path parsing with a narrow legacy repair.
+It also gained owner-path attribution for failed whole-tree `git diff --check`
+commands after a verified job was falsely classified `FAILED` solely by a
+pre-existing owner skill edit.
 Maturity stays `candidate` until a real job completes through the mandatory
 default with an authorized push and verified remote SHA. Re-check after any
 change to job schema, check IDs, override policy or state mapping; update the

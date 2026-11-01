@@ -1160,6 +1160,12 @@ def run_worker(job_id: str) -> int:
 
             session_id = job.get("session_id") or _discover_session(job)
             attempt_started_ms = _timestamp_ms(attempt.get("started_at"))
+            contract_spec = job.get("completion_contract_spec") or {}
+            owner_paths = [
+                str(item)
+                for item in (contract_spec.get("allowed_dirty_paths") or [])
+                if str(item).strip()
+            ]
             issues: list[dict] | None = None
             if not cancelled:
                 if session_id:
@@ -1167,6 +1173,7 @@ def run_worker(job_id: str) -> int:
                         session_id,
                         cwd=job.get("repo"),
                         since_ms=attempt_started_ms,
+                        owner_paths=owner_paths,
                     )
                     if structured is not None:
                         issues = [issue.asdict() for issue in structured]
@@ -1174,7 +1181,9 @@ def run_worker(job_id: str) -> int:
                     issues = [
                         issue.asdict()
                         for issue in detect.scan_log(
-                            directory / RUN_LOG, start_offset=run_log_start
+                            directory / RUN_LOG,
+                            start_offset=run_log_start,
+                            owner_paths=owner_paths,
                         )
                     ]
             else:

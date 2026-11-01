@@ -373,6 +373,28 @@ class CliTestCase(unittest.TestCase):
         path.write_text(json.dumps({"info": {"id": "ses_fake123"}, "messages": messages}), encoding="utf-8")
         self.env["FAKE_OPENCODE_EXPORT"] = str(path)
 
+    def make_owner_change(self, name: str = "owner-notes.md") -> str:
+        """Create a tracked file whose post-baseline edit belongs to the owner."""
+
+        path = self.repo / name
+        path.write_text("owner baseline\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", name],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "owner baseline"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        path.write_text("owner baseline\nowner trailing \n", encoding="utf-8")
+        return name
+
     def tearDown(self) -> None:
         for job in list_jobs(self.state):
             pid = job.get("worker_pid")
@@ -774,6 +796,110 @@ class CliTestCase(unittest.TestCase):
             issue for issue in payload["issues"] if issue["kind"] == "failed_command"
         ]
         self.assertFalse(failed[0]["recovered"])
+
+    def test_owner_only_whitespace_check_does_not_fail_verified_job(self) -> None:
+        owner = self.make_owner_change()
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "output": f"{owner}:2: trailing whitespace.\n+owner trailing \n",
+                                "input": {"command": "git diff --check"},
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertEqual(stored["completion_contract"]["state"], "VERIFIED")
+        self.assertIn(owner, stored["completion_contract_spec"]["allowed_dirty_paths"])
+        failed = [
+            issue for issue in payload["issues"] if issue["kind"] == "failed_command"
+        ]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["severity"], "warning")
+        self.assertFalse(failed[0]["recovered"])
+        # The owner change is preserved, not cleaned or staged.
+        status = subprocess.run(
+            ["git", "-C", str(self.repo), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout
+        self.assertIn(f" M {owner}", status)
+
+    def test_task_whitespace_check_fails_even_when_contract_verifies(self) -> None:
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "output": "delivery.txt:1: trailing whitespace.\n+bad \n",
+                                "input": {"command": "git diff --check"},
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertEqual(stored["completion_contract"]["state"], "VERIFIED")
+        failed = [
+            issue for issue in payload["issues"] if issue["kind"] == "failed_command"
+        ]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["severity"], "failed")
+        self.assertFalse(failed[0]["recovered"])
+
+    def test_owner_dirt_does_not_hide_other_failed_commands(self) -> None:
+        owner = self.make_owner_change()
+        self.set_export(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": f"{owner}:2: trailing whitespace.\nFAILED (failures=1)\n",
+                                "input": {"command": "python3 -m unittest discover -s tools -q"},
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        failed = [
+            issue for issue in payload["issues"] if issue["kind"] == "failed_command"
+        ]
+        self.assertEqual(failed[0]["severity"], "failed")
 
     def test_structured_missing_dependency_blocks(self) -> None:
         self.set_export(

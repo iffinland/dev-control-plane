@@ -400,9 +400,23 @@ as recovered:
 - required acceptance criteria remain independent and authoritative. A recovered
   error never turns a failed criterion into success.
 
+A failed whole-tree `git diff --check` is additionally attributed against the
+pre-existing owner paths recorded in the job's contract snapshot. If every
+whitespace warning in its output names a declared owner path, the result is a
+`warning` explaining that the check reported only pre-existing owner changes; it
+does not recover or mask a task failure. A whitespace warning under any other
+path stays `failed`, and the same owner paths do not suppress failed tests,
+builds, validation commands or permission failures. Unparsed output, a
+non-`git diff --check` command, or a job without recorded owner paths keeps the
+normal failure classification. Owner dirt remains preserved and uncommitted, so
+`git diff --check` run over the whole worktree is not evidence about the job's
+own diff; use the scoped task diff for that check.
+
 Recovered issues remain visible in `dev status` and `report.md` with recovery
-evidence. The context-aware log fallback cannot prove recovery, so it stays
-conservative and treats a permission rejection as blocking.
+evidence. The context-aware log fallback cannot prove same-operation recovery, so
+it stays conservative; the owner-path attribution above also applies to its
+failed `git diff --check` blocks. The fallback treats other permission rejections
+as blocking.
 
 When structured export is unavailable, the detector parses the default OpenCode
 console log with runtime context. It inspects failed tool blocks and explicit
@@ -681,7 +695,11 @@ keeping mandatory checks. The policy tests additionally cover multiple project
 remotes, unregistered/missing/ambiguous/mismatched remotes, non-GitHub URLs,
 unauthorized branches, disabled automatic push and a failed push. They also include recovered and unresolved permission
 rejections, recovered same-operation command failures and unrelated successful
-commands that must not clear a failure. The
+commands that must not clear a failure. Owner-path attribution is covered on
+both the structured and console paths: a whole-tree whitespace check naming only
+pre-existing owner files becomes a non-blocking warning, while a task-owned
+whitespace warning, a mixed owner/task result, an unparsed error, or any other
+failed command still fails even when the completion contract verifies. The
 detection tests include the actual documentation, source/diff and failed-tool log
 examples from the permissions job, plus the recovered/unresolved structured-event
 matrix. `test_session_lifecycle.py` covers structured completion evidence,

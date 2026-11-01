@@ -606,6 +606,133 @@ class StructuredEventTests(unittest.TestCase):
         self.assertIsNone(detect.scan_session(None))
 
 
+class OwnerChangeAttributionTests(unittest.TestCase):
+    """A whole-tree whitespace check must not turn owner dirt into a job failure.
+
+    Job ``20261101T100446Z-fix-telegram-monitor-p3-p4-inter-126de083`` passed
+    every acceptance criterion and verified its completion contract, but a
+    whole-tree ``git diff --check`` reported a pre-existing owner edit in
+    ``skills/qortium/qdn-resource-discovery/SKILL.md``. The attribution below
+    removes only that owner-only whitespace result; real task whitespace and
+    every other failed command still fail.
+    """
+
+    OWNER = "skills/qortium/qdn-resource-discovery/SKILL.md"
+    TASK = "tools/devjob/detect.py"
+
+    @staticmethod
+    def payload(command: str, output: str, exit_code: int = 2) -> dict:
+        return {
+            "info": {"id": "ses_test"},
+            "messages": [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": exit_code},
+                                "output": output,
+                                "input": {"command": command},
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_owner_only_whitespace_check_is_a_warning(self) -> None:
+        payload = self.payload(
+            "git diff --check",
+            f"{self.OWNER}:58: trailing whitespace.\n+Live read-only evidence \n",
+        )
+        issues = detect.scan_events(payload, owner_paths=[self.OWNER])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].kind, "failed_command")
+        self.assertEqual(issues[0].severity, "warning")
+        self.assertIn("only pre-existing owner changes", issues[0].message)
+        self.assertFalse(issues[0].recovered)
+        self.assertIsNone(detect.highest_severity(issues))
+
+    def test_owner_attribution_is_not_global_suppression(self) -> None:
+        payload = self.payload(
+            "git diff --check",
+            f"{self.OWNER}:58: trailing whitespace.\n",
+        )
+        # Without the recorded owner path the same evidence remains a failure.
+        unowned = detect.scan_events(payload)
+        self.assertEqual(detect.highest_severity(unowned), "failed")
+
+    def test_task_whitespace_check_remains_failed(self) -> None:
+        payload = self.payload(
+            "git diff --check",
+            f"{self.TASK}:12: trailing whitespace.\n+bad \n",
+        )
+        issues = detect.scan_events(payload, owner_paths=[self.OWNER])
+        self.assertEqual(detect.highest_severity(issues), "failed")
+        self.assertFalse(issues[0].recovered)
+
+    def test_mixed_owner_and_task_whitespace_remains_failed(self) -> None:
+        payload = self.payload(
+            "git diff --check",
+            f"{self.OWNER}:58: trailing whitespace.\n"
+            f"{self.TASK}:12: trailing whitespace.\n",
+        )
+        issues = detect.scan_events(payload, owner_paths=[self.OWNER])
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_owner_paths_do_not_suppress_other_failed_commands(self) -> None:
+        payload = self.payload(
+            "python3 -m unittest discover -s tools -q",
+            f"{self.OWNER}:58: trailing whitespace.\nFAILED (failures=1)\n",
+            exit_code=1,
+        )
+        issues = detect.scan_events(payload, owner_paths=[self.OWNER])
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_unparsed_git_diff_check_error_remains_failed(self) -> None:
+        payload = self.payload(
+            "git diff --check",
+            f"fatal: not a git repository\n{self.OWNER}:58: trailing whitespace.\n",
+        )
+        issues = detect.scan_events(payload, owner_paths=[self.OWNER])
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_console_owner_only_whitespace_check_is_a_warning(self) -> None:
+        log = (
+            "✗ git diff --check failed\n"
+            f"{self.OWNER}:58: trailing whitespace.\n"
+            "+Live read-only evidence \n"
+        )
+        issues = detect.scan_text(log, owner_paths=[self.OWNER])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].severity, "warning")
+        self.assertIsNone(detect.highest_severity(issues))
+        self.assertEqual(detect.highest_severity(detect.scan_text(log)), "failed")
+
+    def test_console_task_whitespace_check_remains_failed(self) -> None:
+        log = (
+            "✗ git diff --check failed\n"
+            f"{self.TASK}:12: trailing whitespace.\n"
+            "+bad \n"
+        )
+        issues = detect.scan_text(log, owner_paths=[self.OWNER])
+        self.assertEqual(detect.highest_severity(issues), "failed")
+
+    def test_owner_directory_prefix_is_attributed(self) -> None:
+        owner = "skills/shared/browser-thumbnail-generation/"
+        payload = self.payload(
+            "git diff --check",
+            "skills/shared/browser-thumbnail-generation/SKILL.md:4: "
+            "new blank line at EOF.\n",
+            exit_code=2,
+        )
+        issues = detect.scan_events(payload, owner_paths=[owner])
+        self.assertEqual(issues[0].severity, "warning")
+
+
 class SessionExportTests(unittest.TestCase):
     def test_large_export_uses_temp_file_and_parses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

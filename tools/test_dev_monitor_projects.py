@@ -118,5 +118,35 @@ class ProjectTests(unittest.TestCase):
             parse_registry(self.root / "missing.md")
 
 
+class RegisteredProjectDocumentTests(unittest.TestCase):
+    """Guard the live registry entry that makes My File Office routable."""
+
+    def test_my_file_office_is_registered_with_delivery_policy(self) -> None:
+        projects = {
+            project.project_id: project
+            for project in parse_registry(TOOLS.parent / "PROJECT-REGISTRY.md")
+        }
+        project = projects.get("qortium/my-private-room")
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(
+            project.repo_path,
+            Path("/home/iffi/dev-workspace/projects/my-private-room"),
+        )
+        self.assertTrue(project.has_project_agents)
+        self.assertEqual(
+            project.central_root,
+            Path("/home/iffi/dev-workspace/docs/my-private-room"),
+        )
+        self.assertEqual(project.delivery.remote, "origin")
+        self.assertEqual(
+            project.delivery.github_repository, "iffinland/my-private-room"
+        )
+        self.assertEqual(project.delivery.branch_pattern, "agent/*")
+        self.assertIn(
+            (project.delivery.automatic_push or "").casefold(), {"yes", "true", "1"}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ policy. It does not import full platform documentation or project contexts.
 | `qortal/qortal-video-bridge` | Qortal | `/home/iffi/dev-workspace/projects/Qortal-Video-Bridge` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortal-Video-Bridge/` | `origin` | `iffinland/Qortal-Video-Bridge` | `agent/*` | `yes` |
 | `qortal/wordpress-to-qortal` | Qortal | `/home/iffi/dev-workspace/projects/wordpress-to-qortal` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/wordpress-to-qortal/` | `origin` | `iffinland/wordpress-to-qortal` | `agent/*` | `yes` |
 | `qortium/blogs` | Qortium | `/home/iffi/dev-workspace/projects/Blogs` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Blogs/` | `origin` | `iffinland/Blogs` | `agent/*` | `yes` |
+| `qortium/my-private-room` | Qortium | `/home/iffi/dev-workspace/projects/my-private-room` | Yes | Project `AGENTS.md` and `docs/` in the checkout; historical router paths need refresh | `/home/iffi/dev-workspace/docs/my-private-room/` | `origin` | `iffinland/my-private-room` | `agent/*` | `yes` |
 | `qortium/qortium-united-community` | Qortium | `/home/iffi/dev-workspace/projects/Qortium-United-Community` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortium-United-Community/` | `origin` | `iffinland/Qortium-United-Community` | `agent/*` | `yes` |
 | `qortium/nodefm-station` | Qortium | `/home/iffi/dev-workspace/projects/nodefm-station` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/nodefm-station/` | `origin` | `iffinland/nodefm-station` | `agent/*` | `yes` |
 
@@ -55,7 +56,6 @@ the old workstation paths. Verify the actual checkout before adding a row.
 - `qortium/community-discussion-boards`
 - `qortium/discussion-boards`
 - `qortium/iffi-vaba-mees`
-- `qortium/my-private-room`
 - `qortium/video-center`
 
 ## Registration rule

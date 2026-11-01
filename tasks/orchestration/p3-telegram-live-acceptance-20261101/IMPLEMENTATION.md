@@ -8,8 +8,10 @@ Report/handoff writer (if different from the executing agent): same agent.
 
 Exact application repository / branch / SHA:
 `/home/iffi/dev-workspace/control-plane`,
-`agent/control-plane/workflow-v3-20261031`, base
-`1660f03f61eab7dbf4acbf889f34de735fc7d404`.
+`agent/control-plane/workflow-v3-20261031`, implementation commit
+`a26360c0b526e9473b1efa87d90951846f6e8970`, base
+`1660f03f61eab7dbf4acbf889f34de735fc7d404`. The verified application remote SHA
+is `a26360c0b526e9473b1efa87d90951846f6e8970`.
 
 Verdict and measurable acceptance achieved:
 The P3 live acceptance harness is implemented and covered by 16 isolated

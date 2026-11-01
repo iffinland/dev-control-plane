@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "project": "control-plane/control-plane",
+  "task": "p3-telegram-live-acceptance",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "owner_validation_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-11-01T14:31:23Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "/home/iffi/dev-workspace/control-plane",
+    "branch": "agent/control-plane/workflow-v3-20261031",
+    "commit": "a26360c0b526e9473b1efa87d90951846f6e8970",
+    "base_commit": "1660f03f61eab7dbf4acbf889f34de735fc7d404",
+    "remote": "dev-control-plane",
+    "remote_sha": "a26360c0b526e9473b1efa87d90951846f6e8970"
+  },
+  "skills": {
+    "loaded": [
+      "skills/shared/capability-harvest/SKILL.md",
+      "skills/shared/workflow-v3-completion-contract/SKILL.md"
+    ],
+    "freshness": [
+      "capability-harvest: shared, verified-runtime, last checked 2026-09-13",
+      "workflow-v3-completion-contract: shared, candidate, last checked 2026-11-01",
+      "Current monitor source, P3/P4 tests and runbooks re-read at base 1660f03 with Python 3.13.5."
+    ],
+    "created_or_updated": [],
+    "harvest_result": "none — project-specific/control-plane only"
+  },
+  "handoff_sync": "pushed",
+  "authorization": {
+    "application_commit_push": true,
+    "handoff_commit_push": true,
+    "source": "Workflow v3 default project policy: dev-control-plane remote, agent/* branch, automatic push enabled; no merge/deploy/service/QDN/wallet action."
+  },
+  "evidence": [
+    "Full unittest discovery: 454 tests, OK",
+    "Focused harness suite: tools/test_p3_live_acceptance.py, 16 tests, OK",
+    "Control-plane validator: 100 active Markdown files, 440 relative links, 85 required files",
+    "Skills validator: 23 active skills indexed exactly once",
+    "Security validator: self-test passed; 233 files scanned",
+    "Agent permission validator: PASS, 338 rules / 98 checks",
+    "Execution guard check: WARN only (one heavyweight execution and load warning; no refusal)",
+    "Application commit a26360c contains only the harness, tests, runbook, validator list and task artifacts; owner-dirty skills paths and the untracked browser-thumbnail directory remain unstaged",
+    "Remote branch SHA verified: a26360c0b526e9473b1efa87d90951846f6e8970"
+  ],
+  "missing_evidence": [
+    "The live Telegram interaction (Queue instruction and Cancel job through the real bot) was not executed by the agent.",
+    "The production monitor was not stopped or restarted; the live monitor config and production registry were not modified.",
+    "The owner Qortium no-change attestation and the operator Telegram evidence file remain pending.",
+    "No live acceptance run, Telegram message, transaction, force-push or merge was performed by the agent."
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "deepseek/deepseek-flash",
+    "guard_command": "python3 /home/iffi/dev-workspace/control-plane/tools/opencode_guard.py check",
+    "timeout_seconds": 14400,
+    "stop_condition": "implementation and automated acceptance complete; live owner acceptance pending",
+    "checkpoints": [
+      "phase boundary guard check"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": null,
+    "acceptance_evidence": []
+  },
+  "blocker": null
+}

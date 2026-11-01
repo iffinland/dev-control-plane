@@ -118,9 +118,10 @@ def deliver():
         text=True,
         check=False,
     ).stdout.strip()
+    push_remote = os.environ.get("FAKE_OPENCODE_PUSH_REMOTE", "origin")
     if branch:
         subprocess.run(
-            ["git", "-C", repo, "push", "dev-control-plane", f"HEAD:{branch}"],
+            ["git", "-C", repo, "push", push_remote, f"HEAD:{branch}"],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -295,10 +296,48 @@ class CliTestCase(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        self.git_remote = remote
         subprocess.run(
-            ["git", "-C", str(self.repo), "remote", "add", "dev-control-plane", str(remote)],
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/test/project.git",
+            ],
             check=True,
             env=self.env,
+        )
+        # The GitHub-shaped policy URL is rewritten to the disposable bare
+        # repository so remote verification never contacts the network.
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "config",
+                f"url.{remote}.insteadOf",
+                "https://github.com/test/project.git",
+            ],
+            check=True,
+            env=self.env,
+        )
+        self.registry = self.root / "PROJECT-REGISTRY.md"
+        self.env["DEV_CONTROL_PLANE_REGISTRY"] = str(self.registry)
+        self.env["FAKE_OPENCODE_PUSH_REMOTE"] = "origin"
+        self.write_registry()
+
+    def write_registry(self, *, automatic_push: str = "yes") -> None:
+        self.registry.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `test/project` | Qortal | `{self.repo}` | No | Pending | `{self.root / 'docs'}/` | "
+            "`origin` | `test/project` | `agent/*` | `"
+            f"{automatic_push}` |\n",
+            encoding="utf-8",
         )
 
     def set_export(self, messages: list[dict]) -> None:
@@ -903,6 +942,8 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(payload["state"], "SUCCESS", payload)
 
     def test_default_contract_is_mandatory_and_truthful(self) -> None:
+        # Disable the project's automatic push for this truthful-pending case.
+        self.write_registry(automatic_push="no")
         job = self.start(mode="success", authorize_push=False)
         payload = self.wait_for_state(job["id"])
         self.assertEqual(payload["state"], "BLOCKED", payload)
@@ -912,6 +953,9 @@ class CliTestCase(unittest.TestCase):
         self.assertTrue(payload["completion_contract_required"])
         self.assertEqual(payload["completion_contract_source"], "default")
         spec = payload["completion_contract_spec"]
+        self.assertEqual(spec["remote"], "origin")
+        self.assertEqual(spec["delivery_policy"]["project_id"], "test/project")
+        self.assertFalse(spec["delivery_policy"]["automatic_push"])
         for check in (
             "skill_discovery",
             "freshness",
@@ -929,6 +973,89 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(report.returncode, 0, report.stdout + report.stderr)
         self.assertIn("## Completion contract", report.stdout)
         self.assertIn("PENDING", report.stdout)
+
+    def test_start_uses_the_project_remote_from_the_validated_policy(self) -> None:
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        spec = payload["completion_contract_spec"]
+        self.assertEqual(spec["remote"], "origin")
+        self.assertEqual(spec["delivery_policy"]["remote"], "origin")
+        self.assertEqual(spec["delivery_policy"]["github_repository"], "test/project")
+        self.assertTrue(spec["authorization"]["push"])
+
+    def test_start_refuses_missing_delivery_policy(self) -> None:
+        self.registry.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            f"| `test/project` | Qortal | `{self.repo}` | No | Pending | `{self.root / 'docs'}/` |\n",
+            encoding="utf-8",
+        )
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "missing-policy",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "Do the work.",
+            "--criterion",
+            "true",
+            "--json",
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("delivery policy", result.stderr)
+        self.assertEqual(list_jobs(self.state), [])
+
+    def test_start_refuses_remote_override_that_conflicts_with_policy(self) -> None:
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "wrong-remote",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "Do the work.",
+            "--criterion",
+            "true",
+            "--remote",
+            "dev-control-plane",
+            "--json",
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("conflicts with the validated project remote", result.stderr)
+        self.assertEqual(list_jobs(self.state), [])
+
+    def test_non_agent_branch_does_not_get_automatic_push(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "feature/not-agent"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        job = self.start(mode="success", authorize_push=False)
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "BLOCKED", payload)
+        contract = payload["completion_contract"]
+        self.assertEqual(contract["state"], "PENDING", contract)
+        self.assertIn("branch_policy", contract["pending_checks"])
+        self.assertIn("remote_sha", contract["pending_checks"])
+        self.assertFalse(payload["completion_contract_spec"]["authorization"]["push"])
+
+    def test_failed_push_fails_the_completion_contract(self) -> None:
+        self.env["FAKE_OPENCODE_PUSH_REMOTE"] = "does-not-exist"
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        contract = payload["completion_contract"]
+        self.assertEqual(contract["state"], "FAILED", contract)
+        self.assertIn("remote_sha", contract["failed_checks"])
 
     def test_default_contract_ignores_preexisting_owner_dirty_files(self) -> None:
         owner = self.repo / "owner-notes.txt"

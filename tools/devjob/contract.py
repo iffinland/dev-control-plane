@@ -15,14 +15,19 @@ authorization matches the observed Git state.
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
 import re
 import subprocess
 from pathlib import Path
 from typing import Iterable
 
-PROTECTED_BRANCH_NAMES = {"main", "master", "trunk", "release", "production"}
-DEFAULT_REMOTE = "dev-control-plane"
+from . import project_policy
+
+PROTECTED_BRANCH_NAMES = set(project_policy.PROTECTED_BRANCHES)
+# There is deliberately no global fallback remote. A new job must resolve its
+# remote from a validated project delivery policy.
+DEFAULT_REMOTE = None
 DEFAULT_EVIDENCE_FILES = ("TASK.md",)
 MAX_EVIDENCE_BYTES = 1_500_000
 
@@ -151,6 +156,21 @@ def validate_spec(spec: dict) -> None:
         value = spec.get(key)
         if value is not None and not isinstance(value, list):
             raise ContractError(f"{key} must be a list of path prefixes/branch names")
+    delivery = spec.get("delivery_policy")
+    if delivery is not None:
+        if not isinstance(delivery, dict):
+            raise ContractError("delivery_policy must be an object")
+        for key in ("project_id", "github_repository", "branch_pattern"):
+            value = delivery.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ContractError(f"delivery_policy.{key} must be a string")
+        if delivery.get("automatic_push") is not None and not isinstance(
+            delivery.get("automatic_push"), bool
+        ):
+            raise ContractError("delivery_policy.automatic_push must be boolean")
+        remote = delivery.get("remote")
+        if remote is not None and not isinstance(remote, str):
+            raise ContractError("delivery_policy.remote must be a string")
 
 
 def ensure_mandatory(spec: dict) -> None:
@@ -187,15 +207,26 @@ def _authorization_value(value: object) -> bool:
     return bool(value)
 
 
+def _policy_snapshot(delivery_policy: object) -> dict | None:
+    if delivery_policy is None:
+        return None
+    if isinstance(delivery_policy, project_policy.DeliveryPolicy):
+        return delivery_policy.snapshot()
+    if isinstance(delivery_policy, dict):
+        return copy.deepcopy(delivery_policy)
+    raise ContractError("delivery_policy must be a validated policy object or mapping")
+
+
 def build_default_contract(
     *,
     branch: str | None,
     base_sha: str | None,
     dirty_paths: Iterable[str] | None = None,
-    remote: str = DEFAULT_REMOTE,
+    remote: str | None = DEFAULT_REMOTE,
     evidence_files: Iterable[str] | None = None,
     allowed_paths: Iterable[str] | None = None,
     authorization: dict | None = None,
+    delivery_policy: object | None = None,
 ) -> dict:
     """Build the mandatory contract applied to a new Workflow v3 job."""
 
@@ -206,11 +237,13 @@ def build_default_contract(
     for key, value in (authorization or {}).items():
         if key in auth:
             auth[key] = _authorization_value(value)
-    return {
+    snapshot = _policy_snapshot(delivery_policy)
+    policy_remote = (snapshot or {}).get("remote") if snapshot else None
+    contract = {
         "version": 1,
         "branch": branch or None,
         "base_sha": base_sha or None,
-        "remote": remote or DEFAULT_REMOTE,
+        "remote": remote or policy_remote or None,
         "evidence_files": evidence,
         "allowed_paths": scope,
         # Pre-existing owner changes are preserved, not staged or committed.
@@ -220,6 +253,9 @@ def build_default_contract(
         "require": {key: True for key in MANDATORY_REQUIREMENTS},
         "authorization": auth,
     }
+    if snapshot is not None:
+        contract["delivery_policy"] = snapshot
+    return contract
 
 
 def prepare_contract(
@@ -228,26 +264,37 @@ def prepare_contract(
     branch: str | None,
     base_sha: str | None,
     dirty_paths: Iterable[str] | None = None,
-    remote: str = DEFAULT_REMOTE,
+    remote: str | None = DEFAULT_REMOTE,
     evidence_files: Iterable[str] | None = None,
     allowed_paths: Iterable[str] | None = None,
     authorization: dict | None = None,
+    delivery_policy: object | None = None,
+    require_delivery_policy: bool = False,
 ) -> tuple[dict, str]:
     """Normalize a default or explicit contract without weakening it.
 
-    Returns ``(spec, source)`` where source is ``default`` or ``file``.
+    Returns ``(spec, source)`` where source is ``default`` or ``file``. When a
+    validated project policy is supplied it always wins over an omitted or
+    conflicting explicit remote; conflicting policy snapshots are rejected.
     """
 
+    snapshot = _policy_snapshot(delivery_policy)
+    policy_remote = (snapshot or {}).get("remote") if snapshot else None
+    if require_delivery_policy and snapshot is None:
+        raise ContractError(
+            "a new Workflow v3 job requires a validated project delivery policy"
+        )
     if spec is None:
         return (
             build_default_contract(
                 branch=branch,
                 base_sha=base_sha,
                 dirty_paths=dirty_paths,
-                remote=remote,
+                remote=remote or policy_remote,
                 evidence_files=evidence_files,
                 allowed_paths=allowed_paths,
                 authorization=authorization,
+                delivery_policy=snapshot,
             ),
             "default",
         )
@@ -259,12 +306,35 @@ def prepare_contract(
     prepared.setdefault("version", 1)
     if prepared.get("version") != 1:
         raise ContractError("unsupported completion contract version")
+    if snapshot is not None:
+        declared = prepared.get("delivery_policy")
+        if isinstance(declared, dict):
+            for key in (
+                "project_id",
+                "remote",
+                "github_repository",
+                "branch_pattern",
+                "automatic_push",
+            ):
+                if key in declared and declared.get(key) != snapshot.get(key):
+                    raise ContractError(
+                        f"explicit delivery_policy.{key} conflicts with the validated "
+                        "project policy"
+                    )
+        prepared["delivery_policy"] = snapshot
+        explicit_remote = prepared.get("remote")
+        if explicit_remote and policy_remote and str(explicit_remote) != str(policy_remote):
+            raise ContractError(
+                f"explicit remote {explicit_remote!r} conflicts with the validated "
+                f"project remote {policy_remote!r}"
+            )
+        prepared["remote"] = policy_remote
     if not prepared.get("branch"):
         prepared["branch"] = branch or None
     if not prepared.get("base_sha"):
         prepared["base_sha"] = base_sha or None
     if not prepared.get("remote"):
-        prepared["remote"] = remote or DEFAULT_REMOTE
+        prepared["remote"] = remote or policy_remote or None
     if prepared.get("evidence_files") is None and prepared.get("evidence_file") is None:
         prepared["evidence_files"] = [
             str(item) for item in evidence_files or DEFAULT_EVIDENCE_FILES if str(item).strip()
@@ -465,6 +535,121 @@ def _branch_checks(repo: Path, spec: dict) -> tuple[list[dict], str]:
             }
         )
     return checks, branch
+
+
+def _delivery_checks(repo: Path, spec: dict, branch: str) -> list[dict]:
+    """Verify the job's recorded project delivery policy against the checkout."""
+
+    policy = spec.get("delivery_policy")
+    if not isinstance(policy, dict):
+        return []
+    checks: list[dict] = []
+    configured_remote = str(spec.get("remote") or "")
+    policy_remote = str(policy.get("remote") or "")
+    expected_repository = project_policy.normalise_github_repository(
+        policy.get("github_repository")
+    )
+    actual_repository = None
+    remote_url = ""
+    if policy_remote:
+        result = _run_git(repo, "config", "--get", f"remote.{policy_remote}.url")
+        if result.returncode == 0:
+            remote_url = (result.stdout or "").strip()
+            actual_repository = project_policy.normalise_remote_url(remote_url)
+    problems: list[str] = []
+    if not configured_remote:
+        problems.append("the contract has no remote")
+    elif configured_remote != policy_remote:
+        problems.append(
+            f"contract remote {configured_remote!r} differs from policy remote "
+            f"{policy_remote!r}"
+        )
+    if not policy_remote:
+        problems.append("the delivery policy has no remote")
+    elif not remote_url:
+        problems.append(f"git remote {policy_remote!r} is not configured")
+    if expected_repository is None:
+        problems.append("the delivery policy has no valid GitHub repository")
+    elif actual_repository is None:
+        problems.append(
+            f"remote {policy_remote!r} does not point at a GitHub repository"
+        )
+    elif actual_repository != expected_repository:
+        problems.append(
+            f"remote {policy_remote!r} points at {actual_repository}, "
+            f"expected {expected_repository}"
+        )
+    if problems:
+        checks.append(
+            {
+                "id": "delivery_policy",
+                "label": "project delivery policy",
+                "status": "failed",
+                "severity": "failed",
+                "detail": "; ".join(problems),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "id": "delivery_policy",
+                "label": "project delivery policy",
+                "status": "verified",
+                "severity": "info",
+                "detail": (
+                    f"project {policy.get('project_id') or 'unknown'} uses "
+                    f"{policy_remote} -> {expected_repository}"
+                ),
+            }
+        )
+
+    authorization = spec.get("authorization") or {}
+    pattern = str(policy.get("branch_pattern") or "")
+    matches = bool(
+        branch
+        and branch not in PROTECTED_BRANCH_NAMES
+        and branch.startswith("agent/")
+        and pattern
+        and project_policy.BRANCH_PATTERN_RE.match(pattern)
+        and fnmatch.fnmatchcase(branch, pattern)
+    )
+    if matches:
+        checks.append(
+            {
+                "id": "branch_policy",
+                "label": "authorized development branch",
+                "status": "verified",
+                "severity": "info",
+                "detail": f"branch {branch} matches {pattern}",
+            }
+        )
+    elif authorization.get("push"):
+        checks.append(
+            {
+                "id": "branch_policy",
+                "label": "authorized development branch",
+                "status": "failed",
+                "severity": "failed",
+                "detail": (
+                    f"push was authorized but branch {branch or 'unknown'} is outside "
+                    f"the project development pattern {pattern or '(none)'}"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "id": "branch_policy",
+                "label": "authorized development branch",
+                "status": "pending",
+                "severity": "pending",
+                "detail": (
+                    f"branch {branch or 'unknown'} is outside {pattern or '(none)'}; "
+                    "automatic push is not authorized"
+                ),
+            }
+        )
+    return checks
 
 
 def _commit_checks(repo: Path, spec: dict) -> list[dict]:
@@ -671,7 +856,40 @@ def _worktree_check(repo: Path, spec: dict) -> dict:
 
 
 def _push_check(repo: Path, spec: dict, branch: str, authorization: dict) -> dict:
-    remote = str(spec.get("remote") or DEFAULT_REMOTE)
+    remote = str(spec.get("remote") or "")
+    policy = spec.get("delivery_policy")
+    if isinstance(policy, dict):
+        pattern = str(policy.get("branch_pattern") or "")
+        allowed = bool(
+            branch
+            and branch not in PROTECTED_BRANCH_NAMES
+            and branch.startswith("agent/")
+            and pattern
+            and project_policy.BRANCH_PATTERN_RE.match(pattern)
+            and fnmatch.fnmatchcase(branch, pattern)
+        )
+        if not allowed and authorization.get("push"):
+            return {
+                "id": "remote_sha",
+                "label": "authorized development-branch push",
+                "status": "failed",
+                "severity": "failed",
+                "detail": (
+                    f"push was authorized but branch {branch or 'unknown'} is outside "
+                    f"the project development pattern {pattern or '(none)'}"
+                ),
+            }
+        if not allowed:
+            return {
+                "id": "remote_sha",
+                "label": "authorized development-branch push",
+                "status": "pending",
+                "severity": "pending",
+                "detail": (
+                    f"branch {branch or 'unknown'} is outside the project development "
+                    "pattern; handoff_sync=pending_authorization"
+                ),
+            }
     if not authorization.get("push"):
         return {
             "id": "remote_sha",
@@ -679,6 +897,14 @@ def _push_check(repo: Path, spec: dict, branch: str, authorization: dict) -> dic
             "status": "pending",
             "severity": "pending",
             "detail": "push is not authorized; handoff_sync=pending_authorization",
+        }
+    if not remote:
+        return {
+            "id": "remote_sha",
+            "label": "authorized development-branch push",
+            "status": "failed",
+            "severity": "failed",
+            "detail": "no project remote is configured in the completion contract",
         }
     if not branch or branch == "HEAD":
         return {
@@ -749,6 +975,7 @@ def evaluate(job: dict, spec: dict | None, repo: Path | None = None) -> dict:
     checks = _check_evidence(text, found, missing, spec)
     branch_checks, branch = _branch_checks(repo_path, spec)
     checks.extend(branch_checks)
+    checks.extend(_delivery_checks(repo_path, spec, branch))
     checks.append(_worktree_check(repo_path, spec))
 
     require = spec.get("require") or {}

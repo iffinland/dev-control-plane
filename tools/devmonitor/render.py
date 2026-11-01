@@ -307,8 +307,8 @@ def _project_line(project) -> str:
 def start_project_text() -> str:
     return (
         "Start a development job\n\n"
-        "Select a registered project. Only projects with an available repository "
-        "and inside an allowed repository root are shown."
+        "Select a registered project. Only projects with an available repository, "
+        "an allowed repository root and a valid Git delivery policy are shown."
     )
 
 

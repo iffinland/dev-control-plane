@@ -646,7 +646,9 @@ The monitor parses the registered-projects table in
 - platform;
 - repository path;
 - project-level `AGENTS.md` presence;
-- central report root.
+- central report root;
+- Git remote name, GitHub repository, `agent/*` branch pattern and explicit
+  automatic-push authorization.
 
 Validation:
 
@@ -655,8 +657,10 @@ Validation:
 - The project must not be a platform source reference or a deferred entry.
 - A project with a missing or invalid repository is shown as unavailable and
   cannot be started.
-- A project with a missing docs root can still be started if its repository is
-  valid, but its documents link is disabled.
+- A project with a missing, ambiguous, non-GitHub or URL-mismatched delivery
+  policy is shown as unavailable and cannot be started.
+- A project with a missing docs root can still be started if its repository and
+  delivery policy are valid, but its documents link is disabled.
 
 Project selection is used in two places:
 
@@ -689,6 +693,8 @@ Confirm. The monitor then:
 
 ```text
 python3 tools/dev.py start \
+  --project <registry-project-id> \
+  --registry <PROJECT-REGISTRY.md> \
   --repo <registry-repository> \
   --title <title> \
   --prompt-file - \

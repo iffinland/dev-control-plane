@@ -244,6 +244,15 @@ class ControlManager:
     def _eligible(self) -> list[ValidatedProject]:
         return [item for item in self._projects() if item.job_eligible]
 
+    def _project_policy(self, project: ValidatedProject):
+        from devjob import project_policy
+
+        return project_policy.resolve(
+            project.repo_real or project.project.repo_path,
+            registry_path=self.registry.path,
+            project_id=project.project_id,
+        )
+
     def _default_agent(self) -> str:
         return self.config.agent_allowlist[0] if self.config.agent_allowlist else ""
 
@@ -350,7 +359,7 @@ class ControlManager:
         projects = self._eligible()
         if not projects:
             return ControlResult(
-                "No registered project has an available repository, so a job cannot be started.",
+                "No registered project has an available repository and a valid delivery policy, so a job cannot be started.",
                 menus.back_to_main(),
             )
         data = {
@@ -505,6 +514,15 @@ class ControlManager:
             raise ControlError("the selected project is no longer job-eligible")
         if str(project.repo_real) != str(Path(repo).resolve()):
             raise ControlError("the selected repository does not match the registry")
+        try:
+            policy = self._project_policy(project)
+        except (ValueError, RegistryError) as exc:
+            raise ControlError(f"project delivery policy is invalid: {exc}") from exc
+        if branch is not None and not policy.matches_branch(branch):
+            raise ControlError(
+                f"branch {branch!r} is outside the project development pattern "
+                f"{policy.branch_pattern}; automatic push is not authorized"
+            )
         return StartRequest(
             project_id=project.project_id,
             repo=str(project.repo_real),
@@ -565,6 +583,8 @@ class ControlManager:
                     agent=request.agent,
                     model=request.model,
                     branch=request.branch,
+                    project_id=request.project_id,
+                    registry_path=self.registry.path,
                 )
         except (ProjectBusy, GlobalGuardBusy, AdmissionLockTimeout) as exc:
             raise ControlError(str(exc)) from exc

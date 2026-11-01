@@ -432,6 +432,8 @@ class JobFacade:
         agent: str,
         model: str,
         branch: str | None = None,
+        project_id: str | None = None,
+        registry_path: str | Path | None = None,
     ) -> list[str]:
         if not command_criteria and not manual_criteria:
             raise JobError("at least one acceptance criterion is required")
@@ -444,6 +446,10 @@ class JobFacade:
             "--prompt-file",
             "-",
         ]
+        if project_id:
+            args.extend(["--project", str(project_id)])
+        if registry_path:
+            args.extend(["--registry", str(registry_path)])
         if branch:
             args.extend(["--branch", branch])
         for label, command in command_criteria:
@@ -476,6 +482,8 @@ class JobFacade:
         agent: str,
         model: str,
         branch: str | None = None,
+        project_id: str | None = None,
+        registry_path: str | Path | None = None,
     ) -> dict:
         if not prompt.strip():
             raise JobError("prompt is required")
@@ -488,9 +496,12 @@ class JobFacade:
             agent=agent,
             model=model,
             branch=branch,
+            project_id=project_id,
+            registry_path=registry_path,
         )
-        # The monitor deliberately does not pass --contract-file: every new job
-        # receives the CLI's mandatory default contract and cannot weaken it.
+        # The monitor deliberately does not pass --contract-file or
+        # --authorize-push: every new job receives the CLI's mandatory default
+        # contract and the project's validated automatic-push policy.
         return self._json_result(args, input_text=prompt)
 
     def preview_start(
@@ -505,6 +516,8 @@ class JobFacade:
         agent: str,
         model: str,
         branch: str | None = None,
+        project_id: str | None = None,
+        registry_path: str | Path | None = None,
     ) -> dict:
         """Return the CLI ``--dry-run`` plan, including the mandatory contract."""
 
@@ -519,6 +532,8 @@ class JobFacade:
             agent=agent,
             model=model,
             branch=branch,
+            project_id=project_id,
+            registry_path=registry_path,
         )
         args.insert(-1, "--dry-run")
         # A dry-run may legitimately exit 20 when the execution guard refuses

@@ -52,7 +52,9 @@ REQUIRED = (
     "tools/session_state.py",
     "tools/dev.py",
     "tools/devjob/contract.py",
+    "tools/devjob/project_policy.py",
     "tools/test_completion_contract.py",
+    "tools/test_project_delivery_policy.py",
     "examples/workflow-v3/contract.json",
     "tools/test_opencode_guard.py",
     "tools/test_dev_cli.py",
@@ -91,6 +93,7 @@ REQUIRED = (
     "docs/migration/2026-11-01-legacy-consolidation.md",
     "docs/migration/2026-11-01-legacy-consolidation-implementation.md",
     "docs/migration/2026-11-01-mandatory-completion-contract.md",
+    "docs/migration/2026-11-01-project-delivery-policy.md",
     "adapters/opencode/agents/opencode-unattended.md",
     "adapters/opencode/agents/opencode-development.md",
 )

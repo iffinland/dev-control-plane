@@ -12,6 +12,13 @@ prepare local artifacts and state `handoff_sync = pending_authorization`.
 Main/default-branch merge/push, tags, releases, deployment, QDN writes, signing,
 transactions and issue mutation require their own explicit scope authorization.
 
+Workflow v3 jobs resolve the application remote from the project's validated
+delivery policy in [PROJECT-REGISTRY.md](PROJECT-REGISTRY.md), not from a
+repository-name default. The owner authorizes automatic push only for the
+configured, URL-matched remote and a non-protected `agent/*` development branch.
+A missing, ambiguous or mismatched policy is a start-time refusal; it is never
+silently replaced by `dev-control-plane` or another project's remote.
+
 Durable exchange, once a GitHub remote and branch permissions are configured:
 1. Store `tasks/<project>/<task>/TASK.md`, `STATUS.json`, and the concise
    `IMPLEMENTATION.md`/`AUDIT.md` handoff files in this orchestration repository

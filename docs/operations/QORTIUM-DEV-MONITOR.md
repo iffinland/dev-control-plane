@@ -361,7 +361,7 @@ Running jobs remain independent of the monitor lifecycle.
 | Command | Result |
 | --- | --- |
 | `/start`, `/menu` | Main menu (Start job is shown only in control mode) |
-| `/start_job`, `/newjob` | Start wizard for a registered, job-eligible project |
+| `/start_job`, `/newjob` | Start wizard for a registered project with an available repository and a valid delivery policy |
 | `/jobs` | Active jobs first, then recent terminal jobs |
 | `/job <reference>` | Open a job by server-side reference |
 | `/status [job]` | Compact status view; latest job when omitted |
@@ -396,11 +396,20 @@ never paths, job IDs, prompts or user IDs.
 -> one-time Confirm
 -> per-project admission lock
 -> project-active and global-guard check
--> dev start --no-notify --json (prompt over stdin)
-   -> mandatory default completion contract recorded in job.json
+-> validate the project's delivery policy (Git remote, matching GitHub
+   repository, agent/* branch pattern, explicit automatic-push flag)
+-> dev start --project <id> --registry <path> --no-notify --json
+   (prompt over stdin; no --authorize-push and no remote override)
+   -> validated policy and mandatory default completion contract recorded in job.json
 -> RUNNING: STARTED notification and job actions
 -> BLOCKED/refusal: sanitized reason, no STARTED
 ```
+
+The monitor and direct `dev start` calls resolve the same policy from
+[PROJECT-REGISTRY.md](../../PROJECT-REGISTRY.md). A missing, ambiguous,
+non-GitHub or mismatched remote is refused; the monitor never selects
+`dev-control-plane` for a different project and never weakens the mandatory push
+check. Automatic push covers only matching non-protected `agent/*` branches.
 
 Job status includes the completion-contract state and any failed or pending
 check. A green build, a passing test suite or an OpenCode exit `0` is never

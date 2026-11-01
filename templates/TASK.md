@@ -16,6 +16,8 @@ Task-start evidence (also used by the Workflow v3 completion contract):
 
 Required surfaces and real runtime acceptance steps:
 Authorized external actions (exact repo, branch, operation; otherwise none):
+- Project delivery policy (registry Git remote / GitHub repository / branch
+  pattern / automatic push):
 - Development-branch push authorized (and remote name):
 - Protected branch / merge / deploy / QDN write / wallet transaction / destructive
   operation authorized (each separately; default none):

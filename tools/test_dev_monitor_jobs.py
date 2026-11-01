@@ -165,10 +165,33 @@ class JobFacadeTests(unittest.TestCase):
             "- Documentation update: none.\n",
             encoding="utf-8",
         )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/demo/project.git",
+            ],
+            check=True,
+            env=env,
+        )
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
         subprocess.run(
             ["git", "-C", str(repo), "commit", "-m", "baseline"],
-            check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True,
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        registry = self.root / "PROJECT-REGISTRY.md"
+        registry.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{repo}` | No | Pending | `{self.root / 'docs'}/` | "
+            "`origin` | `demo/project` | `agent/*` | `yes` |\n",
+            encoding="utf-8",
         )
         facade = JobFacade(
             self.root / "contract-state", dev_script=TOOLS / "dev.py"
@@ -182,6 +205,8 @@ class JobFacadeTests(unittest.TestCase):
             timeout_seconds=600,
             agent="opencode-development",
             model="deepseek/deepseek-flash",
+            project_id="demo/project",
+            registry_path=registry,
         )
         contract = payload["completion_contract"]
         self.assertEqual(payload["completion_contract_source"], "default")

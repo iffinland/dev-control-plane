@@ -34,6 +34,9 @@ resume.
   checks.
 - [`tools/test_completion_contract.py`](../../../tools/test_completion_contract.py):
   regression coverage.
+- [`tools/devjob/project_policy.py`](../../../tools/devjob/project_policy.py) and
+  [`tools/test_project_delivery_policy.py`](../../../tools/test_project_delivery_policy.py):
+  validated project-scoped remote and branch policy.
 - [`docs/operations/DEV-WORKFLOW-V3.md`](../../../docs/operations/DEV-WORKFLOW-V3.md):
   operating procedure and schema.
 - [`examples/workflow-v3/contract.json`](../../../examples/workflow-v3/contract.json):
@@ -43,15 +46,20 @@ resume.
 
 ## Reusable contract / procedure
 
-1. **Every new job gets the mandatory default.** The CLI builds it from the
-   real branch, starting `HEAD`, `TASK.md` evidence and the `dev-control-plane`
-   remote. The monitor delegates to the same CLI and passes no weakening
-   override. An explicit `--contract-file` may add evidence/scope/authorization
-   but may not set a mandatory `require` check to `false` or remove all evidence
-   files; the loader rejects such a file before a job starts. Push, protected
-   branch, merge, deploy, QDN, wallet and destructive actions default to false
-   and require their own explicit authorization (`--authorize-push`, a contract
-   file field, or the corresponding owner decision).
+1. **Every new job gets the mandatory default from one project policy.** The CLI
+   resolves exactly one row in `PROJECT-REGISTRY.md` for the repository and
+   validates its `Git remote`, matching `GitHub repository`, `agent/*`
+   development pattern and `Automatic push` flag against the checkout. The
+   monitor delegates to the same CLI with `--project` and `--registry` and
+   passes no weakening override. A missing, ambiguous, non-GitHub or mismatched
+   remote refuses the start before a job exists; never substitute another
+   project's remote or a global `dev-control-plane` default. An explicit
+   `--contract-file` may add evidence/scope/authorization but may not set a
+   mandatory `require` check to `false`, remove all evidence files or replace
+   the validated project remote. The owner authorizes automatic push only to
+   matching non-protected `agent/*` branches. Push outside that pattern,
+   protected branch, merge, deploy, QDN, wallet and destructive actions default
+   to false and require their own explicit authorization.
 2. **Record task-start evidence in a durable file** (TASK/STATUS or the job
    report) using explicit labels:
    - skills discovered and their freshness/compatibility result;
@@ -65,12 +73,16 @@ resume.
    `allowed_paths` further.
 4. **Never merge without authorization.** A merge commit in the job range fails
    the contract unless `authorization.merge` is true.
-5. **Verify delivery.** With `authorization.push` true, compare the configured
-   remote branch SHA (`git ls-remote --heads <remote> <branch>`) with local
-   `HEAD`. A mismatch fails. With push false, report
-   `PENDING`/`handoff_sync=pending_authorization`, never success. Missing
-   authorization makes the job `BLOCKED`; a real acceptance or validation
-   failure takes precedence and makes it `FAILED`.
+5. **Verify delivery.** First verify the recorded policy still matches the
+   checkout remote URL and branch pattern (`delivery_policy` / `branch_policy`).
+   With `authorization.push` true, compare the configured remote branch SHA
+   (`git ls-remote --heads <remote> <branch>`) with local `HEAD`. A mismatch or
+   a failed/absent push fails. With push false, report
+   `PENDING`/`handoff_sync=pending_authorization`, never success. A branch
+   outside the project's `agent/*` pattern never receives automatic push;
+   explicitly forcing push there fails. Missing authorization makes the job
+   `BLOCKED`; a real acceptance or validation failure takes precedence and makes
+   it `FAILED`.
 6. **Protect secrets.** Reject secret-bearing paths (`.env`, keys, wallet, seed,
    mnemonic, keystore, credentials) and recognized secret-like diff patterns.
    Never print the matched value. The repository Git hook remains an independent
@@ -90,9 +102,10 @@ resume.
 Before reusing this skill, read the current
 [`contract.py`](../../../tools/devjob/contract.py), the job schema in
 [`runner.py`](../../../tools/devjob/runner.py) and the operating doc. Run
-`python3 tools/test_completion_contract.py` and
-`python3 tools/test_dev_cli.py`. If the schema, check names or state mapping
-changed, update this skill and its index entry. The contract is a policy layer,
+`python3 tools/test_completion_contract.py`,
+`python3 tools/test_project_delivery_policy.py` and
+`python3 tools/test_dev_cli.py`. If the schema, check names, remote-resolution
+rules or state mapping changed, update this skill and its index entry. The contract is a policy layer,
 not an OS sandbox: wrappers, interpreters and SSH can do more than a command
 pattern suggests.
 
@@ -101,7 +114,9 @@ pattern suggests.
 - Contract tests cover the verified path, missing evidence, uncommitted change,
   declared owner dirty paths, protected branch, unauthorized push, remote-SHA
   mismatch, unauthorized merge, secret path, out-of-scope path and invalid
-  schema.
+  schema. Policy tests cover multiple project remotes, unknown projects,
+  missing/ambiguous/mismatched remotes, non-GitHub URLs, `agent/*` matching,
+  disabled automatic push, unauthorized branches and failed pushes.
 - Default-contract tests prove every new CLI job gets the mandatory checks, a
   weak explicit contract is rejected, custom constraints survive, a monitor
   preview receives the same default, and legacy jobs remain compatible.
@@ -122,6 +137,9 @@ pattern suggests.
   validation failure behind `BLOCKED`.
 - Committing unrelated owner changes to make the tree clean.
 - Using a protected branch without separate authorization.
+- Hardcoding or reusing `dev-control-plane` for another project, or letting a
+  missing/ambiguous policy fall back silently.
+- Granting automatic push to `main`, `feature/*` or another non-`agent/*` branch.
 - Letting a merge commit or out-of-scope path pass silently.
 - Printing a matched secret value in a failure detail.
 
@@ -134,8 +152,9 @@ remote host from an authorized command.
 ## Harvest / maturity update
 
 Created 2026-11-01 with the executable contract implementation and extended the
-same day to make it mandatory for every new CLI and Telegram-monitor job while
-preserving legacy-job resume behavior. Maturity stays `candidate` until a real
+same day to make it mandatory for every new CLI and Telegram-monitor job and to
+resolve a validated project-scoped remote/automatic-push policy while preserving
+legacy-job resume behavior. Maturity stays `candidate` until a real
 job completes through the mandatory default with an authorized push and verified
 remote SHA. Re-check after any change to job schema, check IDs, override policy
 or state mapping; update the skills index and operating docs in the same change.

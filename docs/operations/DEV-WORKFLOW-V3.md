@@ -48,7 +48,9 @@ execution at a time.
 | CLI tests | `tools/test_dev_cli.py` | Integration and unit tests with a fake OpenCode |
 | Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
 | Completion contract | `tools/devjob/contract.py` | Machine-checked task-start evidence, scoped commit, authorization, push and remote SHA |
+| Project delivery policy | `tools/devjob/project_policy.py` | Validated per-project remote, GitHub repository, `agent/*` branch pattern and automatic-push authorization |
 | Contract tests | `tools/test_completion_contract.py` | Contract evidence, scope, protected-branch, merge, secret-path and remote-SHA regressions |
+| Policy tests | `tools/test_project_delivery_policy.py` | Multiple project remotes, missing/ambiguous/mismatched configuration, unauthorized branches and failed pushes |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
 | Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
 | Permission/installer tests | `tools/test_agent_permissions.py`, `tools/test_install_profiles.py` | Profile semantics and installer safety |
@@ -121,7 +123,6 @@ dev start \
   --criterion "unit tests::npm test -- --runInBand" \
   --criterion "build::npm run build" \
   --manual-criterion "owner checks the settings page in the live app" \
-  --authorize-push \
   --timeout 8h
 ```
 
@@ -140,7 +141,14 @@ dev start ... --evidence-file TASK.md --evidence-file STATUS.json
 # Restrict the scoped commit to exact path prefixes
 dev start ... --scope src/ --scope tests/ --scope TASK.md
 
-# Explicitly grant a separately authorized external action
+# Select a registered project explicitly and show its resolved policy
+dev start ... --project qortal/my-app --dry-run
+
+# Override the registry path only for an isolated copy/test
+dev start ... --registry /path/to/PROJECT-REGISTRY.md --dry-run
+
+# Explicit flags add a separately authorized action; they never replace the
+# validated project remote or authorize a non-agent branch automatically.
 dev start ... --authorize-push
 dev start ... --authorize-protected-branch
 dev start ... --authorize-merge
@@ -186,21 +194,45 @@ it. A passing test suite or OpenCode exit `0` therefore cannot by itself produce
 `SUCCESS`.
 
 The default contract automatically records the job's real branch and starting
-`HEAD`, uses `TASK.md` as task-start evidence, uses the
-`dev-control-plane` remote, and treats every pre-existing dirty owner path as
-both `allowed_dirty_paths` and `forbidden_paths`. Owner work is preserved and is
-never staged, rewritten, discarded or required to be cleaned.
+`HEAD`, uses `TASK.md` as task-start evidence, resolves the remote from the
+project's validated delivery policy, and treats every pre-existing dirty owner
+path as both `allowed_dirty_paths` and `forbidden_paths`. Owner work is preserved
+and is never staged, rewritten, discarded or required to be cleaned.
+
+### Project-scoped delivery policy
+
+Before creating a job, both `dev start` and the Telegram Dev Monitor resolve
+exactly one row in [PROJECT-REGISTRY.md](../../PROJECT-REGISTRY.md) for the
+repository. The row supplies four delivery columns:
+
+| Column | Requirement |
+| --- | --- |
+| `Git remote` | An existing remote name in the checkout, for example `origin` or the control plane's `dev-control-plane`. |
+| `GitHub repository` | `owner/name`; the configured remote URL must normalise to this exact GitHub repository. |
+| `Development branch pattern` | Must stay inside `agent/*`. |
+| `Automatic push` | `yes`/`no`; explicit owner grant for automatic delivery. |
+
+The owner authorizes automatic push only when the policy is valid, the remote
+URL matches, the current branch matches `agent/*`, and the branch is not
+protected. `main`/`master`/`trunk`, merges, tags, releases, deployment, QDN
+writes, wallet transactions and server changes are never implied. A missing,
+ambiguous, non-GitHub or mismatched remote is refused before a job exists. There
+is no global `dev-control-plane` fallback: that remote is valid only for the
+control-plane row that explicitly configures it.
 
 ```bash
 # The default contract is created automatically; --dry-run prints it.
 dev start ... --dry-run
 
-# Authorize the development-branch push separately.
-dev start ... --authorize-push
+# The project policy authorizes the push; --authorize-push is not required for
+# a matching agent/* branch.
+dev start ... --dry-run
 
-# The monitor uses the same default and has no weakening override.
+# The monitor delegates to the same CLI, passing the project ID and registry
+# path, and never passes a weakening or remote-selecting override.
 
-# An explicit file may add evidence, scope, authorization or a different remote.
+# An explicit file may add evidence/scope/authorization. It may not replace the
+# validated project remote.
 dev start ... --contract-file contract.json --dry-run
 ```
 
@@ -217,7 +249,7 @@ The contract is a JSON object. A reusable example is
   "version": 1,
   "branch": "agent/example-app/settings-page",
   "base_sha": "<verified base SHA>",
-  "remote": "dev-control-plane",
+  "remote": "origin",
   "evidence_files": ["TASK.md", "STATUS.json"],
   "allowed_paths": ["src/", "tests/", "TASK.md", "STATUS.json"],
   "allowed_dirty_paths": [],
@@ -244,10 +276,14 @@ The contract is a JSON object. A reusable example is
 }
 ```
 
-The default contract already enables every mandatory check, so an explicit file
-that omits `require` still gets them. At job completion the harness evaluates
-the contract in the job repository and records the result in `job.json`,
-`dev status`, the monitor job status and `report.md`:
+The `remote` must equal the validated project policy remote; an explicit file
+that tries to use another remote is rejected. The default contract already
+enables every mandatory check, so an explicit file that omits `require` still
+gets them. The resolved policy is stored in the job's contract snapshot, so a
+resume evaluates the same remote and branch pattern that the job was created
+with. At job completion the harness evaluates the contract in the job repository
+and records the result in `job.json`, `dev status`, the monitor job status and
+`report.md`:
 
 | Check | What must be evidenced |
 | --- | --- |
@@ -257,6 +293,7 @@ the contract in the job repository and records the result in `job.json`,
 | `capability_harvest` | The evidence records the reusable result or an explicit project-specific/no-harvest result. |
 | `documentation_updates` | The evidence records the documentation changed or explicitly that none was needed. |
 | `branch` / `protected_branch` | The current branch matches the contract and is not a protected branch without explicit authorization. |
+| `delivery_policy` / `branch_policy` | The recorded project policy still matches the actual remote URL and the current branch is inside its `agent/*` pattern. |
 | `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
 | `commit` / `scoped_paths` | At least one commit exists after `base_sha`, and every changed path is inside `allowed_paths`. |
 | `no_merge_commits` | No merge commit exists unless `authorization.merge` is true. |
@@ -579,6 +616,7 @@ configuration.
 python3 tools/test_opencode_guard.py
 python3 tools/test_dev_cli.py
 python3 tools/test_completion_contract.py
+python3 tools/test_project_delivery_policy.py
 python3 tools/test_agent_permissions.py
 python3 tools/test_install_profiles.py
 python3 tools/test_detect.py
@@ -593,9 +631,12 @@ The CLI tests use a disposable fake `opencode` executable, a temporary Git
 repository and remote, and a synthetic procfs root, including a
 hung-CLI-after-`finish=stop` regression case. They prove that a new job without
 push authorization ends `BLOCKED` with a `PENDING` contract, that the default
-contract is mandatory, that pre-existing owner files are preserved, that a weak
+contract is mandatory, that a project's own remote is used instead of a global
+default, that pre-existing owner files are preserved, that a weak
 `--contract-file` is rejected, and that an explicit contract may customize while
-keeping mandatory checks. They also include recovered and unresolved permission
+keeping mandatory checks. The policy tests additionally cover multiple project
+remotes, unregistered/missing/ambiguous/mismatched remotes, non-GitHub URLs,
+unauthorized branches, disabled automatic push and a failed push. They also include recovered and unresolved permission
 rejections, recovered same-operation command failures and unrelated successful
 commands that must not clear a failure. The
 detection tests include the actual documentation, source/diff and failed-tool log

@@ -47,6 +47,7 @@ from devmonitor_test_support import (  # noqa: E402
     USER_ID,
     FakeApi,
     callback_update,
+    init_project_repo,
     install_fake_dev,
     make_config,
     make_job,
@@ -81,16 +82,16 @@ class P4Base(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.projects = self.root / "projects"
         self.projects.mkdir()
-        self.project_repo = self.projects / "Demo"
-        self.project_repo.mkdir()
+        self.project_repo = init_project_repo(self.projects / "Demo")
         self.docs = self.root / "docs"
         self.docs.mkdir()
         self.registry_file = self.root / "PROJECT-REGISTRY.md"
         self.registry_file.write_text(
             "# Project registry\n\n## Registered projects\n\n"
-            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
-            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` |\n",
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
+            "`origin` | `demo/project` | `agent/*` | `yes` |\n",
             encoding="utf-8",
         )
         self.state_root = self.root / "state"

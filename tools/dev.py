@@ -29,7 +29,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from devjob import __version__, runner  # noqa: E402
+from devjob import __version__, project_policy, runner  # noqa: E402
 from devjob.store import (  # noqa: E402
     JobLocked,
     StoreError,
@@ -106,27 +106,44 @@ def command_start(args: argparse.Namespace) -> int:
     )
     from devjob import contract as contract_module
 
+    timeout = runner.parse_duration(args.timeout)
+    repo = Path(args.repo).expanduser().resolve()
+    snapshot = runner.git_snapshot(repo)
+    actual_branch = snapshot.get("branch") or None
+    branch = args.branch or actual_branch
+    # A new job must resolve exactly one validated project delivery policy.
+    # Missing, ambiguous or mismatched remote configuration is refused before
+    # any job state is created; there is no global remote fallback.
+    policy = project_policy.resolve(
+        repo,
+        registry_path=args.registry,
+        project_id=args.project,
+    )
+    if args.remote and str(args.remote) != str(policy.remote):
+        raise runner.JobError(
+            f"--remote {args.remote!r} conflicts with the validated project "
+            f"remote {policy.remote!r} for {policy.project_id}"
+        )
+    automatic_push = policy.automatic_push_allowed(actual_branch)
     contract_spec = None
     if args.contract_file:
         contract_spec = contract_module.load_contract(args.contract_file)
     authorization = {
-        "push": bool(args.authorize_push),
+        "push": bool(args.authorize_push) or automatic_push,
         "protected_branch": bool(args.authorize_protected_branch),
         "merge": bool(args.authorize_merge),
     }
-    timeout = runner.parse_duration(args.timeout)
-    repo = Path(args.repo).expanduser().resolve()
-    snapshot = runner.git_snapshot(repo)
-    branch = args.branch or snapshot.get("branch") or None
     prepared_spec, contract_source = contract_module.prepare_contract(
         contract_spec,
-        branch=snapshot.get("branch") or branch,
+        branch=actual_branch or branch,
         base_sha=snapshot.get("head"),
         dirty_paths=contract_module.parse_dirty_paths(snapshot.get("status") or ""),
-        remote=args.remote,
+        remote=policy.remote,
         evidence_files=args.evidence_file or None,
         allowed_paths=args.scope or None,
         authorization=authorization,
+        delivery_policy=policy,
+        require_delivery_policy=True,
     )
     if args.dry_run:
         payload = runner.preflight(proc_root=args.proc_root, workspace=args.workspace)
@@ -168,7 +185,9 @@ def command_start(args: argparse.Namespace) -> int:
         contract_evidence=args.evidence_file or None,
         contract_scope=args.scope or None,
         contract_authorization=authorization,
-        contract_remote=args.remote,
+        contract_remote=policy.remote,
+        contract_delivery_policy=policy,
+        require_delivery_policy=True,
     )
     _print_job_started(job, args.json)
     return 0 if job.get("state") == "RUNNING" else 20
@@ -389,9 +408,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="allowed changed path prefix for the scoped commit; repeatable",
     )
     start.add_argument(
+        "--project",
+        default=None,
+        help="registered project ID; resolved from --repo when omitted",
+    )
+    start.add_argument(
+        "--registry",
+        default=None,
+        help=(
+            "project registry containing the validated delivery policy "
+            "(default: $DEV_CONTROL_PLANE_REGISTRY or PROJECT-REGISTRY.md)"
+        ),
+    )
+    start.add_argument(
         "--remote",
-        default="dev-control-plane",
-        help="Git remote used to verify the pushed development branch",
+        default=None,
+        help=(
+            "optional remote assertion; it must match the validated project "
+            "delivery policy and never supplies a global fallback"
+        ),
     )
     start.add_argument(
         "--authorize-push",

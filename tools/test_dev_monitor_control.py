@@ -28,6 +28,7 @@ from devmonitor_test_support import (  # noqa: E402
     USER_ID,
     FakeApi,
     callback_update,
+    init_project_repo,
     install_fake_dev,
     make_config,
     make_job,
@@ -56,8 +57,7 @@ class ControlBase(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.projects = self.root / "projects"
         self.projects.mkdir()
-        self.project_repo = self.projects / "Demo"
-        self.project_repo.mkdir()
+        self.project_repo = init_project_repo(self.projects / "Demo")
         self.other_repo = self.projects / "Other"
         self.other_repo.mkdir()
         self.docs = self.root / "docs"
@@ -65,9 +65,10 @@ class ControlBase(unittest.TestCase):
         self.registry_file = self.root / "PROJECT-REGISTRY.md"
         self.registry_file.write_text(
             "# Project registry\n\n## Registered projects\n\n"
-            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
-            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` |\n",
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
+            "`origin` | `demo/project` | `agent/*` | `yes` |\n",
             encoding="utf-8",
         )
         self.state_root = self.root / "state"
@@ -176,6 +177,8 @@ class StartWizardTests(ControlBase):
         self.assertEqual(args[args.index("--repo") + 1], str(self.project_repo.resolve()))
         self.assertEqual(args[args.index("--title") + 1], "P2 control job")
         self.assertEqual(args[args.index("--prompt-file") + 1], "-")
+        self.assertEqual(args[args.index("--project") + 1], "demo/project")
+        self.assertEqual(args[args.index("--registry") + 1], str(self.registry_file))
         self.assertIn("--no-notify", args)
         self.assertIn("--json", args)
         self.assertEqual(
@@ -201,7 +204,60 @@ class StartWizardTests(ControlBase):
         self.assertNotIn("--authorize-push", args)
         self.assertNotIn("--authorize-merge", args)
         self.assertNotIn("--authorize-protected-branch", args)
+        # The CLI resolves the same project-scoped policy independently.
+        self.assertEqual(args[args.index("--project") + 1], "demo/project")
+        self.assertEqual(args[args.index("--registry") + 1], str(self.registry_file))
         self.assertIn("--json", args)
+
+    def test_second_project_uses_its_own_delivery_policy(self) -> None:
+        second = init_project_repo(
+            self.projects / "Second",
+            remote="upstream",
+            remote_url="https://github.com/demo/second.git",
+        )
+        self.registry_file.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
+            "`origin` | `demo/project` | `agent/*` | `yes` |\n"
+            f"| `demo/second` | Qortal | `{second}` | Yes | Pending | `{self.docs}/` | "
+            "`upstream` | `demo/second` | `agent/*` | `yes` |\n",
+            encoding="utf-8",
+        )
+        self.registry = Registry(self.registry_file, (self.projects,))
+        self.control.registry = self.registry
+        self.router.registry = self.registry
+        self.router.handle(message_update(1, "/start_job"))
+        callback = find_button(self.api.sent[-1]["markup"], "demo/second")
+        self.router.handle(callback_update(self.next_id(), callback))
+        self.send_text("Second project job")
+        self.send_text(PROMPT)
+        self.send_text(CRITERIA)
+        self.send_text("2h")
+        self.send_text("/skip")
+        confirm = find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertEqual(args[args.index("--project") + 1], "demo/second")
+        self.assertEqual(args[args.index("--repo") + 1], str(second.resolve()))
+        self.assertEqual(args[args.index("--registry") + 1], str(self.registry_file))
+
+    def test_invalid_project_policy_is_not_start_eligible(self) -> None:
+        self.registry_file.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
+            "`origin` | `different/project` | `agent/*` | `yes` |\n",
+            encoding="utf-8",
+        )
+        self.registry = Registry(self.registry_file, (self.projects,))
+        self.control.registry = self.registry
+        self.router.registry = self.registry
+        self.router.handle(message_update(1, "/start_job"))
+        self.assertIn("No registered project", self.api.sent[-1]["text"])
+        self.assertEqual(self.invocations(), [])
 
     def test_duplicate_confirmation_callback_creates_one_job(self) -> None:
         confirm = self.advance_to_preview()

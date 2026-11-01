@@ -24,6 +24,7 @@ mandatory check.
 - In scope:
 - Out of scope:
 - Authorized external actions (each separately, otherwise none):
+- Project delivery policy (registry remote / GitHub repository / branch pattern):
 - Development-branch push authorized / remote:
 - Protected-branch, merge, deploy, QDN, wallet, destructive actions authorized:
 - Forbidden actions:

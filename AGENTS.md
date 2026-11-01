@@ -155,8 +155,16 @@ A passing test suite or OpenCode exit `0` is not delivery evidence. Task-start
 skill/freshness/documentation evidence, capability harvest, documentation
 maintenance, a scoped commit, an authorized development-branch push and the
 verified remote SHA are required; missing authorization yields `BLOCKED` and
-genuine validation failures yield `FAILED`. An explicit `--contract-file` may
-add constraints but must never disable a mandatory check. Pre-existing owner
+genuine validation failures yield `FAILED`. The remote and automatic-push grant
+come from the project's validated delivery policy in
+[PROJECT-REGISTRY.md](PROJECT-REGISTRY.md), not from a global default. The owner
+authorizes automatic push only to non-protected `agent/*` development branches
+of registered projects whose configured Git remote matches their GitHub
+repository. Missing, ambiguous or mismatched remote configuration refuses the
+start; it never guesses or silently downgrades the completion checks. This does
+not authorize `main`/`master`/`trunk`, merges, tags, releases, deployment, QDN
+writes, wallet transactions or server changes. An explicit `--contract-file`
+may add constraints but must never disable a mandatory check. Pre-existing owner
 changes are preserved and never staged or required to be cleaned, and jobs
 created before this rule keep their recorded contract state on resume.
 

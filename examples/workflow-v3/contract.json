@@ -2,7 +2,7 @@
   "version": 1,
   "branch": "agent/example-app/settings-page",
   "base_sha": "<verified base SHA>",
-  "remote": "dev-control-plane",
+  "remote": "origin",
   "evidence_files": [
     "TASK.md",
     "STATUS.json"

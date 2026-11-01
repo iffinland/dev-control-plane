@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +70,40 @@ def make_config(
         state_dir=root / "monitor",
         require_secure=True,
     )
+
+
+def init_project_repo(
+    path: Path,
+    *,
+    remote: str = "origin",
+    remote_url: str = "https://github.com/demo/project.git",
+) -> Path:
+    """Create a minimal Git checkout with a GitHub-shaped project remote."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    subprocess.run(
+        ["git", "init", str(path)],
+        check=True,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "remote", "add", remote, remote_url],
+        check=True,
+        env=env,
+    )
+    return path
 
 
 def message_update(

@@ -4,36 +4,36 @@ Only the verified registered-projects table is routable. Platform source
 references and deferred entries are intentionally not parsed as projects. A
 parse failure fails closed for future job mutation while still allowing document
 browsing from explicitly configured roots.
+
+Each project also carries a validated delivery policy from the registry columns
+``Git remote``, ``GitHub repository``, ``Development branch pattern`` and
+``Automatic push``. A project with an unavailable repository or an invalid
+policy remains visible for document browsing but is not job-eligible.
 """
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from devjob import project_policy
+
 SECTION = "## Registered projects"
+RegistryError = project_policy.RegistryError
 
 
-class RegistryError(RuntimeError):
-    """The project registry could not be parsed safely."""
-
-
-def _clean(value: str) -> str:
-    return value.strip().strip("`").strip()
-
-
-def _split_row(line: str) -> list[str]:
-    stripped = line.strip()
-    if not stripped.startswith("|") or not stripped.endswith("|"):
-        return []
-    return [cell.strip() for cell in stripped[1:-1].split("|")]
-
-
-def _is_separator(cells: Iterable[str]) -> bool:
-    return all(cell and set(cell) <= {"-", ":", " "} for cell in cells)
+def _under_roots(real: Path, roots: Iterable[Path]) -> bool:
+    checked = False
+    for root in roots:
+        checked = True
+        try:
+            real.relative_to(Path(root).expanduser().resolve())
+            return True
+        except ValueError:
+            continue
+    return not checked
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,9 @@ class Project:
     repo_path: Path
     has_project_agents: bool
     central_root: Path
+    delivery: project_policy.DeliveryConfig = field(
+        default_factory=project_policy.DeliveryConfig
+    )
 
     @property
     def slug(self) -> str:
@@ -59,6 +62,7 @@ class ValidatedProject:
     repo_real: Path | None
     docs_available: bool
     docs_real: Path | None
+    delivery: project_policy.DeliveryPolicy
     reason: str = ""
 
     @property
@@ -66,87 +70,34 @@ class ValidatedProject:
         return self.project.project_id
 
     @property
+    def delivery_valid(self) -> bool:
+        return bool(self.repo_available and self.delivery.valid)
+
+    @property
     def job_eligible(self) -> bool:
-        return self.repo_available
+        return bool(self.repo_available and self.delivery.valid)
 
     def __repr__(self) -> str:
         return (
             f"ValidatedProject({self.project.project_id!r}, "
-            f"repo_available={self.repo_available}, docs_available={self.docs_available})"
+            f"repo_available={self.repo_available}, docs_available={self.docs_available}, "
+            f"delivery_valid={self.delivery_valid})"
         )
 
 
 def parse_registry(path: str | Path) -> list[Project]:
-    target = Path(path).expanduser()
-    try:
-        lines = target.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise RegistryError(f"project registry could not be read: {exc.__class__.__name__}") from exc
-
-    try:
-        start = next(index for index, line in enumerate(lines) if line.strip() == SECTION)
-    except StopIteration as exc:
-        raise RegistryError("project registry is missing the registered-projects table") from exc
-
-    table: list[list[str]] = []
-    for line in lines[start + 1 :]:
-        if line.startswith("## "):
-            break
-        cells = _split_row(line)
-        if not cells:
-            if table:
-                break
-            continue
-        if _is_separator(cells):
-            continue
-        table.append(cells)
-
-    if not table:
-        raise RegistryError("registered-projects table is empty")
-    header = [_clean(cell).lower() for cell in table[0]]
-    expected = ("id", "platform", "verified local path")
-    positions: dict[str, int] = {}
-    for name in expected:
-        try:
-            positions[name] = header.index(name)
-        except ValueError as exc:
-            raise RegistryError(f"registered-projects table is missing column: {name}") from exc
-
-    projects: list[Project] = []
-    for cells in table[1:]:
-        if len(cells) <= max(positions.values()):
-            continue
-        project_id = _clean(cells[positions["id"]])
-        platform = _clean(cells[positions["platform"]])
-        repo = _clean(cells[positions["verified local path"]])
-        if not project_id or not repo:
-            continue
-        agents_cell = cells[3] if len(cells) > 3 else ""
-        central_cell = cells[5] if len(cells) > 5 else ""
-        projects.append(
-            Project(
-                project_id=project_id,
-                platform=platform,
-                repo_path=Path(repo),
-                has_project_agents=_clean(agents_cell).lower().startswith("yes"),
-                central_root=Path(_clean(central_cell)),
-            )
+    raw_projects = project_policy.parse_registry(path)
+    return [
+        Project(
+            project_id=item.project_id,
+            platform=item.platform,
+            repo_path=item.repo_path,
+            has_project_agents=item.has_project_agents,
+            central_root=item.central_root,
+            delivery=item.delivery,
         )
-    if not projects:
-        raise RegistryError("registered-projects table has no project rows")
-    return projects
-
-
-def _under_roots(real: Path, roots: Iterable[Path]) -> bool:
-    checked = False
-    for root in roots:
-        checked = True
-        try:
-            real.relative_to(Path(root).expanduser().resolve())
-            return True
-        except ValueError:
-            continue
-    return not checked
+        for item in raw_projects
+    ]
 
 
 def validate_projects(
@@ -177,6 +128,11 @@ def validate_projects(
         except OSError:
             docs_available = False
 
+        policy = project_policy.validate_delivery(
+            project.delivery,
+            repo_real or project.repo_path,
+            project.project_id,
+        )
         validated.append(
             ValidatedProject(
                 project=project,
@@ -184,6 +140,7 @@ def validate_projects(
                 repo_real=repo_real,
                 docs_available=docs_available,
                 docs_real=docs_real,
+                delivery=policy,
                 reason=reason,
             )
         )

@@ -1222,7 +1222,9 @@ def create_job(
     contract_evidence: Iterable[str] | None = None,
     contract_scope: Iterable[str] | None = None,
     contract_authorization: dict | None = None,
-    contract_remote: str = contract.DEFAULT_REMOTE,
+    contract_remote: str | None = contract.DEFAULT_REMOTE,
+    contract_delivery_policy: object | None = None,
+    require_delivery_policy: bool = True,
 ) -> dict:
     repo_path = Path(repo).expanduser().resolve()
     if not repo_path.is_dir():
@@ -1240,6 +1242,8 @@ def create_job(
         evidence_files=contract_evidence,
         allowed_paths=contract_scope,
         authorization=contract_authorization,
+        delivery_policy=contract_delivery_policy,
+        require_delivery_policy=require_delivery_policy,
     )
     job = _new_job(
         title=title,

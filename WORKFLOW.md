@@ -148,8 +148,10 @@ under `tasks/`.
 
 For every **new** Workflow v3 job, the completion contract is mandatory and
 machine-checked, not prompt advice. Both `dev start` and Telegram Dev Monitor
-starts receive the same default contract; there is no start surface that can
-omit it. The job must record in its evidence files:
+starts resolve the same project-scoped delivery policy from
+[PROJECT-REGISTRY.md](PROJECT-REGISTRY.md) and receive the same default contract;
+there is no start surface that can omit it or supply a global remote fallback.
+The job must record in its evidence files:
 
 1. task-start skill discovery and the freshness/compatibility result;
 2. the control-plane, platform-pack and project documentation actually read;
@@ -157,6 +159,15 @@ omit it. The job must record in its evidence files:
 4. the documentation updates, or an explicit statement that none were needed;
 5. the scoped commit(s) after the recorded base SHA;
 6. the authorized development-branch push and the verified remote SHA.
+
+The policy must name an existing Git remote whose URL normalises to the
+configured GitHub repository, a development pattern inside `agent/*`, and an
+explicit automatic-push flag. A missing, ambiguous or mismatched remote refuses
+the start before a job exists; it never guesses, reuses another project's remote
+or downgrades the mandatory push check. Automatic push is limited to matching
+non-protected `agent/*` branches; `main`/`master`/`trunk`, merges, tags,
+releases, deployment, QDN writes, wallet transactions and server changes remain
+separately unauthorized.
 
 The harness also rejects a protected branch without explicit authorization, a
 merge commit without merge authorization, changed paths outside the declared
@@ -168,12 +179,13 @@ authorization and always remain `FAILED`. Contract checks never grant
 authority: push, protected-branch, merge, deploy, QDN, wallet and destructive
 actions each remain separately authorized.
 
-`dev start --contract-file ...` may customize evidence files, allowed paths,
-remote or explicit authorization, but it can never disable a mandatory check.
-Pre-existing owner changes are recorded as allowed dirty paths and forbidden
-commit paths; they are preserved, never staged, rewritten or required to be
-cleaned. Jobs created before this rule keep their recorded contract state, and
-resuming such a legacy job does not retroactively add or weaken one. See the
+`dev start --contract-file ...` may customize evidence files, allowed paths or
+add explicit authorization, but it can never disable a mandatory check or
+replace the validated project remote. Pre-existing owner changes are recorded as
+allowed dirty paths and forbidden commit paths; they are preserved, never
+staged, rewritten or required to be cleaned. Jobs created before this rule keep
+their recorded contract state, and resuming such a legacy job does not
+retroactively add or weaken one. See the
 [Workflow v3 contract](docs/operations/DEV-WORKFLOW-V3.md#executable-completion-contract).
 
 ## Authorized unattended/overnight sessions

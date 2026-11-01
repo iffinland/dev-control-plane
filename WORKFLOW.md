@@ -160,6 +160,13 @@ The job must record in its evidence files:
 5. the scoped commit(s) after the recorded base SHA;
 6. the authorized development-branch push and the verified remote SHA.
 
+Every new default job—from `dev start` or the Telegram Dev Monitor—also gets one
+job-specific evidence file under its runtime state directory. The harness fills
+only observed metadata and leaves every required field `UNRECORDED`; the agent
+must replace those values truthfully. Initialization is not completion, and
+placeholder, missing-block or wrong-job evidence fails the contract. Dirty paths
+are parsed from NUL-safe porcelain output so the first record is never truncated.
+
 The policy must name an existing Git remote whose URL normalises to the
 configured GitHub repository, a development pattern inside `agent/*`, and an
 explicit automatic-push flag. A missing, ambiguous or mismatched remote refuses

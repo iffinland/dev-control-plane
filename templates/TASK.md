@@ -8,6 +8,9 @@ Outcome and measurable exit criterion:
 In scope / out of scope / invariants:
 
 Task-start evidence (also used by the Workflow v3 completion contract):
+A new default job also receives a job-specific evidence file at
+`~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md`. Fill its
+`workflow-v3-evidence` fields truthfully; initialization alone is not evidence.
 - Applicable skills (path / platform / maturity / freshness result):
 - Documentation read (control-plane / platform pack / project):
 - Reference freshness evidence / environment IDs:

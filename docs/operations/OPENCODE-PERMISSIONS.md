@@ -113,8 +113,11 @@ It allows:
   reads of Qortium logs/configuration through the `read` tool.
 
 Workflow v3 job records are read-only for the agent: the `edit` tool and common
-shell mutation commands are denied for the state root. The worker owns those
-records.
+shell mutation commands are denied for the state root. The single exception is
+the job-specific completion-contract evidence subtree,
+`jobs/<job-id>/evidence/**`, which the agent must fill truthfully. Every other
+state file, including `job.json`, logs, reports and monitor state, remains owned
+by the worker.
 
 It denies or constrains:
 

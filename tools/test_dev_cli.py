@@ -98,9 +98,32 @@ def find_arg(name):
     return None
 
 
+def fill_evidence():
+    """Emulate an agent recording truthful evidence in the job evidence file."""
+    path = os.environ.get("DEV_JOB_EVIDENCE_FILE", "")
+    if not path or not os.path.exists(path):
+        return
+    if os.environ.get("FAKE_OPENCODE_EVIDENCE", "fill") == "leave":
+        return
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    values = {
+        "skill_discovery": "Loaded skills/shared/app-bootstrap/SKILL.md; platform shared, freshness last checked 2026-11-01.",
+        "freshness": "Checked the current contract.py revision at the job base SHA; compatible.",
+        "documentation_loading": "Read docs/operations/DEV-WORKFLOW-V3.md, WORKFLOW.md and AGENTS.md.",
+        "capability_harvest": "Capability harvest: project-specific; no reusable update needed.",
+        "documentation_updates": "Documentation update: none needed for this fixture.",
+    }
+    for field, value in values.items():
+        text = text.replace(f"- {field}: UNRECORDED", f"- {field}: {value}")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def deliver():
     """Emulate a scoped commit plus authorized development-branch push."""
 
+    fill_evidence()
     with open(os.path.join(repo, "delivery.txt"), "a", encoding="utf-8") as handle:
         handle.write("delivered\n")
     for name in ("delivery.txt", "impl.txt"):
@@ -214,6 +237,11 @@ if mode == "resume":
 if mode == "exit1":
     print("a command failed with exit code 1")
     sys.exit(1)
+if mode == "evidence-missing":
+    os.environ["FAKE_OPENCODE_EVIDENCE"] = "leave"
+    deliver()
+    print("fake opencode run completed without filling evidence")
+    sys.exit(0)
 deliver()
 print("fake opencode run completed")
 sys.exit(0)
@@ -1075,6 +1103,93 @@ class CliTestCase(unittest.TestCase):
             env=self.env,
         ).stdout
         self.assertNotIn("owner-notes.txt", names)
+
+    def test_default_job_initializes_job_specific_evidence(self) -> None:
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertTrue(stored["evidence_initialized"])
+        evidence_file = Path(stored["evidence_file"])
+        self.assertEqual(
+            evidence_file,
+            self.state / "jobs" / job["id"] / "evidence" / "TASK.md",
+        )
+        text = evidence_file.read_text(encoding="utf-8")
+        self.assertIn(f"- job_id: {job['id']}", text)
+        for field in (
+            "skill_discovery",
+            "freshness",
+            "documentation_loading",
+            "capability_harvest",
+            "documentation_updates",
+        ):
+            self.assertIn(f"- {field}: ", text)
+            self.assertNotIn(f"- {field}: UNRECORDED", text)
+        prompt = runner.job_prompt(stored)
+        self.assertIn(str(evidence_file), prompt)
+        self.assertIn("Never invent", prompt)
+        reports = [check["id"] for check in payload["completion_contract"]["checks"]]
+        self.assertIn("evidence_identity", reports)
+
+    def test_evidence_initialization_is_per_job(self) -> None:
+        first = self.start(mode="success")
+        self.assertEqual(self.wait_for_state(first["id"])["state"], "SUCCESS")
+        second = self.start(mode="success")
+        self.assertEqual(self.wait_for_state(second["id"])["state"], "SUCCESS")
+        first_store = load_job(first["id"], self.state)
+        second_store = load_job(second["id"], self.state)
+        self.assertNotEqual(first_store["evidence_file"], second_store["evidence_file"])
+        self.assertIn(
+            f"- job_id: {first['id']}",
+            Path(first_store["evidence_file"]).read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f"- job_id: {second['id']}",
+            Path(second_store["evidence_file"]).read_text(encoding="utf-8"),
+        )
+
+    def test_missing_evidence_is_not_fabricated(self) -> None:
+        job = self.start(mode="evidence-missing")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "FAILED", payload)
+        contract = payload["completion_contract"]
+        self.assertEqual(contract["state"], "FAILED", contract)
+        for check in (
+            "skill_discovery",
+            "freshness",
+            "documentation_loading",
+            "capability_harvest",
+            "documentation_updates",
+        ):
+            self.assertIn(check, contract["failed_checks"])
+        stored = load_job(job["id"], self.state)
+        text = Path(stored["evidence_file"]).read_text(encoding="utf-8")
+        self.assertIn("- skill_discovery: UNRECORDED", text)
+
+    def test_first_dirty_path_is_recorded_exactly(self) -> None:
+        (self.repo / "skills").mkdir()
+        (self.repo / "skills" / "README.md").write_text("baseline\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "skills/README.md"],
+            check=True,
+            env=self.env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "track owner file"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        (self.repo / "skills" / "README.md").write_text("owner change\n", encoding="utf-8")
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        spec = payload["completion_contract_spec"]
+        self.assertIn("skills/README.md", spec["allowed_dirty_paths"])
+        self.assertNotIn("kills/README.md", spec["allowed_dirty_paths"])
+        self.assertTrue((self.repo / "skills" / "README.md").is_file())
 
     def test_dry_run_includes_default_contract(self) -> None:
         result = self.cli(

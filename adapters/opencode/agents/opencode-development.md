@@ -63,8 +63,11 @@ permission:
     "**/id_rsa": deny
     "**/id_ed25519": deny
     # Runtime job state and the OpenCode installation are readable for
-    # diagnostics but must not be edited by the agent.
+    # diagnostics but must not be edited by the agent. The one exception is the
+    # job-specific completion-contract evidence file, which the agent must fill
+    # truthfully; job records and every other state file stay read-only.
     "/home/iffi/.local/state/dev-control-plane/**": deny
+    "/home/iffi/.local/state/dev-control-plane/jobs/*/evidence/**": allow
     "/home/iffi/.opencode/**": deny
     "/home/iffi/.ssh/**": deny
     "/home/iffi/.config/**": deny
@@ -458,3 +461,19 @@ Checkpoint rules:
 - On a resource warning or refusal, stop starting new work and write a
   recoverable handoff. On step exhaustion or timeout, preserve the working tree
   and session history so `dev resume` can continue safely.
+
+Job evidence file:
+
+- A job started by `dev start` or the Telegram Dev Monitor may include a
+  job-specific evidence file under
+  `/home/iffi/.local/state/dev-control-plane/jobs/<job-id>/evidence/`. The
+  harness records only observed metadata there; every required field starts as
+  `UNRECORDED`. Initialization is not completion.
+- Before finishing, replace each `UNRECORDED` value with truthful,
+  job-specific evidence from the work you actually did: skills discovered and
+  their freshness result, documentation read, capability harvest, and
+  documentation updates (or an explicit none). Keep the `job_id` line and the
+  `workflow-v3-evidence` markers intact.
+- Never fabricate, pre-fill or copy evidence from another job. The completion
+  contract rejects placeholders, missing blocks and evidence for a different job
+  id. Job records outside the `evidence/` subdirectory remain read-only.

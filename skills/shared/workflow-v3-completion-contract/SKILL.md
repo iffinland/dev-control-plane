@@ -31,7 +31,9 @@ resume.
 ## Authoritative evidence
 
 - [`tools/devjob/contract.py`](../../../tools/devjob/contract.py): executable
-  checks.
+  checks, NUL-safe dirty-path parsing and legacy path repair.
+- [`tools/devjob/evidence.py`](../../../tools/devjob/evidence.py): job-specific
+  evidence initialization and the deliberately unfilled template.
 - [`tools/test_completion_contract.py`](../../../tools/test_completion_contract.py):
   regression coverage.
 - [`tools/devjob/project_policy.py`](../../../tools/devjob/project_policy.py) and
@@ -60,12 +62,22 @@ resume.
    matching non-protected `agent/*` branches. Push outside that pattern,
    protected branch, merge, deploy, QDN, wallet and destructive actions default
    to false and require their own explicit authorization.
-2. **Record task-start evidence in a durable file** (TASK/STATUS or the job
-   report) using explicit labels:
+2. **Fill the automatic per-job evidence file truthfully.** A new default job
+   (CLI or Telegram monitor, which delegates to the CLI) gets
+   `~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md`. The
+   harness writes only observed metadata and leaves every required field
+   `UNRECORDED`; initialization is not completion. The agent must replace each
+   value with job-specific evidence and keep the `job_id` line and
+   `workflow-v3-evidence` markers. Record:
    - skills discovered and their freshness/compatibility result;
-   - control-plane, platform-pack and project documentation read;
+   - control-plane, platform-pack and project documentation actually read;
    - capability harvest result (or explicit project-specific/no-harvest);
    - documentation updates (or explicit none).
+
+   The contract parses the structured block and rejects placeholders, missing
+   blocks, values without concrete detail and evidence whose `job_id` is another
+   job. An explicit `--evidence-file` replaces automatic initialization; an
+   explicit `--contract-file` keeps its own evidence list.
 3. **Keep commits scoped and preserve owner work.** The default records every
    pre-existing dirty path in both `allowed_dirty_paths` and `forbidden_paths`.
    Never stage, rewrite, discard or demand cleanup of those owner changes, and
@@ -114,9 +126,12 @@ pattern suggests.
 - Contract tests cover the verified path, missing evidence, uncommitted change,
   declared owner dirty paths, protected branch, unauthorized push, remote-SHA
   mismatch, unauthorized merge, secret path, out-of-scope path and invalid
-  schema. Policy tests cover multiple project remotes, unknown projects,
-  missing/ambiguous/mismatched remotes, non-GitHub URLs, `agent/*` matching,
-  disabled automatic push, unauthorized branches and failed pushes.
+  schema. They also cover exact first-path parsing, job-specific evidence
+  initialization, refusal to accept the unfilled template, wrong-job evidence,
+  removed initialized blocks and the narrow legacy path repair. Policy tests
+  cover multiple project remotes, unknown projects, missing/ambiguous/mismatched
+  remotes, non-GitHub URLs, `agent/*` matching, disabled automatic push,
+  unauthorized branches and failed pushes.
 - Default-contract tests prove every new CLI job gets the mandatory checks, a
   weak explicit contract is rejected, custom constraints survive, a monitor
   preview receives the same default, and legacy jobs remain compatible.
@@ -131,11 +146,15 @@ pattern suggests.
 
 - Treating OpenCode exit `0`, a green acceptance command or a push command exit
   `0` as delivery proof.
+- Treating the initialized evidence template, its prose or an `UNRECORDED` value
+  as completion evidence, or copying another job's evidence file.
 - Omitting a contract file to bypass the mandatory default.
 - Treating `--contract-file` as a way to disable evidence, commit or push checks.
 - Marking an unauthorized push as success instead of `PENDING`, or hiding a real
   validation failure behind `BLOCKED`.
 - Committing unrelated owner changes to make the tree clean.
+- Parsing dirty paths with a fixed `line[3:]` after a whole-output `strip()`,
+  which truncates the first path (`skills/README.md` -> `kills/README.md`).
 - Using a protected branch without separate authorization.
 - Hardcoding or reusing `dev-control-plane` for another project, or letting a
   missing/ambiguous policy fall back silently.
@@ -154,7 +173,10 @@ remote host from an authorized command.
 Created 2026-11-01 with the executable contract implementation and extended the
 same day to make it mandatory for every new CLI and Telegram-monitor job and to
 resolve a validated project-scoped remote/automatic-push policy while preserving
-legacy-job resume behavior. Maturity stays `candidate` until a real
-job completes through the mandatory default with an authorized push and verified
-remote SHA. Re-check after any change to job schema, check IDs, override policy
-or state mapping; update the skills index and operating docs in the same change.
+legacy-job resume behavior. Later the same day it gained automatic per-job
+evidence initialization, job-specific structured validation (no fabricated or
+copied evidence) and NUL-safe dirty-path parsing with a narrow legacy repair.
+Maturity stays `candidate` until a real job completes through the mandatory
+default with an authorized push and verified remote SHA. Re-check after any
+change to job schema, check IDs, override policy or state mapping; update the
+skills index and operating docs in the same change.

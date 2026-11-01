@@ -135,7 +135,8 @@ dev start ... --criterion "pytest::python3 -m pytest -q"
 # A JSON acceptance file: array of strings or {kind,label,command} objects
 dev start ... --acceptance-file acceptance.json
 
-# Name the durable task-start evidence file (default: TASK.md)
+# Override the automatic evidence file with owner-named evidence paths.
+# Without this flag a job-specific evidence file is initialized automatically.
 dev start ... --evidence-file TASK.md --evidence-file STATUS.json
 
 # Restrict the scoped commit to exact path prefixes
@@ -194,10 +195,51 @@ it. A passing test suite or OpenCode exit `0` therefore cannot by itself produce
 `SUCCESS`.
 
 The default contract automatically records the job's real branch and starting
-`HEAD`, uses `TASK.md` as task-start evidence, resolves the remote from the
-project's validated delivery policy, and treats every pre-existing dirty owner
-path as both `allowed_dirty_paths` and `forbidden_paths`. Owner work is preserved
-and is never staged, rewritten, discarded or required to be cleaned.
+`HEAD`, resolves the remote from the project's validated delivery policy, and
+treats every pre-existing dirty owner path as both `allowed_dirty_paths` and
+`forbidden_paths`. Owner work is preserved and is never staged, rewritten,
+discarded or required to be cleaned. Dirty paths are read with NUL-safe porcelain
+output, so the first record is never truncated (`skills/README.md` cannot become
+`kills/README.md`). Jobs created before that fix are evaluated with a narrow
+one-character-truncation repair, recorded in the contract result; no additional
+path is allowed.
+
+### Automatic per-job evidence initialization
+
+A new default job—whether started by `dev start` or the Telegram Dev Monitor,
+which delegates to the same CLI—receives one job-specific evidence file:
+
+```text
+~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md
+```
+
+The harness records only facts it can observe at start: job ID, title,
+repository, branch, base SHA, project and contract source. Every required
+task-start field is written as `UNRECORDED`. Initialization is **not**
+completion, approval or proof of work, and the harness never fills a required
+field.
+
+The job prompt names the file and requires the executing agent to replace each
+`UNRECORDED` value with truthful, job-specific evidence from the work actually
+performed:
+
+- skills searched/loaded, including platform, maturity and freshness result;
+- the control-plane, platform-pack and project documentation actually read;
+- the capability-harvest result, or an explicit project-specific/no-harvest;
+- documentation updates, or an explicit statement that none were needed.
+
+The evidence file lives outside the project working tree, so it never dirties the
+repository and never becomes part of the job's scoped commit. The development
+agent profile allows editing only the `jobs/*/evidence/**` subtree; job records
+and all other runtime state remain read-only. Use `--evidence-file` only when the
+owner deliberately supplies evidence paths instead of the automatic job file.
+
+The contract parses the `workflow-v3-evidence` block and requires the `job_id`
+line to match the current job. It fails when a required value is missing,
+`UNRECORDED`/placeholder-like, too short, or lacks the expected concrete detail;
+it also fails if an initialized block is removed. Evidence copied from another
+job is therefore rejected rather than silently accepted by the older free-text
+marker scan. The report shows the evidence path and any legacy path repair.
 
 ### Project-scoped delivery policy
 
@@ -287,11 +329,12 @@ and records the result in `job.json`, `dev status`, the monitor job status and
 
 | Check | What must be evidenced |
 | --- | --- |
-| `skill_discovery` | The evidence files record the skills searched/loaded, or explicitly that no skill applied. |
-| `freshness` | The evidence records the skill freshness/compatibility result and the source revision checked. |
+| `skill_discovery` | The job-specific evidence records the skills searched/loaded, or explicitly that no skill applied. |
+| `freshness` | The evidence records the skill/freshness compatibility result and the source revision checked. |
 | `documentation_loading` | The evidence names the control-plane/platform/project documentation actually read. |
 | `capability_harvest` | The evidence records the reusable result or an explicit project-specific/no-harvest result. |
 | `documentation_updates` | The evidence records the documentation changed or explicitly that none was needed. |
+| `evidence_identity` | An auto-initialized evidence block names the current job ID; another job's or copied evidence fails. |
 | `branch` / `protected_branch` | The current branch matches the contract and is not a protected branch without explicit authorization. |
 | `delivery_policy` / `branch_policy` | The recorded project policy still matches the actual remote URL and the current branch is inside its `agent/*` pattern. |
 | `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
@@ -648,7 +691,11 @@ model, approved tooling roots, exact directory-root matching, Qortium diagnostic
 and hard boundaries; they also record the known wrapper/script limitations. The
 completion-contract tests cover default/override policy, legacy-job compatibility
 and truthful state mapping; the monitor facade test proves a monitor preview gets
-the same mandatory default. They do not start a model session, contact Telegram
+the same mandatory default. Additional regressions cover NUL-safe dirty-path
+parsing (including the former `skills/README.md` -> `kills/README.md`
+truncation), automatic per-job evidence initialization, per-job evidence
+identity, refusal to fabricate unfilled evidence, and removal of the initialized
+evidence block. They do not start a model session, contact Telegram
 or touch Qortium.
 
 ## Known limits

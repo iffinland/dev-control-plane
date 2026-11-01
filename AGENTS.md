@@ -164,8 +164,11 @@ repository. Missing, ambiguous or mismatched remote configuration refuses the
 start; it never guesses or silently downgrades the completion checks. This does
 not authorize `main`/`master`/`trunk`, merges, tags, releases, deployment, QDN
 writes, wallet transactions or server changes. An explicit `--contract-file`
-may add constraints but must never disable a mandatory check. Pre-existing owner
-changes are preserved and never staged or required to be cleaned, and jobs
+may add constraints but must never disable a mandatory check. Every new default
+job also receives one job-specific evidence file initialized with observed
+metadata only; the executing agent must fill the required fields truthfully, and
+placeholder, missing-block or wrong-job evidence fails the contract. Pre-existing
+owner changes are preserved and never staged or required to be cleaned, and jobs
 created before this rule keep their recorded contract state on resume.
 
 The former blanket Qortal “no SSH tunnel” policy is superseded. An explicitly

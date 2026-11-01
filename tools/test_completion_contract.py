@@ -15,7 +15,7 @@ TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from devjob import contract, runner  # noqa: E402
+from devjob import contract, evidence, runner  # noqa: E402
 
 EVIDENCE = """# Task
 
@@ -105,6 +105,37 @@ def push_remote(repo: GitRepo, branch: str = "agent/test/job") -> str:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return str(bare)
+
+
+def structured_evidence(
+    job_id: str,
+    *,
+    fill: bool = True,
+    job_id_line: str | None = None,
+) -> str:
+    text = evidence.build_template(
+        job_id=job_id,
+        title="test job",
+        repo="/tmp/repo",
+        branch="agent/test/job",
+        base_sha="a" * 40,
+        project_id="test/project",
+        contract_source="default",
+        initialized_at="2026-11-01T00:00:00Z",
+    )
+    if job_id_line is not None:
+        text = text.replace(f"- job_id: {job_id}", f"- job_id: {job_id_line}")
+    if fill:
+        values = {
+            "skill_discovery": "Loaded skills/shared/app-bootstrap/SKILL.md; platform shared, last checked 2026-11-01.",
+            "freshness": "Checked contract.py revision at the base SHA; compatible.",
+            "documentation_loading": "Read docs/operations/DEV-WORKFLOW-V3.md and WORKFLOW.md.",
+            "capability_harvest": "Capability harvest: project-specific; no reusable update needed.",
+            "documentation_updates": "Documentation update: none needed for this fixture.",
+        }
+        for field, value in values.items():
+            text = text.replace(f"- {field}: UNRECORDED", f"- {field}: {value}")
+    return text
 
 
 def checks_by_id(result: dict) -> dict:
@@ -246,6 +277,135 @@ class CompletionContractTests(unittest.TestCase):
             spec = spec_for(base, allowed_paths=["TASK.md", "src/"])
             result = contract.evaluate({"repo": str(repo.root)}, spec)
             self.assertIn("scoped_paths", result["failed_checks"])
+
+    def test_parse_dirty_paths_preserves_truncated_first_path(self) -> None:
+        # The historical whole-output .strip() removed the leading status column
+        # of the first porcelain record.
+        stripped = "M skills/README.md\n M other/file.md\n?? new-dir/"
+        self.assertEqual(
+            contract.parse_dirty_paths(stripped),
+            ["skills/README.md", "other/file.md", "new-dir/"],
+        )
+        nuls = " M skills/README.md\0 M other/file.md\0?? new-dir/\0"
+        self.assertEqual(
+            contract.parse_dirty_paths(nuls),
+            ["skills/README.md", "other/file.md", "new-dir/"],
+        )
+        renamed = "R  old/name.md -> new/name.md"
+        self.assertEqual(contract.parse_dirty_paths(renamed), ["new/name.md"])
+
+    def test_git_snapshot_records_first_dirty_path_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, _base = make_repo(Path(directory))
+            repo.write("skills/README.md", "baseline\n")
+            repo.commit("track skills readme")
+            repo.write("skills/README.md", "modified\n")
+            snapshot = runner.git_snapshot(repo.root)
+            self.assertEqual(
+                contract.parse_dirty_paths(snapshot["status"]), ["skills/README.md"]
+            )
+
+    def test_initialized_evidence_template_fails_until_filled(self) -> None:
+        job_id = "20261101T000000Z-evidence-test-abcdef12"
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write("TASK.md", structured_evidence(job_id, fill=False))
+            repo.commit("unfilled evidence")
+            job = {"id": job_id, "repo": str(repo.root), "evidence_initialized": True}
+            result = contract.evaluate(job, spec_for(base))
+            self.assertEqual(result["state"], "FAILED")
+            self.assertEqual(checks_by_id(result)["evidence_identity"]["status"], "verified")
+            for check in evidence.REQUIRED_FIELDS:
+                self.assertIn(check, result["failed_checks"])
+
+    def test_filled_job_specific_evidence_verifies(self) -> None:
+        job_id = "20261101T000000Z-evidence-test-abcdef12"
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write("TASK.md", structured_evidence(job_id))
+            repo.commit("filled evidence")
+            job = {"id": job_id, "repo": str(repo.root), "evidence_initialized": True}
+            result = contract.evaluate(job, spec_for(base))
+            self.assertEqual(result["state"], "VERIFIED", result)
+            identity = checks_by_id(result)["evidence_identity"]
+            self.assertEqual(identity["status"], "verified")
+
+    def test_evidence_for_another_job_fails(self) -> None:
+        job_id = "20261101T000000Z-evidence-test-abcdef12"
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write(
+                "TASK.md",
+                structured_evidence(
+                    job_id, job_id_line="20261101T000000Z-another-job-ffffffff"
+                ),
+            )
+            repo.commit("wrong job evidence")
+            job = {"id": job_id, "repo": str(repo.root), "evidence_initialized": True}
+            result = contract.evaluate(job, spec_for(base))
+            self.assertEqual(result["state"], "FAILED")
+            self.assertIn("evidence_identity", result["failed_checks"])
+            for check in evidence.REQUIRED_FIELDS:
+                self.assertIn(check, result["failed_checks"])
+
+    def test_removing_initialized_evidence_block_fails(self) -> None:
+        job_id = "20261101T000000Z-evidence-test-abcdef12"
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write("TASK.md", EVIDENCE)
+            repo.commit("free text evidence")
+            job = {"id": job_id, "repo": str(repo.root), "evidence_initialized": True}
+            result = contract.evaluate(job, spec_for(base))
+            self.assertEqual(result["state"], "FAILED")
+            self.assertIn("evidence_identity", result["failed_checks"])
+            for check in evidence.REQUIRED_FIELDS:
+                self.assertIn(check, result["failed_checks"])
+
+    def test_legacy_truncated_owner_path_is_repaired_narrowly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write("TASK.md", EVIDENCE)
+            repo.write("skills/README.md", "baseline\n")
+            repo.commit("evidence and tracked skill")
+            repo.write("skills/README.md", "owner change\n")
+            spec = spec_for(
+                base,
+                allowed_dirty_paths=["kills/README.md"],
+                forbidden_paths=["kills/README.md"],
+            )
+            result = contract.evaluate({"repo": str(repo.root)}, spec)
+            self.assertNotIn("clean_tree", result["failed_checks"])
+            self.assertEqual(
+                result["dirty_path_repairs"],
+                [
+                    {
+                        "field": "allowed_dirty_paths",
+                        "from": "kills/README.md",
+                        "to": "skills/README.md",
+                    },
+                    {
+                        "field": "forbidden_paths",
+                        "from": "kills/README.md",
+                        "to": "skills/README.md",
+                    },
+                ],
+            )
+
+    def test_new_contract_does_not_repair_unexpected_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            repo.write("TASK.md", EVIDENCE)
+            repo.write("skills/README.md", "baseline\n")
+            repo.commit("evidence and tracked skill")
+            repo.write("skills/README.md", "unexpected\n")
+            spec = spec_for(
+                base,
+                allowed_dirty_paths=["kills/README.md"],
+                dirty_paths_parser=contract.DIRTY_PATHS_PARSER_VERSION,
+            )
+            result = contract.evaluate({"repo": str(repo.root)}, spec)
+            self.assertIn("clean_tree", result["failed_checks"])
+            self.assertEqual(result["dirty_path_repairs"], [])
 
     def test_evaluate_state_contract_failure_and_pending(self) -> None:
         job = {

@@ -27,7 +27,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 import opencode_guard  # noqa: E402
 
-from . import contract, detect, notify  # noqa: E402
+from . import contract, detect, evidence, notify  # noqa: E402
 from .store import (  # noqa: E402
     JOB_STATES,
     JobLocked,
@@ -210,7 +210,7 @@ def build_criteria(
 
 
 def git_snapshot(repo: Path) -> dict:
-    def git(*args: str) -> str:
+    def git(*args: str, raw: bool = False) -> str:
         try:
             result = subprocess.run(
                 ["git", "-C", str(repo), *args],
@@ -221,16 +221,64 @@ def git_snapshot(repo: Path) -> dict:
             )
         except (OSError, subprocess.TimeoutExpired):
             return ""
-        return result.stdout.strip() if result.returncode == 0 else ""
+        if result.returncode != 0:
+            return ""
+        output = result.stdout or ""
+        # Preserve the status output exactly: a whole-output strip removes the
+        # leading status column of the first porcelain record and truncates its
+        # path (skills/README.md -> kills/README.md).
+        return output if raw else output.strip()
 
+    status = git("status", "--porcelain=v1", "-z", "--no-renames", raw=True)
     return {
         "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
         "head": git("rev-parse", "HEAD"),
-        "dirty": bool(git("status", "--porcelain")),
-        "status": git("status", "--porcelain")[:4000],
+        "dirty": bool(status),
+        "status": status[:4000],
         "diffstat": git("diff", "--stat")[:4000],
         "captured_at": utc_now(),
     }
+
+
+def job_prompt(job: dict) -> str:
+    """Return the prompt sent to OpenCode, including mandatory evidence guidance."""
+
+    base = job.get("resume_prompt") if job.get("is_resume") else job.get("prompt")
+    prompt = str(base or job.get("prompt") or "")
+    spec = job.get("completion_contract_spec") or {}
+    files = spec.get("evidence_files") or spec.get("evidence_file") or []
+    if isinstance(files, str):
+        files = [files]
+    if not files:
+        return prompt
+    if job.get("evidence_file"):
+        evidence_text = (
+            "\n\n## Mandatory job evidence file\n\n"
+            f"The harness initialized the job-specific evidence file at "
+            f"`{job['evidence_file']}` with metadata observed at job start. It did "
+            "not fill the required fields; initialization is not completion, "
+            "approval or proof of work.\n\n"
+            "Before you finish, edit that file and replace every `UNRECORDED` value "
+            "inside the `workflow-v3-evidence` markers with truthful, job-specific "
+            "evidence from the work you actually performed: skills discovered and "
+            "their freshness/compatibility, documentation actually read, capability "
+            "harvest, and documentation updates (or an explicit none). Keep the "
+            "`job_id` line and the markers intact. Never invent or pre-fill evidence "
+            "you did not perform. The completion contract reads this file; unfilled, "
+            "placeholder, deleted-block or wrong-job evidence fails the job."
+        )
+    else:
+        rendered = ", ".join(f"`{item}`" for item in files)
+        evidence_text = (
+            "\n\n## Mandatory job evidence\n\n"
+            f"The completion contract reads {rendered}. Record truthful, "
+            "job-specific task-start evidence there: skills discovered and their "
+            "freshness/compatibility, documentation actually read, capability "
+            "harvest, and documentation updates (or an explicit none). Never invent "
+            "or pre-fill evidence you did not perform. Unfilled or placeholder "
+            "evidence fails the job."
+        )
+    return prompt + evidence_text
 
 
 def _guard_command(
@@ -283,8 +331,8 @@ def _guard_command(
     ]
     if job.get("session_id") and not job.get("force_new_session"):
         opencode.extend(["--session", str(job["session_id"])])
-    prompt = job.get("resume_prompt") if job.get("is_resume") else job.get("prompt")
-    opencode.append(str(prompt or job.get("prompt") or ""))
+    prompt = job_prompt(job)
+    opencode.append(prompt)
     return base + opencode
 
 
@@ -1261,6 +1309,28 @@ def create_job(
         contract_source=contract_source or prepared_source,
     )
     job["proc_root"] = str(proc_root)
+    if prepared_source == "default" and not contract_evidence:
+        # Every new default job gets one job-specific evidence file outside the
+        # project working tree. The harness records only observed metadata; the
+        # executing agent must replace the UNRECORDED fields truthfully.
+        spec = job.get("completion_contract_spec") or {}
+        policy = spec.get("delivery_policy") or {}
+        evidence_file, created = evidence.initialize(
+            job_id=job["id"],
+            title=job["title"],
+            repo=str(repo_path),
+            branch=job.get("branch"),
+            base_sha=spec.get("base_sha") or (job.get("git") or {}).get("head"),
+            project_id=policy.get("project_id") if isinstance(policy, dict) else None,
+            contract_source=prepared_source,
+            initialized_at=job["created_at"],
+        )
+        spec["evidence_files"] = [str(evidence_file)]
+        job["completion_contract_spec"] = spec
+        job["evidence_file"] = str(evidence_file)
+        job["evidence_initialized"] = True
+        job["evidence_created"] = created
+        job["evidence_initialized_at"] = job["created_at"]
     if payload.get("status") == "REFUSE" or payload.get("exit_code") == opencode_guard.EXIT_REFUSE:
         job["state"] = "BLOCKED"
         job["blocker"] = "guard preflight refused: " + "; ".join(payload.get("refusals") or ["unknown"])
@@ -1286,6 +1356,12 @@ def create_job(
 
     save_job(job)
     append_event(job, "created", f"repo={repo_path}")
+    if job.get("evidence_file"):
+        append_event(
+            job,
+            "evidence_initialized",
+            f"path={job['evidence_file']} created={bool(job.get('evidence_created'))}",
+        )
     spawn_worker(job)
     return load_job(job["id"])
 
@@ -1296,6 +1372,9 @@ def spawn_worker(job: dict) -> int:
     command = [sys.executable, str(DEV_SCRIPT), "_worker", "--job-id", job["id"]]
     env = os.environ.copy()
     env["DEV_CONTROL_PLANE_STATE"] = str(state_root())
+    env["DEV_JOB_ID"] = str(job["id"])
+    if job.get("evidence_file"):
+        env["DEV_JOB_EVIDENCE_FILE"] = str(job["evidence_file"])
     with worker_log.open("ab", buffering=0) as handle:
         chmod_private(worker_log)
         try:
@@ -1551,6 +1630,8 @@ def status_payload(job: dict) -> dict:
         "completion_contract_source": job.get("completion_contract_source"),
         "completion_contract_required": bool(job.get("completion_contract_required")),
         "completion_contract_spec": job.get("completion_contract_spec"),
+        "evidence_file": job.get("evidence_file"),
+        "evidence_initialized": bool(job.get("evidence_initialized")),
         "timeout_seconds": job.get("timeout_seconds"),
         "worker_pid": job.get("worker_pid"),
         "guard_pid": job.get("guard_pid"),
@@ -1670,6 +1751,7 @@ def render_report(job: dict) -> str:
         f"- Guard PID: {job.get('guard_pid') or '-'}",
         f"- OpenCode child PID/PGID: {job.get('child_pid') or '-'} / {job.get('child_pgid') or '-'}",
         f"- OpenCode session: `{job.get('session_id') or 'unknown'}`",
+        f"- Job evidence file: `{job.get('evidence_file') or '-'}`",
         f"- Resume count: {job.get('resume_count') or 0}",
         f"- Log: `{job.get('log_path')}`",
         f"- Worker log: `{job.get('worker_log_path')}`",
@@ -1718,6 +1800,11 @@ def render_report(job: dict) -> str:
         lines.append(f"- Source: `{job.get('completion_contract_source') or 'explicit'}`")
         lines.append(f"- Required: {bool(job.get('completion_contract_required'))}")
         lines.append(f"- Evaluated: {contract_payload.get('evaluated_at') or '-'}")
+        for repair in contract_payload.get("dirty_path_repairs") or []:
+            lines.append(
+                "- Repaired legacy dirty path: "
+                f"`{repair.get('field')}` `{repair.get('from')}` -> `{repair.get('to')}`"
+            )
         if contract_payload.get("branch"):
             lines.append(f"- Branch: `{contract_payload.get('branch')}`")
         if contract_payload.get("evidence_files"):

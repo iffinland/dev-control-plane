@@ -206,6 +206,14 @@ class DevelopmentPolicyTests(unittest.TestCase):
             "deny",
         )
         self.assertEqual(
+            permissions.evaluate(
+                "edit",
+                "/home/iffi/.local/state/dev-control-plane/jobs/example/evidence/TASK.md",
+                self.rules,
+            ),
+            "allow",
+        )
+        self.assertEqual(
             permissions.evaluate("edit", "/home/iffi/.opencode/bin/opencode", self.rules),
             "deny",
         )

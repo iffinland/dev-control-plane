@@ -290,6 +290,7 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
     ("edit", "/home/iffi/qortium-data/blockchain.data", "deny"),
     ("edit", "/home/iffi/qortium-data/wallet.json", "deny"),
     ("edit", "/home/iffi/.local/state/dev-control-plane/jobs/example/job.json", "deny"),
+    ("edit", "/home/iffi/.local/state/dev-control-plane/jobs/example/evidence/TASK.md", "allow"),
     ("edit", "/home/iffi/.opencode/bin/opencode", "deny"),
     ("edit", "/home/iffi/dev-workspace/projects/example/src/main.ts", "allow"),
     ("read", "/home/iffi/dev-workspace/projects/example/.env", "deny"),

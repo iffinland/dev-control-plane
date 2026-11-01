@@ -10,9 +10,11 @@
 ## Task-start contract
 
 Every new Workflow v3 job receives a mandatory completion contract
-automatically. Record this evidence in `TASK.md` (or the evidence files named at
-start); an explicit `--contract-file` may add constraints but cannot disable a
-mandatory check.
+automatically. The harness initializes a job-specific evidence file under the
+runtime state directory with observed metadata and `UNRECORDED` fields; fill
+those fields truthfully before finishing. Initialization is not completion. An
+explicit `--contract-file` may add constraints but cannot disable a mandatory
+check.
 
 - Skills discovered (paths, platform, maturity, freshness result):
 - Relevant documentation read (control-plane and project paths):

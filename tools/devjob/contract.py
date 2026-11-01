@@ -22,7 +22,9 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
+from . import evidence as evidence_module
 from . import project_policy
+from .store import job_dir
 
 PROTECTED_BRANCH_NAMES = set(project_policy.PROTECTED_BRANCHES)
 # There is deliberately no global fallback remote. A new job must resolve its
@@ -30,6 +32,10 @@ PROTECTED_BRANCH_NAMES = set(project_policy.PROTECTED_BRANCHES)
 DEFAULT_REMOTE = None
 DEFAULT_EVIDENCE_FILES = ("TASK.md",)
 MAX_EVIDENCE_BYTES = 1_500_000
+# New contracts use NUL-separated porcelain output. Older contracts lack this
+# marker and may contain the historical one-character path truncation.
+DIRTY_PATHS_PARSER_VERSION = "porcelain-v1-z"
+LEGACY_DIRTY_PARSER_REPAIR = "one-character-truncation-repaired"
 
 # These checks are not configurable for a new Workflow v3 job.  An explicit
 # contract file may add constraints (more evidence, narrower paths, extra
@@ -188,13 +194,36 @@ def ensure_mandatory(spec: dict) -> None:
 
 
 def parse_dirty_paths(status_text: str) -> list[str]:
-    """Return normalized paths from ``git status --porcelain`` output."""
+    """Return normalized paths from ``git status --porcelain`` output.
 
+    Accepts both NUL-separated (``-z``) and newline-separated records.  The
+    porcelain v1 format always starts each record with two status columns and a
+    space.  Older callers passed output that had been ``.strip()``-ed as a whole,
+    which removed the leading status space from the first line and caused its
+    first path character to be dropped (``skills/README.md`` became
+    ``kills/README.md``).  Handle that truncated first record explicitly rather
+    than applying a fixed ``line[3:]`` slice.
+    """
+
+    text = str(status_text or "")
+    if not text:
+        return []
+    records = text.split("\0") if "\0" in text else text.splitlines()
     paths: list[str] = []
-    for line in str(status_text or "").splitlines():
-        if len(line) < 4 or not line.strip():
+    for record in records:
+        record = record.rstrip("\r\n")
+        if not record.strip():
             continue
-        path = line[3:].strip()
+        if len(record) >= 3 and record[2] == " ":
+            # Normal porcelain v1: XY<space>PATH.
+            path = record[3:]
+        elif len(record) >= 2 and record[1] == " ":
+            # A whole-output strip removed the leading status column.
+            path = record[2:]
+        elif len(record) >= 3:
+            path = record[3:]
+        else:
+            path = record
         if " -> " in path:
             path = path.split(" -> ", 1)[1].strip()
         path = path.strip().strip('"')
@@ -252,6 +281,7 @@ def build_default_contract(
         "allowed_dirty_paths": dirty,
         "require": {key: True for key in MANDATORY_REQUIREMENTS},
         "authorization": auth,
+        "dirty_paths_parser": DIRTY_PATHS_PARSER_VERSION,
     }
     if snapshot is not None:
         contract["delivery_policy"] = snapshot
@@ -304,6 +334,7 @@ def prepare_contract(
     ensure_mandatory(spec)
     prepared = copy.deepcopy(spec)
     prepared.setdefault("version", 1)
+    prepared.setdefault("dirty_paths_parser", DIRTY_PATHS_PARSER_VERSION)
     if prepared.get("version") != 1:
         raise ContractError("unsupported completion contract version")
     if snapshot is not None:
@@ -389,10 +420,68 @@ def _exists_prefix(path: str, prefixes: Iterable[str]) -> bool:
     return any(path == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/") for prefix in prefixes)
 
 
-def _read_evidence(paths: Iterable[str], repo: Path, control_plane: Path) -> tuple[str, list[str], list[str]]:
+def _actual_dirty_paths(repo: Path) -> list[str] | None:
+    result = _run_git(repo, "status", "--porcelain=v1", "-z", "--no-renames")
+    if result.returncode != 0:
+        return None
+    return parse_dirty_paths(result.stdout or "")
+
+
+def repair_legacy_dirty_paths(spec: dict, repo: Path) -> tuple[dict, list[dict]]:
+    """Repair a known pre-fix path truncation without widening the contract.
+
+    Jobs created before the NUL-safe parser may have recorded the first dirty
+    path with its first character missing (``skills/README.md`` became
+    ``kills/README.md``).  Only an exact one-character truncation of exactly one
+    currently dirty path is repaired.  No new path is allowed and no path is
+    dropped.
+    """
+
+    if spec.get("dirty_paths_parser"):
+        return spec, []
+    actual = _actual_dirty_paths(repo)
+    if actual is None:
+        return spec, []
+    actual_set = set(actual)
+    repairs: list[dict] = []
+    repaired = copy.deepcopy(spec)
+    for key in ("allowed_dirty_paths", "forbidden_paths"):
+        items = [str(item) for item in repaired.get(key) or []]
+        if not items:
+            continue
+        fixed: list[str] = []
+        for item in items:
+            if item in actual_set or any(_exists_prefix(path, [item]) for path in actual):
+                fixed.append(item)
+                continue
+            candidates = [path for path in actual if len(path) > 1 and path[1:] == item]
+            if len(candidates) == 1:
+                fixed.append(candidates[0])
+                repairs.append({"field": key, "from": item, "to": candidates[0]})
+            else:
+                fixed.append(item)
+        if fixed != items:
+            repaired[key] = list(dict.fromkeys(fixed))
+    if repairs:
+        repaired["dirty_paths_parser"] = LEGACY_DIRTY_PARSER_REPAIR
+    return (repaired, repairs) if repairs else (spec, [])
+
+
+def _read_evidence(
+    paths: Iterable[str],
+    repo: Path,
+    control_plane: Path,
+    extra_roots: Iterable[Path] | None = None,
+) -> tuple[str, list[str], list[str]]:
     chunks: list[str] = []
     found: list[str] = []
     missing: list[str] = []
+    roots = [repo.resolve(), control_plane.resolve()]
+    for root in extra_roots or []:
+        try:
+            roots.append(Path(root).resolve())
+        except OSError:
+            continue
     for raw in paths:
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
@@ -401,18 +490,14 @@ def _read_evidence(paths: Iterable[str], repo: Path, control_plane: Path) -> tup
             candidate = local if local.exists() else fallback
         try:
             resolved = candidate.resolve()
-            resolved.relative_to(repo.resolve())
-        except (OSError, ValueError):
-            # Absolute paths under the control plane or the workspace are
-            # allowed; arbitrary absolute paths are not trusted as evidence.
-            try:
-                resolved = candidate.resolve()
-                if not str(resolved).startswith(str(control_plane.resolve())):
-                    missing.append(raw)
-                    continue
-            except OSError:
-                missing.append(raw)
-                continue
+        except OSError:
+            missing.append(raw)
+            continue
+        if not any(resolved == root or str(resolved).startswith(str(root) + "/") for root in roots):
+            # Absolute paths outside the repository, control plane and the job's
+            # own evidence root are not trusted as evidence.
+            missing.append(raw)
+            continue
         if not resolved.is_file():
             missing.append(raw)
             continue
@@ -425,9 +510,60 @@ def _read_evidence(paths: Iterable[str], repo: Path, control_plane: Path) -> tup
     return "\n".join(chunks).lower(), found, missing
 
 
-def _check_evidence(text: str, found: list[str], missing: list[str], spec: dict) -> list[dict]:
+PLACEHOLDER_RE = re.compile(
+    r"\b(unrecorded|not recorded|todo|tbd|fixme|pending)\b", re.IGNORECASE
+)
+
+
+def _evidence_block(text: str) -> dict[str, str] | None:
+    """Parse the structured evidence block, if present.
+
+    ``text`` is already lower-cased by :func:`_read_evidence`.
+    """
+
+    begin = evidence_module.EVIDENCE_BEGIN.lower()
+    end = evidence_module.EVIDENCE_END.lower()
+    start = text.find(begin)
+    if start < 0:
+        return None
+    finish = text.find(end, start + len(begin))
+    if finish < 0:
+        return {}
+    body = text[start + len(begin) : finish]
+    entries: dict[str, str] = {}
+    for line in body.splitlines():
+        match = re.match(r"\s*-\s*([a-z_]+)\s*:\s*(.*?)\s*$", line)
+        if match:
+            entries[match.group(1)] = match.group(2)
+    return entries
+
+
+def _evidence_value_problem(field: str, value: str) -> str | None:
+    value = value.strip()
+    if not value:
+        return "is empty"
+    if PLACEHOLDER_RE.search(value):
+        return "is still a placeholder"
+    if len(value) < 8:
+        return "is too short to be useful evidence"
+    if value == field:
+        return "only repeats the field name"
+    _needle, markers = EVIDENCE_MARKERS[field]
+    if not any(marker in value for marker in markers):
+        return "does not name the concrete result or detail the field requires"
+    return None
+
+
+def _check_evidence(
+    text: str,
+    found: list[str],
+    missing: list[str],
+    spec: dict,
+    job: dict | None = None,
+) -> list[dict]:
     checks: list[dict] = []
     require = spec.get("require") or {}
+    job = job or {}
     if not found:
         for check_id in REQUIRED_EVIDENCE:
             if require.get(check_id, True):
@@ -451,6 +587,113 @@ def _check_evidence(text: str, found: list[str], missing: list[str], spec: dict)
                 "detail": "missing evidence file(s): " + ", ".join(missing),
             }
         )
+
+    block = _evidence_block(text)
+    initialized = bool(job.get("evidence_initialized") or job.get("evidence_file"))
+    if block is not None:
+        expected_job = str(job.get("id") or "").lower()
+        actual_job = (block.get("job_id") or "").strip()
+        identity_ok = bool(expected_job) and actual_job == expected_job
+        checks.append(
+            {
+                "id": "evidence_identity",
+                "label": "job-specific evidence",
+                "status": "verified" if identity_ok else "failed",
+                "severity": "info" if identity_ok else "failed",
+                "detail": (
+                    f"evidence names job {actual_job or '(missing)'}"
+                    if identity_ok
+                    else (
+                        f"evidence names job {actual_job or '(missing)'}, "
+                        f"expected {expected_job or '(missing job id)'}"
+                    )
+                ),
+            }
+        )
+        for check_id in REQUIRED_EVIDENCE:
+            if not require.get(check_id, True):
+                checks.append(
+                    {
+                        "id": check_id,
+                        "label": check_id.replace("_", " "),
+                        "status": "skipped",
+                        "severity": "info",
+                        "detail": "not required by contract",
+                    }
+                )
+                continue
+            value = block.get(check_id)
+            if not identity_ok:
+                checks.append(
+                    {
+                        "id": check_id,
+                        "label": check_id.replace("_", " "),
+                        "status": "failed",
+                        "severity": "failed",
+                        "detail": "structured evidence does not belong to this job",
+                    }
+                )
+                continue
+            if value is None:
+                checks.append(
+                    {
+                        "id": check_id,
+                        "label": check_id.replace("_", " "),
+                        "status": "failed",
+                        "severity": "failed",
+                        "detail": "structured evidence does not contain " + check_id,
+                    }
+                )
+                continue
+            problem = _evidence_value_problem(check_id, value)
+            if problem:
+                checks.append(
+                    {
+                        "id": check_id,
+                        "label": check_id.replace("_", " "),
+                        "status": "failed",
+                        "severity": "failed",
+                        "detail": f"{check_id} {problem}",
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "id": check_id,
+                        "label": check_id.replace("_", " "),
+                        "status": "verified",
+                        "severity": "info",
+                        "detail": "recorded in " + ", ".join(found),
+                    }
+                )
+        return checks
+
+    if initialized:
+        # A job whose evidence was initialized by the harness may not silently
+        # fall back to free-text marker matching by deleting the block.
+        checks.append(
+            {
+                "id": "evidence_identity",
+                "label": "job-specific evidence",
+                "status": "failed",
+                "severity": "failed",
+                "detail": "initialized evidence block is missing",
+            }
+        )
+        for check_id in REQUIRED_EVIDENCE:
+            if not require.get(check_id, True):
+                continue
+            checks.append(
+                {
+                    "id": check_id,
+                    "label": check_id.replace("_", " "),
+                    "status": "failed",
+                    "severity": "failed",
+                    "detail": "initialized evidence block is missing",
+                }
+            )
+        return checks
+
     for check_id in REQUIRED_EVIDENCE:
         if not require.get(check_id, True):
             checks.append(
@@ -825,16 +1068,12 @@ def _commit_checks(repo: Path, spec: dict) -> list[dict]:
 
 
 def _worktree_check(repo: Path, spec: dict) -> dict:
-    status = _git_text(repo, "status", "--porcelain")
+    status_paths = _actual_dirty_paths(repo)
+    if status_paths is None:
+        status_paths = parse_dirty_paths(_git_text(repo, "status", "--porcelain"))
     allowed_dirty = [str(item) for item in spec.get("allowed_dirty_paths") or []]
     unexpected: list[str] = []
-    for line in status.splitlines():
-        if not line.strip():
-            continue
-        path = line[3:].strip()
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1].strip()
-        path = path.strip('"')
+    for path in status_paths:
         if allowed_dirty and _exists_prefix(path, allowed_dirty):
             continue
         unexpected.append(path)
@@ -968,11 +1207,22 @@ def evaluate(job: dict, spec: dict | None, repo: Path | None = None) -> dict:
     validate_spec(spec)
     repo_path = Path(repo or job.get("repo") or ".").expanduser().resolve()
     control_plane = Path(__file__).resolve().parents[2]
+    spec, dirty_repairs = repair_legacy_dirty_paths(spec, repo_path)
+    extra_roots: list[Path] = []
+    if job.get("evidence_file"):
+        extra_roots.append(Path(str(job["evidence_file"])).expanduser().resolve().parent)
+    if job.get("id"):
+        try:
+            extra_roots.append(job_dir(str(job["id"])).resolve())
+        except (OSError, ValueError):
+            pass
     evidence = spec.get("evidence_files") or spec.get("evidence_file") or []
     if isinstance(evidence, str):
         evidence = [evidence]
-    text, found, missing = _read_evidence(evidence, repo_path, control_plane)
-    checks = _check_evidence(text, found, missing, spec)
+    text, found, missing = _read_evidence(
+        evidence, repo_path, control_plane, extra_roots=extra_roots
+    )
+    checks = _check_evidence(text, found, missing, spec, job=job)
     branch_checks, branch = _branch_checks(repo_path, spec)
     checks.extend(branch_checks)
     checks.extend(_delivery_checks(repo_path, spec, branch))
@@ -1012,6 +1262,7 @@ def evaluate(job: dict, spec: dict | None, repo: Path | None = None) -> dict:
         "missing_evidence_files": missing,
         "failed_checks": failed,
         "pending_checks": pending,
+        "dirty_path_repairs": dirty_repairs,
         "checks": checks,
         "evaluated_at": None,
     }

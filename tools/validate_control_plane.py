@@ -88,6 +88,8 @@ REQUIRED = (
     "docs/operations/QORTIUM-DEV-MONITOR.md",
     "docs/operations/QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md",
     "docs/migration/2026-10-31-workflow-v3.md",
+    "docs/migration/2026-11-01-legacy-consolidation.md",
+    "docs/migration/2026-11-01-legacy-consolidation-implementation.md",
     "adapters/opencode/agents/opencode-unattended.md",
     "adapters/opencode/agents/opencode-development.md",
 )

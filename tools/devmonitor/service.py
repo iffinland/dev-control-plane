@@ -12,6 +12,7 @@ import fcntl
 import os
 import signal
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -295,9 +296,320 @@ def monitor_running(state_dir: str | Path) -> bool:
         handle.close()
 
 
-def check_monitor(config: MonitorConfig, api: TelegramApi, registry, documents) -> tuple[bool, list[str]]:
-    """Validate the monitor without starting the polling loop."""
+@dataclass(frozen=True)
+class MonitorInstance:
+    """Observed state of the monitor's single-instance lock.
 
+    ``state`` is one of ``stopped``, ``stale``, ``running``, ``competing`` or
+    ``unknown``. Only ``running`` proves a live, verified monitor owns the lock;
+    only ``stopped`` and ``stale`` are ready for a new monitor to start.
+    """
+
+    state: str
+    lock_path: Path
+    lock_present: bool
+    pid: int | None = None
+    started: int | None = None
+    holder_pid: int | None = None
+    competing_pids: tuple[int, ...] = ()
+    detail: str = ""
+
+    @property
+    def running(self) -> bool:
+        return self.state == "running"
+
+    @property
+    def healthy(self) -> bool:
+        return self.state == "running"
+
+    @property
+    def start_ready(self) -> bool:
+        return self.state in {"stopped", "stale"}
+
+
+def _read_lock_metadata(lock_path: Path) -> tuple[int | None, int | None]:
+    try:
+        text = lock_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    pid: int | None = None
+    started: int | None = None
+    for token in text.split():
+        key, separator, value = token.partition("=")
+        if not separator:
+            continue
+        try:
+            number = int(value)
+        except ValueError:
+            continue
+        if number <= 0:
+            continue
+        if key == "pid":
+            pid = number
+        elif key == "started":
+            started = number
+    return pid, started
+
+
+def _process_state(pid: int) -> str | None:
+    """Return the Linux process state letter, or None when it is not running."""
+
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    close = raw.rfind(")")
+    if close < 0:
+        return None
+    fields = raw[close + 1 :].split()
+    return fields[0] if fields else None
+
+
+def _process_cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [
+        part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+    ]
+
+
+def _process_environ(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    result: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        key, separator, value = item.partition(b"=")
+        if not separator:
+            continue
+        result[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return result
+
+
+def _is_monitor_command(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    executable = any(Path(item).name == "dev_monitor.py" for item in argv)
+    return executable and "run" in argv[1:]
+
+
+def _declared_state_dir(argv: list[str], environ: dict[str, str]) -> Path | None:
+    for index, item in enumerate(argv):
+        if item == "--state-dir" and index + 1 < len(argv):
+            return Path(argv[index + 1]).expanduser().resolve(strict=False)
+        if item.startswith("--state-dir="):
+            return Path(item.split("=", 1)[1]).expanduser().resolve(strict=False)
+    value = environ.get("DEV_MONITOR_STATE")
+    if value:
+        return Path(value).expanduser().resolve(strict=False)
+    control_state = environ.get("DEV_CONTROL_PLANE_STATE")
+    if control_state:
+        return (Path(control_state).expanduser() / "monitor").resolve(strict=False)
+    xdg_state = environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return (
+            Path(xdg_state).expanduser() / "dev-control-plane" / "monitor"
+        ).resolve(strict=False)
+    return (Path.home() / ".local/state/dev-control-plane/monitor").resolve(
+        strict=False
+    )
+
+
+def _lock_holder_pids(lock_path: Path) -> tuple[int, ...]:
+    """Return the PIDs that actually hold the lock according to /proc/locks."""
+
+    try:
+        info = lock_path.stat()
+        lines = Path("/proc/locks").read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        return ()
+    holders: set[int] = set()
+    for line in lines:
+        fields = line.split()
+        # A leading ``->`` marks a waiting lock request, not a granted holder.
+        if "->" in fields:
+            continue
+        for index, token in enumerate(fields):
+            pieces = token.split(":")
+            if len(pieces) != 3:
+                continue
+            try:
+                major = int(pieces[0], 16)
+                minor = int(pieces[1], 16)
+                inode = int(pieces[2], 10)
+                pid = int(fields[index - 1])
+            except (IndexError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+            if inode != info.st_ino:
+                continue
+            if major != os.major(info.st_dev) or minor != os.minor(info.st_dev):
+                continue
+            holders.add(pid)
+    return tuple(sorted(holders))
+
+
+def _monitor_pids_for_state_dir(directory: Path) -> tuple[int, ...]:
+    target = directory.resolve(strict=False)
+    matches: set[int] = set()
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return ()
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        state = _process_state(pid)
+        if state is None or state in {"Z", "X"}:
+            continue
+        argv = _process_cmdline(pid)
+        if not _is_monitor_command(argv):
+            continue
+        declared = _declared_state_dir(argv, _process_environ(pid))
+        if declared == target:
+            matches.add(pid)
+    return tuple(sorted(matches))
+
+
+def inspect_monitor_instance(state_dir: str | Path) -> MonitorInstance:
+    """Inspect the single-instance lock without signalling any process.
+
+    The result separates "can a new monitor start?" from "is the already running
+    monitor healthy?". A missing lock is ``stopped``; an unheld lock file is
+    ``stale``; a lock held by a verified live ``dev_monitor.py run`` process is
+    ``running``; a lock held by anything that cannot be verified is ``unknown``;
+    and more than one monitor process targeting the same state directory is
+    ``competing``. Unknown and competing states fail closed.
+    """
+
+    directory = ensure_state_dir(state_dir)
+    lock_path = directory / "monitor.lock"
+    if not lock_path.exists():
+        return MonitorInstance("stopped", lock_path, False)
+    claimed_pid, claimed_started = _read_lock_metadata(lock_path)
+    try:
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError as exc:
+        return MonitorInstance(
+            "unknown",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            detail=f"lock file cannot be inspected: {exc.__class__.__name__}",
+        )
+    held = False
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held = True
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+    if not held:
+        return MonitorInstance(
+            "stale",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            detail="lock file is not held by a live process",
+        )
+    holders = _lock_holder_pids(lock_path)
+    if len(holders) != 1:
+        if not holders:
+            detail = "lock is held but its owner could not be verified"
+        else:
+            detail = "lock has multiple verified holders: pids=" + ",".join(
+                str(pid) for pid in holders
+            )
+        return MonitorInstance(
+            "unknown",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            competing_pids=holders,
+            detail=detail,
+        )
+    holder = holders[0]
+    process_state = _process_state(holder)
+    if process_state is None or process_state in {"Z", "X"}:
+        return MonitorInstance(
+            "unknown",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            holder_pid=holder,
+            detail="lock owner is no longer a live process",
+        )
+    if not _is_monitor_command(_process_cmdline(holder)):
+        return MonitorInstance(
+            "unknown",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            holder_pid=holder,
+            detail="lock owner is not a Qortium Dev Monitor run process",
+        )
+    competing = tuple(
+        pid for pid in _monitor_pids_for_state_dir(directory) if pid != holder
+    )
+    if competing:
+        return MonitorInstance(
+            "competing",
+            lock_path,
+            True,
+            claimed_pid,
+            claimed_started,
+            holder_pid=holder,
+            competing_pids=competing,
+            detail="multiple monitor run processes target this state directory",
+        )
+    detail = ""
+    if claimed_pid is not None and claimed_pid != holder:
+        detail = "lock metadata pid differs from the verified lock owner"
+    return MonitorInstance(
+        "running",
+        lock_path,
+        True,
+        claimed_pid,
+        claimed_started,
+        holder_pid=holder,
+        detail=detail,
+    )
+
+
+def check_monitor(
+    config: MonitorConfig,
+    api: TelegramApi,
+    registry,
+    documents,
+    *,
+    expect: str = "auto",
+    instance: MonitorInstance | None = None,
+) -> tuple[bool, list[str]]:
+    """Validate the monitor without starting the polling loop.
+
+    ``expect="auto"`` reports both health and start readiness and fails only on
+    unverifiable/competing ownership or a real check failure. ``expect="start"``
+    additionally requires that a new monitor could acquire the lock, while
+    ``expect="running"`` additionally requires a verified healthy instance.
+    """
+
+    if expect not in {"auto", "start", "running"}:
+        raise ValueError("expect must be auto, start or running")
     lines: list[str] = []
     ok = True
     directory = ensure_state_dir(config.state_dir)
@@ -312,11 +624,57 @@ def check_monitor(config: MonitorConfig, api: TelegramApi, registry, documents) 
     lines.append(f"authorized users: {len(config.authorized_user_ids)}")
     lines.append(f"allowed chats: {len(config.allowed_chat_ids)}")
     lines.append(f"monitor state: {directory}")
-    if monitor_running(directory):
-        lines.append("lock: FAILED - another monitor instance is running")
+    observed = instance or inspect_monitor_instance(directory)
+    if observed.state == "stopped":
+        lines.append("lock: free")
+        lines.append("preflight: ready to start a new monitor")
+    elif observed.state == "stale":
+        metadata = ""
+        if observed.pid is not None:
+            metadata = f" (previous pid={observed.pid}"
+            if observed.started is not None:
+                metadata += f", started={observed.started}"
+            metadata += ")"
+        lines.append(f"lock: stale - lock file is not held by a live process{metadata}")
+        lines.append(
+            "preflight: ready to start a new monitor; the next start replaces the stale lock file"
+        )
+    elif observed.state == "running":
+        lines.append(
+            f"lock: ok - held by live monitor pid={observed.holder_pid}"
+            + (f", started={observed.started}" if observed.started is not None else "")
+        )
+        if observed.detail:
+            lines.append(f"lock warning: {observed.detail}")
+        lines.append(
+            "preflight: NOT ready - a live monitor owns the lock; a second instance is refused"
+        )
+    elif observed.state == "competing":
+        pids = ",".join(str(pid) for pid in observed.competing_pids) or "unknown"
+        lines.append(
+            "lock: FAILED - competing monitor processes target this state directory; "+
+            f"owner pid={observed.holder_pid}, competing pids={pids}"
+        )
+        lines.append("preflight: NOT ready - competing instances must be resolved by the owner")
         ok = False
     else:
-        lines.append("lock: free")
+        lines.append(f"lock: FAILED - {observed.detail or 'lock owner is unknown'}")
+        lines.append("preflight: NOT ready - lock ownership cannot be verified")
+        ok = False
+    if expect == "running":
+        if not observed.healthy:
+            lines.append("expectation: FAILED - no verified healthy monitor instance is running")
+            ok = False
+        else:
+            lines.append("expectation: healthy running monitor verified")
+    elif expect == "start":
+        if not observed.start_ready:
+            lines.append(
+                "expectation: FAILED - preflight for starting a new monitor is not ready"
+            )
+            ok = False
+        else:
+            lines.append("expectation: preflight for a new monitor is ready")
 
     try:
         me = api.get_me()

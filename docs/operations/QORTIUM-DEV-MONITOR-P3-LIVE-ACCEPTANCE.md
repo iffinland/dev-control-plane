@@ -316,6 +316,26 @@ no-Qortium-change checks.
 The harness does not replace the P4 checklist and does not authorize a live
 production job.
 
+### 11.1 Verified synthetic E1-E7 results reused by P4
+
+The repository has verified automated E1-E7 synthetic coverage in
+[`tools/test_p3_live_acceptance.py`](../../tools/test_p3_live_acceptance.py):
+
+- E1-E6 queue/cancel through the real router with a scripted transport
+  (`test_live_flow_queue_and_cancel_produces_verifiable_evidence`);
+- the explicit E7 two-cancellation lifecycle with exactly-once attempt-#2
+  delivery (`test_e7_waits_for_resume_then_stops_only_after_second_cancel`);
+- fail-closed rejection of incomplete E7, duplicate delivery, false success,
+  unrecorded evidence, changed sources and non-synthetic jobs;
+- the default E1-E6 run still stops after the first cancellation.
+
+The P4 acceptance matrix cites these results as **S — synthetic P3 E1-E7**. They
+prove the synthetic queue/cancel/resume contract only. They do **not** prove
+real production-job delivery, real OpenCode execution, real Telegram journal
+capture or every P4 row. The real-bot E1-E7 run described above remains
+unexecuted and owner-only; no live `telegram-evidence.json` or journal is stored
+in this repository.
+
 ## 12. Troubleshooting
 
 | Symptom | Action |

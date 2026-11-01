@@ -168,7 +168,9 @@ def command_check(args: argparse.Namespace) -> int:
         except RegistryError:
             projects = []
         documents = DocumentLibrary.from_sources(config.docs_roots, projects)
-        ok, lines = check_monitor(config, api, registry, documents)
+        ok, lines = check_monitor(
+            config, api, registry, documents, expect=args.expect
+        )
     finally:
         state.close()
     print("\n".join(lines))
@@ -250,7 +252,20 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run the foreground long-polling monitor")
     run.set_defaults(func=command_run)
 
-    check = subparsers.add_parser("check", help="validate configuration without polling")
+    check = subparsers.add_parser(
+        "check",
+        help="validate configuration and the running-instance lock without polling",
+    )
+    check.add_argument(
+        "--expect",
+        choices=("auto", "start", "running"),
+        default="auto",
+        help=(
+            "auto reports health and start readiness; start fails when a live "
+            "monitor holds the lock; running fails unless a verified healthy "
+            "instance owns it (default: auto)"
+        ),
+    )
     check.set_defaults(func=command_check)
 
     status = subparsers.add_parser("status", help="show monitor state")

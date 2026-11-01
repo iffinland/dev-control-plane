@@ -467,6 +467,13 @@ Phases 0-2. Phase 3's additive cancel command is a separate authorized change.
   unit is an explicit owner action.
 - The process acquires a single-instance lock under the monitor state directory.
   If the lock is held, it refuses to start rather than creating a second poller.
+- Read-only inspection separates running health from start preflight. A lock held
+  by a verified live `dev_monitor.py run` process is healthy and is *not* a
+  check failure; the same state is still `preflight: NOT ready` because a second
+  instance must be refused. Stale unheld lock files are reported and replaced by
+  the next start. A lock held by an unverified owner, or a state directory with
+  competing monitor processes, fails closed. Inspection reads the lock,
+  `/proc/<pid>` and `/proc/locks`; it never signals a process.
 - It calls `getUpdates` with a long-poll timeout (default 20-30 seconds). It does
   not call `setWebhook`.
 - It processes updates sequentially, persists the next offset only after the

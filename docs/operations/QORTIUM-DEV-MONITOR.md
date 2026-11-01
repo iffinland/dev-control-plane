@@ -222,13 +222,30 @@ run both at the same time; the single-instance lock refuses the second process.
 Run the read-only check first:
 
 ```bash
-python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py check
+python3 /home/iffi/dev-workspace/control-plane/tools/dev_monitor.py check --expect start
 ```
 
 This validates config permissions, numeric allowlists, control configuration,
 `getMe`, the webhook state, the project registry, document roots and monitor
 state permissions. It does not start polling and it never clears a webhook
 silently.
+
+`check` reports **running-instance health** and **start preflight** separately:
+
+| Invocation | Passes when | Use for |
+| --- | --- | --- |
+| `check` (default `--expect auto`) | No unverifiable lock owner; a stopped or healthy running instance is reported truthfully | Routine inspection and diagnostics |
+| `check --expect running` | A verified live `dev_monitor.py run` process owns the lock and no competing monitor targets the same state directory | A strict running-service health probe |
+| `check --expect start` | The lock is free or only a stale, unheld lock file remains | Pre-start readiness; it fails while a live instance holds the lock |
+
+A healthy running production monitor is therefore reported as `lock: ok` and
+`preflight: NOT ready - a live monitor owns the lock`; it is not misreported as
+broken. The single-instance refusal is preserved: `run` still exits `75` when a
+live process holds the lock. A lock file that is not held is reported as `stale`
+and the next start safely replaces it. A lock held by a process that cannot be
+verified as a live `dev_monitor.py run` owner, or by more than one competing
+monitor process for the same state directory, fails closed in every mode. No
+process is signalled by the inspection; it reads the lock and `/proc` only.
 
 ### 5.2 Switch to control (only when intended)
 
@@ -534,6 +551,8 @@ Diagnostics:
 python3 tools/dev_monitor.py status
 python3 tools/dev_monitor.py status --json
 python3 tools/dev_monitor.py check
+python3 tools/dev_monitor.py check --expect running
+python3 tools/dev_monitor.py check --expect start
 ```
 
 The audit table stores the timestamp, numeric user/chat/update IDs, action, job

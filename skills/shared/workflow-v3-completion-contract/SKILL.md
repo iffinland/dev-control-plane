@@ -160,6 +160,26 @@ pattern suggests.
 - Owner changes outside the declared scope remain uncommitted and preserved.
 - Full tests and the security validator pass before handoff.
 
+## Dev Monitor health versus start preflight
+
+When the Workflow v3 job was started by the Telegram Dev Monitor, do not treat a
+healthy running monitor as a broken test fixture. `dev_monitor.py check`
+separates the two concerns:
+
+- default/`--expect auto` reports the running instance's health and start
+  readiness; a verified live `dev_monitor.py run` lock owner is `lock: ok` and
+  does not fail the check;
+- `--expect running` is the strict health probe and fails when no verified
+  instance is running;
+- `--expect start` is the strict preflight probe and must fail while a live
+  instance holds the lock because a second instance is refused;
+- stale unheld lock files are reported and replaced by a start; unknown lock
+  owners and competing monitor processes for one state directory fail closed.
+
+This is read-only inspection of the lock and `/proc`; it never signals the
+monitor and does not replace real-Telegram acceptance evidence. Do not relabel
+synthetic or automated monitor tests as real production-job delivery.
+
 ## Known failure modes
 
 - Treating OpenCode exit `0`, a green acceptance command or a push command exit
@@ -185,6 +205,9 @@ pattern suggests.
 - Granting automatic push to `main`, `feature/*` or another non-`agent/*` branch.
 - Letting a merge commit or out-of-scope path pass silently.
 - Printing a matched secret value in a failure detail.
+- Treating a healthy running Dev Monitor lock as a failed preflight, or using the
+  default `check` when a strict `--expect start` or `--expect running` outcome is
+  required. The lock inspection is not real-Telegram or production-job evidence.
 
 ## Non-goals
 

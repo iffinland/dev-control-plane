@@ -93,7 +93,9 @@ def help_text(config) -> str:
             [
                 "/start_job - start a registered-project job wizard",
                 "/resume [job] - open the resume wizard",
-                "/cancel - cancel the active wizard (not a running job)",
+                "/cancel [job] - cancel the active wizard, or cancel a RUNNING job",
+                "/queue [job] - queue an instruction for the next resume",
+                "/messages [job] - show queued and delivered instructions",
             ]
         )
         if config.control_passphrase_hash:
@@ -150,7 +152,7 @@ def jobs_list_text(jobs: Sequence[dict], *, page: int, total_pages: int) -> str:
     return "\n".join(lines)
 
 
-def job_status_text(payload: dict) -> str:
+def job_status_text(payload: dict, *, queued_instructions: int = 0) -> str:
     state = str(payload.get("state") or "UNKNOWN")
     lines = [
         f"Job {_short_id(payload.get('id'), 20)}",
@@ -169,6 +171,7 @@ def job_status_text(payload: dict) -> str:
         "PIDs are evidence only; the monitor never signals processes.",
         f"Session: {_short_id(payload.get('session_id'), 16)}",
         f"Resumes: {payload.get('resume_count') or 0}",
+        f"Queued owner instructions: {int(queued_instructions)}",
     ]
     pending = payload.get("pending_criteria") or []
     if pending:
@@ -384,7 +387,20 @@ def resume_prompt_text() -> str:
     )
 
 
-def resume_preview_text(job: dict, data: dict) -> str:
+def _queued_lines(messages) -> list[str]:
+    messages = list(messages or [])
+    if not messages:
+        return ["Queued instructions: none"]
+    lines = [f"Queued instructions for the next resume: {len(messages)}"]
+    for item in messages[:5]:
+        body = " ".join(str(item.get("body") or "").split())
+        lines.append(f"  - {body[:180]}")
+    if len(messages) > 5:
+        lines.append(f"  ... and {len(messages) - 5} more")
+    return lines
+
+
+def resume_preview_text(job: dict, data: dict, pending: object = ()) -> str:
     flags = []
     if data.get("new_session"):
         flags.append("new session (session continuity abandoned)")
@@ -406,12 +422,16 @@ def resume_preview_text(job: dict, data: dict) -> str:
         "Resume instruction:",
         prompt or "(Workflow v3 default)",
         "",
+        *_queued_lines(pending),
+        "",
+        "Queued instructions are delivered on this resume, not injected live.",
+        "A job without a known OpenCode session requires the explicit New session toggle.",
         "Confirm opens a final one-time confirmation. No attempt starts before that.",
     ]
     return "\n".join(lines)
 
 
-def resume_confirmation_text(job: dict, request) -> str:
+def resume_confirmation_text(job: dict, request, pending_count: int = 0) -> str:
     lines = [
         "Confirm resume",
         "",
@@ -421,11 +441,86 @@ def resume_confirmation_text(job: dict, request) -> str:
         f"New session: {'yes' if request.new_session else 'no'}",
         f"Force rerun: {'yes' if request.force else 'no'}",
         f"Timeout: {format_seconds(request.timeout_seconds) if request.timeout_seconds else '(existing)'}",
+        f"Queued instructions included: {int(pending_count)}",
         f"Instruction: {request.prompt or '(Workflow v3 default)'}",
         "",
-        "Press Confirm to invoke `dev resume` for this exact job.",
+        "Press Confirm to invoke `dev resume` for this exact job. Queued instructions "
+        "are marked delivered only after Workflow v3 accepts the resume.",
     ]
     return "\n".join(lines)
+
+
+def queue_prompt_text(job: dict) -> str:
+    return (
+        "Queue an owner instruction\n\n"
+        f"Job: {_short_id(job.get('id'), 20)}\n"
+        f"State: {job.get('state') or 'UNKNOWN'}\n\n"
+        "Send the instruction (text only, maximum configured length). It is stored "
+        "durably and delivered in the resume prompt at the next resume. It is never "
+        "injected into a running OpenCode turn and never executed as a shell command."
+    )
+
+
+def queue_confirmation_text(job: dict, pending_count: int) -> str:
+    return (
+        "Instruction queued\n\n"
+        f"Job: {_short_id(job.get('id'), 20)}\n"
+        f"Queued for the next resume: {pending_count}\n\n"
+        "While the job is RUNNING this is not delivered live. Open Resume after the "
+        "current attempt ends to deliver queued instructions exactly once."
+    )
+
+
+def owner_messages_text(job_id: str, messages) -> str:
+    messages = list(messages or [])
+    lines = [f"Owner instructions for {_short_id(job_id, 20)}", ""]
+    if not messages:
+        lines.append("None queued or delivered.")
+        return "\n".join(lines)
+    for item in messages[:20]:
+        state = str(item.get("delivery_state") or "queued")
+        if state == "delivered":
+            suffix = f"delivered at attempt #{item.get('delivered_attempt') or '-'}"
+        else:
+            suffix = "queued for the next resume"
+        body = " ".join(str(item.get("body") or "").split())
+        lines.append(f"- [{state}] {body[:300]}")
+        lines.append(f"  {suffix}")
+    if len(messages) > 20:
+        lines.append(f"... and {len(messages) - 20} older entries")
+    return "\n".join(lines)
+
+
+def cancel_preview_text(job: dict) -> str:
+    return (
+        "Cancel this running job?\n\n"
+        f"Job: {job.get('id')}\n"
+        f"Title: {job.get('title') or '(untitled)'}\n"
+        f"State: {job.get('state') or 'UNKNOWN'}\n"
+        f"Attempt: #{job.get('attempt_number') or 0}\n"
+        f"Worker PID: {job.get('worker_pid') or '-'}\n"
+        f"Guard PID: {job.get('guard_pid') or '-'}\n\n"
+        "Workflow v3 re-verifies the guard process identity and sends SIGTERM to "
+        "that exact guard only. The guard stops only the child process group it "
+        "created. The working tree and OpenCode session are preserved, and the job "
+        "remains resumable. No name-based kill is used."
+    )
+
+
+def cancel_result_text(payload: dict) -> str:
+    job = payload.get("job") or {}
+    status = str(payload.get("cancel_status") or "unknown")
+    return (
+        f"Cancel result: {status}\n"
+        f"Job: {job.get('id') or '-'}\n"
+        f"State: {job.get('state') or 'UNKNOWN'}\n"
+        f"Detail: {payload.get('detail') or '-'}\n\n"
+        + (
+            "The working tree and session history are preserved. Resume when ready."
+            if status in {"cancelled", "pending"}
+            else "No cancellation signal was escalated."
+        )
+    )
 
 
 def job_started_text(job: dict, project_id: str | None = None) -> str:

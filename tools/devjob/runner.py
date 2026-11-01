@@ -14,6 +14,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ from .store import (  # noqa: E402
     load_job,
     parse_timestamp,
     pid_alive,
+    process_cmdline,
     read_json,
     save_job,
     state_root,
@@ -58,9 +60,12 @@ WORKER_LOG = "worker.log"
 RUN_LOG = "run.log"
 REPORT = "report.md"
 COMPLETION = "completion.json"
+CANCEL_REQUEST = "cancel.requested.json"
 DEFAULT_SESSION_POLL_SECONDS = 5.0
 DEFAULT_SESSION_IDLE_SECONDS = 20.0
 DEFAULT_SESSION_CONFIRM_SECONDS = 5.0
+DEFAULT_CANCEL_GRACE_SECONDS = 20.0
+CANCEL_SKIP_DETAIL = "verification skipped because the owner cancelled the run"
 
 
 class JobError(RuntimeError):
@@ -480,7 +485,12 @@ def _run_criterion(criterion: dict, job: dict) -> dict:
     }
 
 
-def verify_criteria(job: dict, skip_commands: bool = False) -> dict:
+def verify_criteria(
+    job: dict,
+    skip_commands: bool = False,
+    *,
+    skip_detail: str = "verification skipped because the run timed out or was refused",
+) -> dict:
     verification: dict = dict(job.get("verification") or {})
     for criterion in job.get("acceptance_criteria") or []:
         if criterion.get("kind") == "manual":
@@ -493,7 +503,7 @@ def verify_criteria(job: dict, skip_commands: bool = False) -> dict:
                 "command": criterion.get("command"),
                 "verified": False,
                 "skipped": True,
-                "detail": "verification skipped because the run timed out or was refused",
+                "detail": skip_detail,
                 "at": utc_now(),
             }
             continue
@@ -568,10 +578,16 @@ def _finish(
     verification: dict,
     session_id: str | None,
     reason_override: str | None = None,
+    cancelled: bool = False,
 ) -> str:
-    state, blocker = evaluate_state(job, guard_exit_code, issues, verification)
-    if reason_override:
-        blocker = reason_override
+    if cancelled:
+        state = "CANCELLED"
+        blocker = reason_override or "cancelled by owner request"
+        job["cancelled_at"] = utc_now()
+    else:
+        state, blocker = evaluate_state(job, guard_exit_code, issues, verification)
+        if reason_override:
+            blocker = reason_override
     job["state"] = state
     job["blocker"] = blocker
     job["exit_code"] = guard_exit_code
@@ -617,6 +633,301 @@ def _finish(
             )
     save_job(job)
     return state
+
+
+def cancel_request_path(job_id: str) -> Path:
+    return job_dir(job_id) / CANCEL_REQUEST
+
+
+def read_cancel_request(job: dict) -> dict | None:
+    """Read the durable cancel marker without following symlinks."""
+
+    path = cancel_request_path(str(job.get("id") or ""))
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        raw = os.read(descriptor, 16384)
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _current_attempt_number(job: dict) -> int:
+    attempts = job.get("attempts") or []
+    if attempts and isinstance(attempts[-1], dict):
+        try:
+            return int(attempts[-1].get("number") or len(attempts))
+        except (TypeError, ValueError):
+            return len(attempts)
+    return len(attempts) if isinstance(attempts, list) else 0
+
+
+def cancel_request_matches(job: dict, marker: dict | None = None) -> bool:
+    """A cancel marker applies only to the attempt it was requested for."""
+
+    marker = marker if marker is not None else read_cancel_request(job)
+    if not marker:
+        return False
+    if str(marker.get("job_id") or "") != str(job.get("id") or ""):
+        return False
+    try:
+        requested_attempt = int(marker.get("attempt_number"))
+    except (TypeError, ValueError):
+        return False
+    return requested_attempt == _current_attempt_number(job)
+
+
+def _write_cancel_request(job: dict, guard_pid: int) -> dict:
+    marker = {
+        "job_id": str(job.get("id") or ""),
+        "attempt_number": _current_attempt_number(job),
+        "guard_pid": int(guard_pid),
+        "worker_pid": job.get("worker_pid"),
+        "requested_at": utc_now(),
+    }
+    path = cancel_request_path(marker["job_id"])
+    ensure_private_dir(path.parent)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(marker, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return marker
+
+
+def _remove_cancel_request(job: dict) -> None:
+    try:
+        cancel_request_path(str(job.get("id") or "")).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _process_looks_like_qortium(pid: int) -> bool:
+    cmdline = process_cmdline(pid).lower()
+    if not cmdline:
+        return False
+    return any(
+        marker in cmdline
+        for marker in (
+            "qortium.jar",
+            "/qortium-data",
+            "/qortium-preview",
+            "/qortium/qortium",
+        )
+    )
+
+
+def _verify_guard_identity(job: dict, guard_pid: int) -> None:
+    """Refuse to signal anything that is not this job's Workflow v3 guard."""
+
+    try:
+        pid = int(guard_pid)
+    except (TypeError, ValueError) as exc:
+        raise JobError("the recorded guard PID is not an integer") from exc
+    if pid <= 1:
+        raise JobError("refusing to signal an unsafe guard PID")
+    if pid == os.getpid() or pid == os.getpgrp():
+        raise JobError("refusing to signal the cancelling process group")
+    if _process_looks_like_qortium(pid):
+        raise JobError("refusing to signal a detected Qortium process")
+    cmdline = process_cmdline(pid)
+    if not cmdline:
+        raise JobError("the recorded guard process is not running")
+    if "opencode_guard.py" not in cmdline:
+        raise JobError("the recorded PID is not the Workflow v3 execution guard")
+    if " run" not in f" {cmdline}":
+        raise JobError("the recorded guard is not running a job")
+    job_id = str(job.get("id") or "")
+    log_path = str(job_dir(job_id) / RUN_LOG)
+    session_title = f"{job.get('title')} [job {job_id}]"
+    if not (
+        job_id in cmdline
+        or log_path in cmdline
+        or session_title in cmdline
+    ):
+        raise JobError("the guard identity does not match this job")
+
+
+def _cancelled_verification(job: dict, verification: dict) -> dict:
+    result = dict(verification or {})
+    for criterion in job.get("acceptance_criteria") or []:
+        existing = result.get(criterion["id"]) or {}
+        if existing.get("verified"):
+            continue
+        result[criterion["id"]] = {
+            "criterion_id": criterion["id"],
+            "kind": criterion.get("kind"),
+            "command": criterion.get("command"),
+            "verified": False,
+            "skipped": True,
+            "detail": CANCEL_SKIP_DETAIL,
+            "at": utc_now(),
+        }
+    return result
+
+
+def _finalize_cancelled(job: dict, marker: dict, reason: str) -> dict:
+    """Finalize a cancelled attempt when the worker could not do it itself."""
+
+    issues = list(job.get("detected_issues") or [])
+    verification = _cancelled_verification(job, job.get("verification") or {})
+    exit_code = job.get("exit_code")
+    if exit_code is None:
+        exit_code = 128 + int(signal.SIGTERM)
+    _finish(
+        job,
+        guard_exit_code=int(exit_code),
+        issues=issues,
+        verification=verification,
+        session_id=job.get("session_id"),
+        reason_override=reason,
+        cancelled=True,
+    )
+    append_event(
+        job,
+        "cancel_finalized",
+        f"attempt={marker.get('attempt_number')} guard_pid={marker.get('guard_pid')}",
+    )
+    return job
+
+
+def cancel_job(
+    job_id: str,
+    *,
+    grace_seconds: float | None = None,
+    sleep=time.sleep,
+) -> dict:
+    """Cancel one RUNNING job by signalling its verified guard only.
+
+    The command never signals by name, never escalates beyond SIGTERM and never
+    touches the working tree or OpenCode session. Cancellation is resumable.
+    """
+
+    job = load_job(job_id)
+    if str(job.get("state")) != "RUNNING":
+        raise JobError(
+            f"job {job_id} is {job.get('state')}; only a RUNNING job can be cancelled"
+        )
+    if not worker_is_alive(job):
+        changed = reconcile_job(job)
+        job = load_job(job_id)
+        detail = (
+            "worker was already gone; the job was reconciled without sending a signal"
+            if changed
+            else "worker is not running; no signal was sent"
+        )
+        return {"cancel_status": "reconciled", "detail": detail, "job": job}
+
+    guard_pid = job.get("guard_pid")
+    if not guard_pid:
+        raise JobError("no verified guard PID is recorded for this job")
+    _verify_guard_identity(job, int(guard_pid))
+
+    marker = _write_cancel_request(job, int(guard_pid))
+    append_event(
+        job,
+        "cancel_requested",
+        f"attempt={marker['attempt_number']} guard_pid={marker['guard_pid']}",
+    )
+    try:
+        os.kill(int(guard_pid), signal.SIGTERM)
+    except ProcessLookupError:
+        # The guard exited between identity verification and the signal. The
+        # worker is allowed to reconcile or observe the marker normally.
+        pass
+    except OSError as exc:
+        _remove_cancel_request(job)
+        append_event(job, "cancel_failed", f"signal failed: {exc.__class__.__name__}")
+        raise JobError("could not signal the verified guard process") from exc
+
+    grace = (
+        DEFAULT_CANCEL_GRACE_SECONDS
+        if grace_seconds is None
+        else max(1.0, float(grace_seconds))
+    )
+    deadline = time.monotonic() + grace
+    while True:
+        job = load_job(job_id)
+        if str(job.get("state")) != "RUNNING":
+            break
+        if not worker_is_alive(job):
+            # Give the worker a short moment to persist its own final state.
+            sleep(0.1)
+            job = load_job(job_id)
+            if str(job.get("state")) != "RUNNING":
+                break
+            job = _finalize_cancelled(
+                job,
+                marker,
+                "cancelled by owner request; worker finalized after cancellation",
+            )
+            return {
+                "cancel_status": "cancelled",
+                "detail": "the worker disappeared; the job was finalized as CANCELLED",
+                "job": job,
+            }
+        if time.monotonic() >= deadline:
+            break
+        sleep(0.1)
+
+    job = load_job(job_id)
+    state = str(job.get("state"))
+    if state == "CANCELLED":
+        # Durable evidence: the report must exist even if an external worker
+        # finalized from the marker without writing it.
+        write_report(job)
+        save_job(job)
+        return {
+            "cancel_status": "cancelled",
+            "detail": "the guard and its child process group were stopped; the job is CANCELLED",
+            "job": job,
+        }
+    if state == "RUNNING":
+        return {
+            "cancel_status": "pending",
+            "detail": (
+                "cancel requested; the guard is still alive after the grace period. "
+                "No escalation was attempted."
+            ),
+            "job": job,
+        }
+    if (
+        cancel_request_matches(job, marker)
+        and not worker_is_alive(job)
+        and job.get("exit_code") == 128 + int(signal.SIGTERM)
+    ):
+        job = _finalize_cancelled(
+            job,
+            marker,
+            "cancelled by owner request; the worker reported a terminated guard",
+        )
+        return {
+            "cancel_status": "cancelled",
+            "detail": "the worker exited after the signal; the job was finalized as CANCELLED",
+            "job": job,
+        }
+    return {
+        "cancel_status": "finished",
+        "detail": f"the job finished as {state} before cancellation completed",
+        "job": job,
+    }
 
 
 def run_worker(job_id: str) -> int:
@@ -711,6 +1022,15 @@ def run_worker(job_id: str) -> int:
             job["guard_pid"] = guard_process.pid
             save_job(job)
             guard_exit_code = int(guard_process.wait())
+            cancel_marker = read_cancel_request(job)
+            cancelled = cancel_request_matches(job, cancel_marker)
+            if cancelled:
+                append_event(
+                    job,
+                    "cancel_observed",
+                    f"attempt={attempt_number} guard_exit={guard_exit_code}",
+                )
+                attempt["cancelled"] = True
             child = _read_child_pid(job)
             job["child_pid"] = (child or {}).get("pid") or job.get("child_pid")
             job["child_pgid"] = (child or {}).get("pgid") or job.get("child_pgid")
@@ -733,37 +1053,51 @@ def run_worker(job_id: str) -> int:
             session_id = job.get("session_id") or _discover_session(job)
             attempt_started_ms = _timestamp_ms(attempt.get("started_at"))
             issues: list[dict] | None = None
-            if session_id:
-                structured = detect.scan_session(
-                    session_id,
-                    cwd=job.get("repo"),
-                    since_ms=attempt_started_ms,
-                )
-                if structured is not None:
-                    issues = [issue.asdict() for issue in structured]
-            if issues is None:
-                issues = [
-                    issue.asdict()
-                    for issue in detect.scan_log(directory / RUN_LOG, start_offset=run_log_start)
-                ]
-            skip_commands = guard_exit_code in (
+            if not cancelled:
+                if session_id:
+                    structured = detect.scan_session(
+                        session_id,
+                        cwd=job.get("repo"),
+                        since_ms=attempt_started_ms,
+                    )
+                    if structured is not None:
+                        issues = [issue.asdict() for issue in structured]
+                if issues is None:
+                    issues = [
+                        issue.asdict()
+                        for issue in detect.scan_log(
+                            directory / RUN_LOG, start_offset=run_log_start
+                        )
+                    ]
+            else:
+                issues = []
+            skip_commands = cancelled or guard_exit_code in (
                 opencode_guard.EXIT_TIMEOUT,
                 opencode_guard.EXIT_REFUSE,
             )
-            verification = verify_criteria(job, skip_commands=skip_commands)
-            _, pending_manual, missing = _criteria_state(
-                job.get("acceptance_criteria") or [], verification
+            verification = verify_criteria(
+                job,
+                skip_commands=skip_commands,
+                skip_detail=(
+                    CANCEL_SKIP_DETAIL
+                    if cancelled
+                    else "verification skipped because the run timed out or was refused"
+                ),
             )
-            if missing and not pending_manual and not skip_commands:
-                issues.append(
-                    detect.Issue(
-                        "incomplete_implementation",
-                        "failed",
-                        f"required acceptance criteria did not verify: {', '.join(missing)}",
-                        0,
-                        "",
-                    ).asdict()
+            if not cancelled:
+                _, pending_manual, missing = _criteria_state(
+                    job.get("acceptance_criteria") or [], verification
                 )
+                if missing and not pending_manual and not skip_commands:
+                    issues.append(
+                        detect.Issue(
+                            "incomplete_implementation",
+                            "failed",
+                            f"required acceptance criteria did not verify: {', '.join(missing)}",
+                            0,
+                            "",
+                        ).asdict()
+                    )
             attempt["ended_at"] = utc_now()
             attempt["duration_seconds"] = _elapsed_seconds(
                 attempt.get("started_at"), attempt.get("ended_at")
@@ -777,6 +1111,7 @@ def run_worker(job_id: str) -> int:
                 issues=issues,
                 verification=verification,
                 session_id=session_id,
+                cancelled=cancelled,
             )
             append_event(job, "attempt_finished", f"attempt={attempt_number} state={state}")
             return 0 if state == "SUCCESS" else 1
@@ -940,6 +1275,7 @@ def resume_job(
     job["state"] = "RUNNING"
     job["ended_at"] = None
     job["blocker"] = None
+    job["cancelled_at"] = None
     append_event(job, "resume_requested", f"resume_count={job['resume_count']}")
     save_job(job)
     spawn_worker(job)
@@ -951,12 +1287,32 @@ def reconcile_job(job: dict) -> bool:
         return False
     if worker_is_alive(job):
         return False
-    job["state"] = "FAILED"
-    job["blocker"] = "background worker is no longer running; resume the job to continue"
-    job["ended_at"] = utc_now()
-    issue = detect.Issue("worker_lost", "failed", job["blocker"], 0, "").asdict()
-    job.setdefault("detected_issues", []).append(issue)
-    append_event(job, "reconciled_stale", job["blocker"])
+    marker = read_cancel_request(job)
+    if cancel_request_matches(job, marker):
+        job["state"] = "CANCELLED"
+        job["blocker"] = "cancelled by owner request; worker finalized after cancellation"
+        job["cancelled_at"] = utc_now()
+        job["ended_at"] = job["cancelled_at"]
+        job["verification"] = _cancelled_verification(
+            job, job.get("verification") or {}
+        )
+        attempts = job.get("attempts") or []
+        if attempts and isinstance(attempts[-1], dict):
+            attempt = attempts[-1]
+            attempt["cancelled"] = True
+            if not attempt.get("ended_at"):
+                attempt["ended_at"] = job["ended_at"]
+                attempt["duration_seconds"] = _elapsed_seconds(
+                    attempt.get("started_at"), job["ended_at"]
+                )
+        append_event(job, "reconciled_cancelled", job["blocker"])
+    else:
+        job["state"] = "FAILED"
+        job["blocker"] = "background worker is no longer running; resume the job to continue"
+        job["ended_at"] = utc_now()
+        issue = detect.Issue("worker_lost", "failed", job["blocker"], 0, "").asdict()
+        job.setdefault("detected_issues", []).append(issue)
+        append_event(job, "reconciled_stale", job["blocker"])
     write_report(job)
     save_job(job)
     try:
@@ -1099,6 +1455,7 @@ def status_payload(job: dict) -> dict:
         "exit_code": job.get("exit_code"),
         "session_id": job.get("session_id"),
         "blocker": job.get("blocker"),
+        "cancelled_at": job.get("cancelled_at"),
         "pending_criteria": pending,
         "issues": job.get("detected_issues") or [],
         "log_path": job.get("log_path"),

@@ -155,6 +155,8 @@ class MonitorConfig:
     allow_binary_downloads: bool
     relay_external_final: bool
     queue_owner_messages: bool
+    owner_message_max_chars: int
+    owner_message_retention_seconds: int
     auto_start_queued: bool
     control_passphrase_hash: str | None
     unlock_ttl_seconds: int
@@ -332,6 +334,12 @@ def load_monitor_config(
         allow_binary_downloads=_as_bool(monitor.get("allow_binary_downloads", False), False),
         relay_external_final=_as_bool(monitor.get("relay_external_final", True), True),
         queue_owner_messages=_as_bool(monitor.get("queue_owner_messages", True), True),
+        owner_message_max_chars=_as_int(
+            monitor.get("owner_message_max_chars"), 4000, 200, 20000
+        ),
+        owner_message_retention_seconds=_as_int(
+            monitor.get("owner_message_retention_seconds"), 30 * 86400, 3600, 365 * 86400
+        ),
         auto_start_queued=_as_bool(monitor.get("auto_start_queued", False), False),
         control_passphrase_hash=passphrase_hash,
         unlock_ttl_seconds=_as_int(monitor.get("unlock_ttl_seconds"), 900, 60, 3600),

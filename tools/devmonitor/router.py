@@ -42,6 +42,8 @@ SAFE_COMMAND_LABELS = frozenset(
         "newjob",
         "resume",
         "cancel",
+        "queue",
+        "messages",
         "accept",
         "lock",
         "unlock",
@@ -227,6 +229,8 @@ class Router:
                     try:
                         if wizard["kind"] == "start":
                             result = self.control.start_text(wizard, text, decision)
+                        elif wizard["kind"] == "queue":
+                            result = self.control.queue_text(wizard, text, decision)
                         else:
                             result = self.control.resume_text(wizard, text, decision)
                         self._send(chat_id, result.text, result.markup)
@@ -338,26 +342,57 @@ class Router:
             )
             self._send(chat_id, result.text, result.markup)
         elif command == "cancel":
-            wizard = self.state.get_active_wizard(
-                int(decision.user_id or 0), int(decision.chat_id or 0)
-            )
-            if wizard is None:
-                self._send(
-                    chat_id,
-                    "No active wizard. Job cancellation is not implemented in P2.",
-                    menus.back_to_main(),
+            if args:
+                if not self._require_control(decision, "Cancelling a job"):
+                    return
+                ref, job_id = self._resolve_job(args[0], chat_id)
+                result = self.control.begin_cancel(
+                    job_id, int(decision.user_id or 0), int(decision.chat_id or 0)
                 )
+                self._send(chat_id, result.text, result.markup)
             else:
-                self.state.delete_wizard(
-                    str(wizard["wizard_id"]),
-                    int(decision.user_id or 0),
-                    int(decision.chat_id or 0),
+                wizard = self.state.get_active_wizard(
+                    int(decision.user_id or 0), int(decision.chat_id or 0)
                 )
-                self._send(
-                    chat_id,
-                    "Wizard cancelled. No job was started or resumed.",
-                    menus.back_to_main(),
-                )
+                if wizard is None:
+                    self._send(
+                        chat_id,
+                        "No active wizard. Use /cancel <job> to cancel a RUNNING job.",
+                        menus.back_to_main(),
+                    )
+                else:
+                    self.state.delete_wizard(
+                        str(wizard["wizard_id"]),
+                        int(decision.user_id or 0),
+                        int(decision.chat_id or 0),
+                    )
+                    self._send(
+                        chat_id,
+                        "Wizard cancelled. No job was started or resumed.",
+                        menus.back_to_main(),
+                    )
+        elif command == "queue":
+            if not self._require_control(decision, "Queueing an instruction"):
+                return
+            if args:
+                ref, job_id = self._resolve_job(args[0], chat_id)
+            else:
+                ref, job_id = self._latest_job(chat_id)
+            result = self.control.begin_queue(
+                job_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+            self._send(chat_id, result.text, result.markup)
+        elif command == "messages":
+            if args:
+                ref, job_id = self._resolve_job(args[0], chat_id)
+            else:
+                ref, job_id = self._latest_job(chat_id)
+            messages = self.state.list_owner_messages(job_id)
+            self._send(
+                chat_id,
+                render.owner_messages_text(job_id, messages),
+                menus.back_to_main(),
+            )
         elif command == "unlock":
             if not self.config.control_enabled:
                 self._send(
@@ -514,6 +549,20 @@ class Router:
                 job_id, int(decision.user_id or 0), int(decision.chat_id or 0)
             )
             self._edit(callback, decision, result.text, result.markup)
+        elif action == "c":
+            if not self._require_control(decision, "Cancelling a job"):
+                return
+            result = self.control.begin_cancel(
+                job_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+            self._edit(callback, decision, result.text, result.markup)
+        elif action == "q":
+            if not self._require_control(decision, "Queueing an instruction"):
+                return
+            result = self.control.begin_queue(
+                job_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+            self._edit(callback, decision, result.text, result.markup)
         else:
             raise JobError("unknown job action")
 
@@ -582,10 +631,13 @@ class Router:
                 callback, decision, "Confirmation expired or already used.", menus.back_to_main()
             )
             return
-        if action in {"start_job", "resume_job"}:
-            if not self._require_control(
-                decision, "Starting a job" if action == "start_job" else "Resuming a job"
-            ):
+        if action in {"start_job", "resume_job", "cancel_job"}:
+            labels = {
+                "start_job": "Starting a job",
+                "resume_job": "Resuming a job",
+                "cancel_job": "Cancelling a job",
+            }
+            if not self._require_control(decision, labels[action]):
                 return
             payload = self.state.consume_confirmation(
                 nonce, int(decision.user_id or 0), int(decision.chat_id or 0), action
@@ -610,8 +662,10 @@ class Router:
                 return
             if action == "start_job":
                 result = self.control.perform_start(payload, decision)
-            else:
+            elif action == "resume_job":
                 result = self.control.perform_resume(payload, decision)
+            else:
+                result = self.control.perform_cancel(payload, decision)
             self._audit(
                 decision,
                 action,
@@ -675,17 +729,27 @@ class Router:
             self._send(chat_id, text, markup)
 
     def _job_menu_for(self, payload: dict, ref: str) -> dict:
-        resumable = not (
-            str(payload.get("state")) == "RUNNING" and payload.get("worker_alive")
+        running = str(payload.get("state")) == "RUNNING" and bool(
+            payload.get("worker_alive")
         )
         return menus.job_menu(
-            ref, control=self.config.control_enabled, resumable=resumable
+            ref,
+            control=self.config.control_enabled,
+            resumable=not running,
+            cancellable=running,
         )
+
+    def _job_status_text(self, payload: dict) -> str:
+        try:
+            pending = self.state.count_pending_owner_messages(str(payload.get("id")))
+        except Exception:  # noqa: BLE001 - status rendering must not fail
+            pending = 0
+        return render.job_status_text(payload, queued_instructions=pending)
 
     def _send_job(self, chat_id: int, ref: str, job_id: str, decision: auth.AuthDecision) -> None:
         payload = self.jobs.job_status(job_id)
         result = self._send(
-            chat_id, render.job_status_text(payload), self._job_menu_for(payload, ref)
+            chat_id, self._job_status_text(payload), self._job_menu_for(payload, ref)
         )
         message_id = result.get("message_id") if isinstance(result, dict) else None
         if isinstance(message_id, int):
@@ -696,7 +760,7 @@ class Router:
         self._edit(
             callback,
             decision,
-            render.job_status_text(payload),
+            self._job_status_text(payload),
             self._job_menu_for(payload, ref),
         )
 

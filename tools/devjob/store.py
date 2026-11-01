@@ -20,8 +20,10 @@ from typing import Iterable, Iterator
 
 
 SCHEMA_VERSION = 3
-JOB_STATES = ("RUNNING", "SUCCESS", "FAILED", "BLOCKED", "TIMEOUT")
-TERMINAL_STATES = frozenset({"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT"})
+JOB_STATES = ("RUNNING", "SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED")
+TERMINAL_STATES = frozenset(
+    {"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED"}
+)
 DEFAULT_STATE_DIR = Path.home() / ".local/state/dev-control-plane"
 class StoreError(RuntimeError):
     """A job could not be loaded, saved or locked."""

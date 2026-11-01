@@ -177,7 +177,11 @@ class MonitorService:
                             self.process_update(update)
                         self._emit_timings()
                     with self.timings.measure("sqlite:prune"):
-                        self.state.prune()
+                        self.state.prune(
+                            owner_message_retention_seconds=(
+                                self.config.owner_message_retention_seconds
+                            )
+                        )
                     self._poll_lifecycle()
                 except TelegramRateLimited as exc:
                     delay = max(1.0, exc.retry_after)

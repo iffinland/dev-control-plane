@@ -20,7 +20,7 @@ from typing import Callable
 from .store import safe_text, utc_now
 
 
-NOTIFY_STATES = ("SUCCESS", "FAILED", "BLOCKED", "TIMEOUT")
+NOTIFY_STATES = ("SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED")
 DEFAULT_CONFIG = Path.home() / ".config/dev-control-plane/telegram.json"
 
 Transport = Callable[[str, dict, float], tuple[int, str]]
@@ -191,6 +191,7 @@ def build_message(job: dict, state: str | None = None) -> str:
         "FAILED": "failed",
         "BLOCKED": "blocked",
         "TIMEOUT": "timed out",
+        "CANCELLED": "cancelled",
     }.get(final_state, final_state.lower())
     lines = [
         f"[dev] Job {label}: {job.get('title', '(untitled)')}",

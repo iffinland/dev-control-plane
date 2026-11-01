@@ -56,14 +56,27 @@ def jobs_menu(
     return keyboard(rows)
 
 
-def job_menu(ref: str, *, control: bool = False, resumable: bool = False) -> dict:
+def job_menu(
+    ref: str,
+    *,
+    control: bool = False,
+    resumable: bool = False,
+    cancellable: bool = False,
+) -> dict:
     rows = [
         [button("Refresh", f"j:{ref}:r"), button("Report", f"j:{ref}:p")],
         [button("Run log", f"j:{ref}:lr"), button("Worker log", f"j:{ref}:lw")],
         [button("Download report", f"j:{ref}:dr")],
     ]
-    if control and resumable:
-        rows.append([button("Resume job", f"j:{ref}:s")])
+    if control:
+        actions: list[dict] = []
+        if resumable:
+            actions.append(button("Resume", f"j:{ref}:s"))
+        if cancellable:
+            actions.append(button("Cancel job", f"j:{ref}:c"))
+        if actions:
+            rows.append(actions)
+        rows.append([button("Queue instruction", f"j:{ref}:q")])
     rows.append([button("Jobs", "jl:0"), button("Main menu", "m")])
     return keyboard(rows)
 

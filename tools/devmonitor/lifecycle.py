@@ -17,7 +17,9 @@ from .jobs import JobError, JobFacade
 from .projects import Registry, RegistryError
 from .state import MonitorState
 
-TERMINAL_STATES = frozenset({"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT"})
+TERMINAL_STATES = frozenset(
+    {"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED"}
+)
 ALERT_EVENTS = frozenset({"reconciled_stale", "worker_lock_conflict", "worker_error"})
 FIRST_RUN_TERMINAL_LOOKBACK_SECONDS = 3600
 
@@ -220,8 +222,17 @@ class LifecycleNotifier:
         chat_id = self.config.notification_chat_id
         ref = self.state.get_or_create_job_ref(job_id, chat_id) if job_id else ""
         control = self.config.control_enabled
-        resumable = str(job.get("state")) != "RUNNING" or job.get("worker_alive") is not True
-        markup = menus.job_menu(ref, control=control, resumable=resumable) if ref else menus.back_to_main()
+        running = str(job.get("state")) == "RUNNING" and job.get("worker_alive") is True
+        markup = (
+            menus.job_menu(
+                ref,
+                control=control,
+                resumable=not running,
+                cancellable=running,
+            )
+            if ref
+            else menus.back_to_main()
+        )
         try:
             self.api.send_message(chat_id, text, markup)
         except Exception:  # noqa: BLE001 - a notification failure must not stop polling

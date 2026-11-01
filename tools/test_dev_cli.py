@@ -230,11 +230,14 @@ class CliTestCase(unittest.TestCase):
         time.sleep(0.1)
         self.temp.cleanup()
 
-    def cli(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+    def cli(
+        self, *args: str, timeout: float = 30.0, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(DEV), *args],
             cwd=CONTROL_PLANE,
             env=self.env,
+            input=input_text,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -766,6 +769,29 @@ class CliTestCase(unittest.TestCase):
         stored = load_job(job["id"], self.state)
         self.assertEqual(stored["attempts"][-1]["session_id"], "ses_fake123")
 
+    def test_resume_prompt_file_reads_instruction_from_stdin(self) -> None:
+        job = self.start(mode="resume", criterion="test -f impl.txt")
+        first = self.wait_for_state(job["id"])
+        self.assertEqual(first["state"], "FAILED", first)
+        instruction = "Owner queued: preserve the tree and finish with evidence."
+        resume = self.cli(
+            "resume",
+            "--state-dir",
+            str(self.state),
+            job["id"],
+            "--prompt-file",
+            "-",
+            "--json",
+            input_text=instruction,
+        )
+        self.assertEqual(resume.returncode, 0, resume.stdout + resume.stderr)
+        second = self.wait_for_state(job["id"])
+        self.assertEqual(second["state"], "SUCCESS", second)
+        events = (
+            self.state / "jobs" / job["id"] / "events.jsonl"
+        ).read_text(encoding="utf-8")
+        self.assertIn(instruction, events)
+
     def test_manual_acceptance_can_complete_a_blocked_job(self) -> None:
         job = self.start(mode="success", manual="owner inspects the live app")
         first = self.wait_for_state(job["id"])
@@ -864,6 +890,18 @@ class NotificationTests(unittest.TestCase):
         text = notify.build_message(self.job())
         self.assertIn("completed", text)
         self.assertNotIn("TESTONLYTOKEN", text)
+
+    def test_cancelled_is_a_notifiable_state(self) -> None:
+        self.assertIn("CANCELLED", notify.NOTIFY_STATES)
+        job = self.job()
+        job["state"] = "CANCELLED"
+        self.assertIn("cancelled", notify.build_message(job))
+
+        def transport(url, payload, timeout):
+            return 200, "ok"
+
+        record = notify.notify_job(job, self.settings(), transport)
+        self.assertTrue(record["sent"], record)
 
     def test_send_success_with_fake_transport(self) -> None:
         captured = {}

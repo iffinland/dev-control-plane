@@ -3,8 +3,8 @@
 ``dev status --json`` and ``dev report --json`` remain the authoritative read
 surfaces. Logs, reports, job records and event cursors are derived from the
 validated job directory and named artifacts, never from arbitrary absolute paths
-in ``job.json``. P2 adds only the fixed-shape ``dev start`` and ``dev resume``
-subprocess calls; cancellation and manual acceptance remain absent.
+in ``job.json``. The monitor uses only fixed-shape ``dev start``, ``dev resume``
+and additive ``dev cancel`` subprocess calls with ``shell=False``.
 """
 
 from __future__ import annotations
@@ -462,13 +462,41 @@ class JobFacade:
         args = ["resume", job_id, "--json"]
         if timeout_seconds is not None:
             args.extend(["--timeout", f"{int(timeout_seconds)}s"])
-        if prompt:
-            args.extend(["--prompt", prompt])
+        if prompt is not None:
+            # Long owner instructions are passed over stdin rather than argv.
+            args.extend(["--prompt-file", "-"])
         if new_session:
             args.append("--new-session")
         if force:
             args.append("--force")
-        return self._json_result(args)
+        return self._json_result(args, input_text=prompt if prompt is not None else None)
+
+    def cancel_job(self, job_id: str, *, grace_seconds: float | None = None) -> dict:
+        """Invoke the additive, tested ``dev cancel`` command."""
+
+        job_id = validate_job_id(job_id)
+        args = ["cancel", job_id, "--json"]
+        if grace_seconds is not None:
+            args.extend(["--grace", f"{max(1.0, float(grace_seconds)):g}"])
+        completed = self._run(
+            args,
+            allow_nonzero=True,
+            timeout_seconds=max(self.mutation_timeout_seconds, 60.0),
+        )
+        try:
+            payload = json.loads(completed.stdout) if completed.stdout.strip() else None
+        except json.JSONDecodeError as exc:
+            raise JobError("Workflow v3 cancel returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise JobError(
+                redact_text(detail, limit=500)
+                or f"Workflow v3 cancel exited {completed.returncode}"
+            )
+        job = payload.get("job")
+        if not isinstance(job, dict) or job.get("id") != job_id:
+            raise JobError("Workflow v3 cancel returned an unexpected job payload")
+        return payload
 
 
 def _job_sort_key(job: dict) -> tuple[int, float, str]:

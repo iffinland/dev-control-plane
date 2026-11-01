@@ -1,15 +1,17 @@
-# Qortium Dev Monitor — P2 operations and activation
+# Qortium Dev Monitor — P3 operations and activation
 
-Status: **P1 read-only observer and P2 authorized control implemented. Default
-mode remains `read_only`; owner activation is manual.** A production systemd
-user unit is stored in this repository. This task did not install, enable,
-restart or start it, and it did not modify the owner-local `telegram.json`.
+Status: **P1 read-only observer, P2 authorized control and P3 cancellation plus
+queued owner messaging implemented. Default mode remains `read_only`; owner
+activation is manual.** A production systemd user unit is stored in this
+repository. This task did not install, enable, restart or start it, and it did
+not modify the owner-local `telegram.json`.
 
-This runbook covers the Phase P2 Telegram control surface described in the
-[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P2 adds
-a start wizard, resume flow, per-project admission, global guard awareness,
-STARTED/RESUMED notifications and terminal-notification deduplication. It does
-not implement P3 job cancellation or queued two-way owner/agent messaging.
+This runbook covers the Phase P3 Telegram control surface described in the
+[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P3 adds
+verified job cancellation, persistent queued owner instructions with explicit
+delivery state, safe resume composition and explicit new-session confirmation.
+It preserves the P1 read-only surface, P2 start/resume control, per-project
+admission, notification deduplication and every security boundary.
 
 ## 1. What the monitor provides
 
@@ -36,6 +38,13 @@ Control mode (explicit owner configuration only):
   is reported as global-guard busy rather than starting a doomed attempt.
 - STARTED and RESUMED notifications, plus terminal relays for monitor-started
   jobs, with durable at-most-once deduplication.
+- Verified cancellation of a RUNNING job through the additive `dev cancel`
+  command, with a one-time confirmation, durable `CANCELLED` state and preserved
+  worktree/session.
+- Persistent owner instruction queue. Instructions are stored with explicit
+  `queued`/`delivered` state, shown in status, and delivered exactly once per
+  successful resume through `dev resume --prompt-file -`.
+- Explicit New session confirmation when a job has no known OpenCode session.
 - Optional local unlock passphrase using a salted scrypt hash.
 
 The monitor reuses the existing Workflow v3 job store and CLI plus the existing
@@ -49,11 +58,14 @@ The monitor:
 - runs as an owner-controlled foreground process or an owner-installed systemd
   user service and refuses a second instance through an exclusive state lock;
 - never calls `setWebhook`, opens a listener or exposes an inbound API;
-- in P2 only invokes existing allowlisted Workflow v3 commands:
-  `dev start`, `dev resume`, `dev status`, `dev report` and `dev logs`;
-- never implements a cancel action; `/cancel` only cancels an active wizard.
-  Job cancellation remains P3;
-- never implements live prompt injection or queued owner-to-agent messaging;
+- invokes only allowlisted Workflow v3 commands:
+  `dev start`, `dev resume`, `dev cancel`, `dev status`, `dev report` and
+  `dev logs`;
+- cancels only through `dev cancel`, which revalidates the exact guard process
+  identity and sends `SIGTERM` to that PID only. The monitor itself never signals
+  a process and never uses a name-based kill;
+- never injects text into a running OpenCode turn. Owner instructions are queued
+  durably and delivered on the next resume;
 - never runs `sudo`, a service manager, a package manager or a mount command;
 - never restarts, stops, reconfigures, signals or writes the Qortium node, its
   service, data or logs;
@@ -96,7 +108,7 @@ Example shape (placeholders only; never commit real values):
   "enabled": true,
   "bot_token": "<owner-local token>",
   "chat_id": "<owner-local chat ID>",
-  "events": ["SUCCESS", "FAILED", "BLOCKED", "TIMEOUT"],
+  "events": ["SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED"],
   "timeout_seconds": 10,
   "monitor": {
     "mode": "read_only",
@@ -113,6 +125,9 @@ Example shape (placeholders only; never commit real values):
     "max_binary_download_bytes": 10485760,
     "allow_binary_downloads": false,
     "relay_external_final": true,
+    "queue_owner_messages": true,
+    "owner_message_max_chars": 4000,
+    "owner_message_retention_seconds": 2592000,
     "unlock_ttl_seconds": 900,
     "admission_lock_timeout_seconds": 5,
     "lifecycle_poll_seconds": 30,
@@ -160,6 +175,9 @@ Timeouts and control limits:
 | `admission_lock_timeout_seconds` | `5` | Per-project check-and-invoke lock wait. |
 | `lifecycle_poll_seconds` | `30` | Minimum interval between lifecycle event scans. |
 | `terminal_grace_seconds` | `20` | Wait before relaying an external terminal state with no notification record. |
+| `queue_owner_messages` | `true` | Enable the durable owner instruction queue. |
+| `owner_message_max_chars` | `4000` | Maximum length of one queued owner instruction. |
+| `owner_message_retention_seconds` | `2592000` | Delete delivered instructions after 30 days. Queued instructions are never expired automatically. |
 
 Permissions:
 
@@ -331,7 +349,9 @@ Running jobs remain independent of the monitor lifecycle.
 | `/job <reference>` | Open a job by server-side reference |
 | `/status [job]` | Compact status view; latest job when omitted |
 | `/resume [job]` | Resume wizard (control mode) |
-| `/cancel` | Cancel the active wizard only; never cancels a job |
+| `/cancel [job]` | With no job: cancel the active wizard. With a job: verified running-job cancel flow (control mode) |
+| `/queue [job]` | Queue an owner instruction for the next resume (control mode) |
+| `/messages [job]` | Show queued and delivered owner instructions with delivery state |
 | `/projects` | Registered projects, repository/docs availability and eligibility |
 | `/docs` | Allowlisted document roots |
 | `/unlock <passphrase>` | Unlock control actions when a passphrase hash is configured |
@@ -339,7 +359,8 @@ Running jobs remain independent of the monitor lifecycle.
 | `/help` | Commands, active mode and safety notes |
 
 Job actions are Refresh, Run log, Worker log, Report, Download report and, in
-control mode for a resumable job, Resume. Document actions are open directory,
+control mode, Resume for a resumable job, Cancel job for a RUNNING job with a live
+worker, and Queue instruction for any job. Document actions are open directory,
 preview text, download a redacted text copy and, only when explicitly enabled, a
 confirmed binary download. Callback data contains opaque server-side references,
 never paths, job IDs, prompts or user IDs.
@@ -374,25 +395,71 @@ shows them before confirmation.
 ```text
 job view -> Resume
 -> preview: current state, attempt, session, blocker, options
--> optional instruction (passed as one argv element)
+-> optional instruction (composed and passed over stdin)
 -> optional explicit New session or Force rerun toggle
 -> one-time Confirm
 -> per-project admission and global-guard check
--> dev resume <job-id> --json
--> RUNNING: RESUMED notification and the same job view
+-> compose base instruction + queued owner messages
+-> dev resume <job-id> --prompt-file - --json (instruction over stdin)
+-> RUNNING: RESUMED notification, queued messages marked delivered, same job view
 ```
 
 A live RUNNING job is refused. A SUCCESS job requires the explicit Force rerun
 toggle. An unknown session requires the explicit New session toggle. `--force`
-and `--new-session` are never added silently. P3 may add `dev resume
---prompt-file -` for long instructions.
+and `--new-session` are never added silently. The composed instruction is passed
+over standard input, not the process argument list. Queued messages are marked
+delivered only after Workflow v3 accepts the resume; a failed resume keeps them
+queued.
 
-### 6.3 Notifications and deduplication
+### 6.3 Cancel flow
+
+```text
+job view -> Cancel job (only RUNNING with a live worker)
+-> preview: exact job, attempt, worker/guard PIDs, safety explanation
+-> one-time Confirm
+-> per-project admission lock
+-> dev cancel <job-id> --json
+-> Workflow v3 re-verifies /proc/<guard-pid>/cmdline
+-> durable cancel.requested.json + cancel_requested event
+-> SIGTERM to that exact guard PID only
+-> guard stops only its created child process group
+-> CANCELLED, acceptance commands skipped, worktree and session preserved
+-> Resume remains available
+```
+
+The monitor never sends a signal itself and never escalates to a name-based kill.
+If the guard survives the bounded grace period, Workflow v3 reports
+`cancel_status: pending` and the monitor shows that result. A terminal job cannot
+be cancelled. If the worker has already disappeared, Workflow v3 reconciles the
+job without sending a signal.
+
+### 6.4 Queued owner instructions
+
+- `Queue instruction` or `/queue [job]` stores one text instruction in monitor
+  SQLite with `delivery_state=queued`.
+- While the job is RUNNING the UI states explicitly that delivery happens on the
+  next resume, not live.
+- `Resume` preview lists pending instructions. Confirm shows how many will be
+  included.
+- The composed prompt contains the owner's base instruction plus a clearly
+  delimited owner-follow-up block and the instruction to preserve the working
+  tree and not expand scope.
+- On a successful resume each included message becomes `delivered` with a
+  `delivered_attempt`; a second resume does not include it again.
+- A failed or refused resume leaves the messages `queued` and records a short
+  redacted error.
+- `/messages [job]` shows queued and delivered instructions and their delivery
+  attempts. Delivered instructions are pruned after the configured retention.
+- A job with no known OpenCode session still requires the explicit New session
+  toggle; queued instructions do not bypass that safety rule.
+
+### 6.5 Notifications and deduplication
 
 - STARTED is sent on the first worker/attempt start.
 - RESUMED is sent on `resume_requested` or a resumed attempt, once per resume
   count.
-- Terminal notifications are sent once per job/state/attempt.
+- Terminal notifications, including `CANCELLED`, are sent once per
+  job/state/attempt.
 - Monitor-started jobs use `--no-notify`; the monitor sends their terminal relay.
 - CLI-started jobs keep the existing Workflow v3 terminal notification as
   authoritative. The monitor does not duplicate a sent notification and does not
@@ -414,9 +481,9 @@ Monitor state is private and separate from job state:
 ```
 
 P2 adds durable tables for wizards, notification deduplication and lifecycle
-event cursors. Wizard prompts and resume instructions are private monitor state;
-they are deleted when the wizard completes or expires and are never written to
-the audit table.
+event cursors. P3 adds `owner_messages` with explicit `queued`/`delivered` state,
+`delivered_at`, `delivered_attempt` and a short redacted error. Owner instructions
+are private monitor state; they are never written to the audit table.
 
 Use `DEV_MONITOR_STATE` to override the monitor state directory and
 `--state-dir` on the CLI for a one-off override. Deleting monitor state resets UI
@@ -493,7 +560,7 @@ are written in one transaction instead of two separate commits.
 | `401 Unauthorized` | Correct the owner-local token; never print it into chat, logs or Git. The service does not restart on this exit code. |
 | Config refused | Set mode `0600`, add non-empty numeric user/chat allowlists, and in control mode add non-empty agent/model allowlists. |
 | Control action refused | The monitor is read-only, or a passphrase is configured and the chat has not run `/unlock`. |
-| Start refused: project busy | A job is running in that project. Wait for it to finish and start again; queued starts are not implemented in P2. |
+| Start refused: project busy | A job is running in that project. Wait for it to finish and start again. P3 queues owner instructions for a job, not new starts; there is no scheduler. |
 | Start refused: global guard busy | Another heavyweight execution is running. The existing guard allows one at a time; wait for it to finish. |
 | Start refused: BLOCKED | Workflow v3 guard preflight refused. Read the sanitized blocker; no STARTED is sent. |
 | Resume refused: live RUNNING | The job has a live worker. Inspect it instead of starting a duplicate attempt. |
@@ -506,12 +573,16 @@ are written in one transaction instead of two separate commits.
 | Menu feels slow | Search the journal for `timing slow` and read the label. Compare `telegram:*`, `cli:*`, `admission:*`, `lifecycle:*`, `docs:*` and `sqlite:*` lines before changing anything. |
 | Status is stale | Workflow v3 status reconciles a missing worker; refresh the job view. |
 | Document refused | Absolute paths, `..`, backslashes, percent encodings, hidden names, symlinks and sensitive names are refused by design. |
-| Cancel requested | Job cancellation is P3 and is not available. `/cancel` only discards an active wizard. |
+| Cancel refused | The job is not RUNNING with a live worker, or the guard identity no longer matches. Inspect `/status`; never signal by name. |
+| Cancel pending | Workflow v3 sent SIGTERM to the verified guard but it survived the grace period. No escalation is attempted; inspect status or retry `/cancel <job>`. |
+| Instruction is not live | Queued instructions are delivered only on the next resume by design. Open Resume to deliver them. |
+| Queued instruction remains queued | The resume was refused or failed. Fix the refusal and resume again; the queue is preserved. |
 
 ## 9. Validation
 
-The P2 tests use fake Telegram transports and an isolated fake `dev` CLI. They
-never contact production Telegram and never start a real OpenCode session:
+The P3 tests use fake Telegram transports, an isolated fake `dev` CLI and
+test-owned child processes. They never contact production Telegram and never
+start a real OpenCode session:
 
 ```bash
 python3 tools/test_dev_monitor_redact.py
@@ -526,8 +597,14 @@ python3 tools/test_dev_monitor_service_unit.py
 python3 tools/test_dev_monitor_admission.py
 python3 tools/test_dev_monitor_lifecycle.py
 python3 tools/test_dev_monitor_control.py
+python3 tools/test_dev_monitor_p3.py
 python3 tools/test_dev_monitor_integration.py
+python3 tools/test_dev_cancel.py
 ```
+
+The P3 tests use fake Telegram transports, a fake `dev` CLI and test-owned child
+processes. They never start a real OpenCode session and never signal a live job
+or Qortium process.
 
 The unit can be syntax-checked without installing it:
 
@@ -547,12 +624,33 @@ python3 tools/validate_agent_permissions.py --check
 
 ## 10. Deferred to later phases
 
-- P3: additive `dev cancel`, additive `dev resume --prompt-file -` and queued
-  owner instructions.
 - P4: real-runtime acceptance matrix, incident-runbook hardening and any binary
   document policy change.
 - P5: optional read-only latest assistant message, richer queues and search.
 
-P2 deliberately exposes no job cancel, manual acceptance, live prompt injection or
-queued two-way messaging. OpenCode exit code 0 is never treated as acceptance;
-Workflow v3 criteria remain authoritative.
+P3 does not expose manual acceptance, live prompt injection, arbitrary process
+signals or scheduler behaviour. OpenCode exit code 0 is never treated as
+acceptance; Workflow v3 criteria remain authoritative.
+
+## 11. P3 owner acceptance
+
+After activating the new code (restart the monitor; running jobs are unaffected):
+
+1. Confirm `dev cancel` refuses a completed job:
+   `python3 tools/dev.py cancel <terminal-job-id>` returns a sanitized error and
+   sends no signal.
+2. Start a small control-mode job from Telegram. Open the job and verify
+   `Cancel job` and `Queue instruction` appear only while permitted.
+3. Queue an instruction while the job is RUNNING. The reply must say it will be
+   delivered on the next resume, not live.
+4. Cancel the job from the job view. Confirm that only that job's guard stops,
+   `CANCELLED` is shown once, and the working tree is unchanged.
+5. Resume the cancelled job. The preview must list the queued instruction; the
+   confirmation must show it included. After resume, `/messages <job>` must show
+   it as delivered at the new attempt.
+6. Cause a second failed or refused resume and verify any newly queued
+   instruction stays queued rather than being lost.
+7. Resume a job whose OpenCode session ID is unknown. Workflow v3 and the monitor
+   must refuse until the owner explicitly enables New session.
+8. Restart the monitor during a running job. The job must continue, and no
+   duplicate STARTED/RESUMED/terminal notification may be sent.

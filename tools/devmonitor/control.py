@@ -1,9 +1,9 @@
-"""Authorized P2 start/resume control flows.
+"""Authorized control flows for start, resume, cancel and owner messaging.
 
 The manager owns wizard state transitions, input validation, confirmation
-payloads and the fixed-shape ``dev start`` / ``dev resume`` invocations. It never
-uses a shell, never accepts an arbitrary repository, agent, model or timeout, and
-never starts jobs in tests by itself.
+payloads and the fixed-shape ``dev start`` / ``dev resume`` / ``dev cancel``
+invocations. It never uses a shell, never accepts an arbitrary repository, agent,
+model or timeout, and never starts jobs in tests by itself.
 """
 
 from __future__ import annotations
@@ -32,10 +32,17 @@ MAX_COMMAND = 1000
 MAX_LABEL = 80
 MAX_MANUAL = 300
 MAX_BRANCH = 120
+MAX_QUEUED_MESSAGES = 20
 MIN_TIMEOUT = 60
 MAX_TIMEOUT = 8 * 3600
 WIZARD_TTL = 3600
 SKIP_VALUES = frozenset({"", "-", "skip", "/skip", "auto", "none", "default"})
+FOLLOW_UP_HEADER = (
+    "The owner queued the following follow-up instructions through the authorized "
+    "Telegram control surface. Continue the existing authorized task, preserve the "
+    "working tree and all completed work, do not expand scope beyond the original "
+    "task and these instructions, and finish with verifiable evidence."
+)
 
 
 class ControlError(RuntimeError):
@@ -177,6 +184,39 @@ def _skip(value: str) -> bool:
     return _text(value).strip().lower() in SKIP_VALUES
 
 
+def compose_resume_prompt(
+    base_prompt: str | None,
+    messages: Sequence[dict],
+    *,
+    limit: int = MAX_PROMPT,
+) -> str | None:
+    """Compose a resume prompt with a clearly delimited owner follow-up block.
+
+    The result is passed to Workflow v3 over standard input, never through a
+    shell. With no queued messages the base prompt is returned unchanged so a
+    normal resume keeps its existing behaviour.
+    """
+
+    messages = [item for item in messages if str(item.get("body") or "").strip()]
+    if not messages:
+        return base_prompt
+    parts: list[str] = []
+    if base_prompt and base_prompt.strip():
+        parts.append(base_prompt.strip())
+        parts.append("")
+    parts.append(FOLLOW_UP_HEADER)
+    parts.append("")
+    for index, item in enumerate(messages, start=1):
+        body = sanitize_control(str(item.get("body") or "")).strip()
+        parts.append(f"{index}. {body}")
+    composed = "\n".join(parts).strip()
+    if len(composed) > limit:
+        raise ControlError(
+            f"the resume instruction plus queued messages exceeds {limit} characters"
+        )
+    return composed
+
+
 class ControlManager:
     def __init__(
         self,
@@ -219,6 +259,91 @@ class ControlManager:
     def _cancel(self, wizard: dict[str, Any], user_id: int, chat_id: int) -> ControlResult:
         self.state.delete_wizard(str(wizard["wizard_id"]), user_id, chat_id)
         return ControlResult("Wizard cancelled. No job was started or resumed.", menus.back_to_main())
+
+    # ---- cancel flow -------------------------------------------------------------
+    def begin_cancel(self, job_id: str, user_id: int, chat_id: int) -> ControlResult:
+        job_id = validate_job_id(job_id)
+        job = self.jobs.job_status(job_id)
+        if str(job.get("state")) != "RUNNING" or not job.get("worker_alive"):
+            raise ControlError(
+                f"job {job_id} is not RUNNING with a live worker; nothing was signalled"
+            )
+        nonce = self.state.create_confirmation(
+            user_id, chat_id, "cancel_job", {"job_id": job_id}
+        )
+        return ControlResult(
+            render.cancel_preview_text(job),
+            menus.control_confirmation_menu(nonce, "Cancel running job"),
+            job_id=job_id,
+        )
+
+    def perform_cancel(self, payload: dict[str, Any], decision) -> ControlResult:
+        job_id = validate_job_id(_text(payload.get("job_id")))
+        job = self.jobs.job_status(job_id)
+        key = self.admission.project_key_for_job(job)
+        try:
+            with self.admission.reserve(key):
+                payload_result = self.jobs.cancel_job(job_id)
+        except (AdmissionLockTimeout, AdmissionError) as exc:
+            raise ControlError(str(exc)) from exc
+        return ControlResult(
+            render.cancel_result_text(payload_result),
+            self._job_menu(job_id, decision),
+            job_id=job_id,
+            notification=None,
+        )
+
+    # ---- queued owner instructions ----------------------------------------------
+    def begin_queue(self, job_id: str, user_id: int, chat_id: int) -> ControlResult:
+        job_id = validate_job_id(job_id)
+        job = self.jobs.job_status(job_id)
+        if not self.config.queue_owner_messages:
+            raise ControlError("queued owner messages are disabled by configuration")
+        if self.state.count_pending_owner_messages(job_id) >= MAX_QUEUED_MESSAGES:
+            raise ControlError(
+                f"this job already has {MAX_QUEUED_MESSAGES} queued instructions; "
+                "resume it to deliver them first"
+            )
+        data = {"job_id": job_id}
+        wizard_id = self.state.create_wizard(
+            user_id, chat_id, "queue", "text", data, ttl_seconds=WIZARD_TTL
+        )
+        return ControlResult(
+            render.queue_prompt_text(job),
+            menus.wizard_cancel_menu(wizard_id),
+            job_id=job_id,
+        )
+
+    def queue_text(self, wizard: dict[str, Any], text: str, decision) -> ControlResult:
+        if str(wizard["step"]) != "text":
+            raise ControlError("this wizard is waiting for a button, not text")
+        if not self.config.queue_owner_messages:
+            raise ControlError("queued owner messages are disabled by configuration")
+        wizard_id = str(wizard["wizard_id"])
+        user_id = int(decision.user_id or 0)
+        chat_id = int(decision.chat_id or 0)
+        job_id = validate_job_id(_text(wizard["data"].get("job_id")))
+        self.jobs.job_status(job_id)
+        body = validate_text(
+            text,
+            limit=self.config.owner_message_max_chars,
+            field="owner instruction",
+            allow_newlines=True,
+        )
+        if self.state.count_pending_owner_messages(job_id) >= MAX_QUEUED_MESSAGES:
+            raise ControlError(
+                f"this job already has {MAX_QUEUED_MESSAGES} queued instructions; "
+                "resume it to deliver them first"
+            )
+        self.state.add_owner_message(job_id, user_id, chat_id, body)
+        self.state.delete_wizard(wizard_id, user_id, chat_id)
+        job = self.jobs.job_status(job_id)
+        pending = self.state.count_pending_owner_messages(job_id)
+        return ControlResult(
+            render.queue_confirmation_text(job, pending),
+            self._job_menu(job_id, decision),
+            job_id=job_id,
+        )
 
     # ---- start wizard ------------------------------------------------------------
     def begin_start(self, user_id: int, chat_id: int) -> ControlResult:
@@ -512,14 +637,30 @@ class ControlManager:
             job = self.jobs.job_status(validate_job_id(job_id))
             request = self._resume_request(data)
             self._resume_preconditions(job, request)
+            pending = self.state.list_owner_messages(job_id, pending_only=True)
+            composed = compose_resume_prompt(
+                request.prompt, pending, limit=MAX_PROMPT
+            )
+            confirmation_payload = request.payload(wizard_id)
+            confirmation_payload["prompt"] = composed
+            confirmation_payload["owner_message_ids"] = [
+                str(item["message_id"]) for item in pending
+            ]
             nonce = self.state.create_confirmation(
-                user_id, chat_id, "resume_job", request.payload(wizard_id)
+                user_id, chat_id, "resume_job", confirmation_payload
             )
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="confirm", data=data, ttl_seconds=WIZARD_TTL
             )
+            confirmation_request = ResumeRequest(
+                job_id=request.job_id,
+                prompt=composed,
+                timeout_seconds=request.timeout_seconds,
+                new_session=request.new_session,
+                force=request.force,
+            )
             return ControlResult(
-                render.resume_confirmation_text(job, request),
+                render.resume_confirmation_text(job, confirmation_request, len(pending)),
                 menus.control_confirmation_menu(nonce, "Resume job"),
                 job_id=job_id,
             )
@@ -548,8 +689,9 @@ class ControlManager:
         self, wizard: dict[str, Any], job: dict, user_id: int, chat_id: int
     ) -> ControlResult:
         data = dict(wizard["data"])
+        pending = self.state.list_owner_messages(str(job["id"]), pending_only=True)
         return ControlResult(
-            render.resume_preview_text(job, data),
+            render.resume_preview_text(job, data, pending),
             menus.resume_preview_menu(
                 str(wizard["wizard_id"]),
                 job_ref=self.state.get_or_create_job_ref(str(job["id"]), chat_id),
@@ -608,8 +750,19 @@ class ControlManager:
             "force": payload.get("force"),
         }
         request = self._resume_request(data)
+        owner_message_ids = [
+            str(item)
+            for item in (payload.get("owner_message_ids") or [])
+            if isinstance(item, str) and item
+        ]
         job = self.jobs.job_status(request.job_id)
         self._resume_preconditions(job, request)
+        previous_attempts = job.get("attempts") or 0
+        previous_attempt_count = (
+            len(previous_attempts)
+            if isinstance(previous_attempts, list)
+            else int(previous_attempts)
+        )
         key = self.admission.project_key_for_job(job)
         try:
             with self.admission.reserve(key):
@@ -624,9 +777,17 @@ class ControlManager:
                     force=request.force,
                 )
         except (ProjectBusy, GlobalGuardBusy, AdmissionLockTimeout) as exc:
+            if owner_message_ids:
+                self.state.record_owner_message_error(owner_message_ids, str(exc))
             raise ControlError(str(exc)) from exc
         except AdmissionError as exc:
+            if owner_message_ids:
+                self.state.record_owner_message_error(owner_message_ids, str(exc))
             raise ControlError(str(exc)) from exc
+        except (JobError, ControlError) as exc:
+            if owner_message_ids:
+                self.state.record_owner_message_error(owner_message_ids, str(exc))
+            raise
         if wizard_id:
             self.state.delete_wizard(
                 wizard_id, int(decision.user_id or 0), int(decision.chat_id or 0)
@@ -640,6 +801,11 @@ class ControlManager:
                 self._job_menu(job_id, decision),
                 job_id=job_id,
             )
+        if owner_message_ids:
+            delivered = self.state.mark_owner_messages_delivered(
+                owner_message_ids, previous_attempt_count + 1
+            )
+            resumed["owner_messages_delivered"] = delivered
         if self.notifier is not None:
             self.notifier.notify_resumed(resumed)
         return ControlResult(
@@ -652,11 +818,14 @@ class ControlManager:
     def _job_menu(self, job_id: str, decision) -> dict:
         ref = self.state.get_or_create_job_ref(job_id, int(decision.chat_id or 0))
         resumable = True
+        cancellable = False
         try:
             job = self.jobs.job_status(job_id)
-            resumable = not (
-                str(job.get("state")) == "RUNNING" and job.get("worker_alive")
-            )
+            running = str(job.get("state")) == "RUNNING" and bool(job.get("worker_alive"))
+            resumable = not running
+            cancellable = running
         except JobError:
             pass
-        return menus.job_menu(ref, control=True, resumable=resumable)
+        return menus.job_menu(
+            ref, control=True, resumable=resumable, cancellable=cancellable
+        )

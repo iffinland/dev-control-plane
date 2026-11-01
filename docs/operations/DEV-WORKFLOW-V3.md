@@ -12,7 +12,8 @@ Related: [control-plane contract](../../AGENTS.md),
 Workflow v3 is a durable job layer around the existing execution guard and
 OpenCode:
 
-- `dev start`, `dev status`, `dev report`, `dev logs` and `dev resume`;
+- `dev start`, `dev status`, `dev report`, `dev logs`, `dev resume` and additive
+  `dev cancel`;
 - unique job IDs, start/end timestamps, PID/process tracking and an eight-hour
   wall-clock maximum per attempt;
 - persistent job status, event history, run logs and Markdown reports outside
@@ -25,8 +26,10 @@ OpenCode:
   alive after the final assistant message;
 - detached background execution that survives SSH disconnect without tmux;
 - safe resume of the same OpenCode session and working tree;
-- optional Telegram notifications for completed, failed, blocked and timed-out
-  jobs, with credentials outside Git.
+- additive, verified cancellation that signals only the job's own guard, marks
+  the job `CANCELLED` and preserves the working tree and session for resume;
+- optional Telegram notifications for completed, failed, blocked, timed-out and
+  cancelled jobs, with credentials outside Git.
 
 It is **not** a scheduler, daemon, timer or network listener. No job starts
 itself; the owner starts it. The guard still enforces one heavyweight OpenCode
@@ -36,13 +39,14 @@ execution at a time.
 
 | Component | Path | Purpose |
 | --- | --- | --- |
-| CLI | `tools/dev.py` | `dev start/status/report/logs/resume` (plus `accept`) |
+| CLI | `tools/dev.py` | `dev start/status/report/logs/resume/cancel` (plus `accept`) |
 | Job engine | `tools/devjob/` | Durable store, detection, notifications, worker |
 | Execution guard | `tools/opencode_guard.py` | Preflight, one-execution lock, 8-hour maximum, session-completion watchdog, safe cancellation |
 | Development profile | `adapters/opencode/agents/opencode-development.md` | Unattended development permissions and hard boundaries |
 | Restricted profile | `adapters/opencode/agents/opencode-unattended.md` | Existing restricted profile for non-development tasks |
 | Profile installer | `tools/install_opencode_profiles.sh` | Copies/symlinks profiles into `~/.config/opencode/agents/` |
 | CLI tests | `tools/test_dev_cli.py` | Integration and unit tests with a fake OpenCode |
+| Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
 | Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
 | Permission/installer tests | `tools/test_agent_permissions.py`, `tools/test_install_profiles.py` | Profile semantics and installer safety |
@@ -66,6 +70,7 @@ run.log              guarded OpenCode output
 worker.log           worker/guard console output
 child.pid.json       child PID/PGID written by the guard
 completion.json      structured session-completion evidence, when detected
+cancel.requested.json accepted owner cancel request, scoped to one attempt
 acceptance-AC1.log   per-criterion command output
 report.md            rendered Markdown report
 .worker.lock         per-job worker lock
@@ -166,6 +171,7 @@ dev start \
 | `FAILED` | A required criterion failed, an unresolved failure detector fired, or the process exited non-zero. |
 | `BLOCKED` | The guard refused, an unresolved permission/dependency/marker blocked the run, or manual acceptance is pending. |
 | `TIMEOUT` | The guard reached the wall-clock limit (exit code `124`). |
+| `CANCELLED` | An owner cancel request was verified and delivered to the job's own guard; acceptance commands are skipped and the job remains resumable. |
 
 `SUCCESS` is computed from evidence, not from the OpenCode exit code alone. A
 run that exits `0` but fails an acceptance command, reports an incomplete
@@ -272,6 +278,7 @@ then continues the job.
 dev resume <job-id>
 dev resume <job-id> --timeout 8h
 dev resume <job-id> --prompt "Continue from the failing test; do not reset the tree."
+dev resume <job-id> --prompt-file -   # read a long instruction from stdin
 dev resume <job-id> --new-session     # only when the original session is unknown
 dev resume <job-id> --force           # re-run an already successful job
 ```
@@ -280,6 +287,36 @@ Resume reuses the same job directory, repository/worktree and OpenCode session
 (`opencode run --session <id>`). It appends a new attempt and never runs Git
 reset, clean, stash or checkout. If the session ID is unknown, resume refuses to
 attach to a random session unless `--new-session` is explicitly requested.
+
+## Cancel without discarding work
+
+```bash
+dev cancel <job-id>
+dev cancel <job-id> --json
+dev cancel <job-id> --grace 30
+```
+
+Cancellation is deliberately narrow:
+
+1. The job must be `RUNNING` with a live worker.
+2. The recorded guard PID is revalidated against `/proc/<pid>/cmdline`: it must
+   be `opencode_guard.py run` for this exact job, log path or session title.
+3. PID 1, the caller's process group and detected Qortium processes are refused.
+4. A durable `cancel.requested.json` marker and an append-only `cancel_requested`
+   event are written before the signal.
+5. `SIGTERM` is sent to that exact guard PID only. The guard uses its existing
+   safe child-process-group termination. No name-based kill is used.
+6. The worker observes the marker, skips acceptance commands, writes
+   `CANCELLED` plus a report, and preserves the working tree and session. If the
+   worker is already gone, `dev cancel` reconciles or finalizes a matching
+   cancellation itself. If the guard survives the bounded grace period, the
+   command reports `cancel_status: pending` and does not escalate.
+7. `dev resume <job-id>` continues the same job, worktree and session like any
+   other terminal attempt. An old cancel marker never applies to a new attempt.
+
+A cancelled job is not deleted. The cancel marker is durable evidence and is
+scoped to one attempt number. `dev status` reports `CANCELLED` and
+`cancelled_at`.
 
 ## Manual acceptance
 
@@ -308,7 +345,7 @@ the owner's real credentials, never commit them):
   "enabled": true,
   "bot_token": "<configured outside Git>",
   "chat_id": "<configured outside Git>",
-  "events": ["SUCCESS", "FAILED", "BLOCKED", "TIMEOUT"],
+  "events": ["SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED"],
   "timeout_seconds": 10
 }
 ```

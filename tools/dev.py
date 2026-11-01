@@ -7,6 +7,7 @@ Commands:
     dev report   render the durable job report
     dev logs     read or follow a job log
     dev resume   continue an existing job without discarding work
+    dev cancel   safely stop a RUNNING job without discarding work
     dev accept   record owner acceptance for manual criteria
 
 Jobs run in their own session, so they survive SSH disconnects without tmux.
@@ -69,6 +70,12 @@ def _read_prompt(args: argparse.Namespace) -> str:
         except OSError as exc:
             raise runner.JobError(f"could not read prompt file: {exc}") from exc
     return args.prompt or ""
+
+
+def _read_resume_prompt(args: argparse.Namespace) -> str | None:
+    if args.prompt_file:
+        return _read_prompt(args)
+    return args.prompt
 
 
 def _print_job_started(job: dict, as_json: bool) -> None:
@@ -234,7 +241,7 @@ def command_resume(args: argparse.Namespace) -> int:
     job = runner.resume_job(
         job["id"],
         timeout_seconds=runner.parse_duration(args.timeout) if args.timeout else None,
-        prompt=args.prompt,
+        prompt=_read_resume_prompt(args),
         new_session=args.new_session,
         force=args.force,
     )
@@ -245,6 +252,30 @@ def command_resume(args: argparse.Namespace) -> int:
         print(f"Attempt:     {len(job.get('attempts') or []) + 1}")
         print(f"Session:     {job.get('session_id') or '(new session)'}")
         print(f"Log:         {job['log_path']}")
+    return 0
+
+
+def command_cancel(args: argparse.Namespace) -> int:
+    _apply_state_dir(args)
+    job = load_job(args.job_id)
+    result = runner.cancel_job(job["id"], grace_seconds=args.grace)
+    status = str(result.get("cancel_status") or "unknown")
+    payload = {
+        "cancel_status": status,
+        "detail": result.get("detail") or "",
+        "job": runner.status_payload(result["job"]),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"Cancel status: {status}")
+    print(f"Job:           {payload['job'].get('id')}")
+    print(f"State:         {payload['job'].get('state')}")
+    print(f"Detail:        {payload['detail']}")
+    if status in {"cancelled", "pending"}:
+        print("")
+        print("The working tree and OpenCode session history are preserved.")
+        print(f"Continue later with: dev resume {payload['job'].get('id')}")
     return 0
 
 
@@ -347,11 +378,27 @@ def build_parser() -> argparse.ArgumentParser:
     add_state_argument(resume)
     resume.add_argument("job_id", nargs="?", default=None)
     resume.add_argument("--timeout", default=None, help="new wall-clock timeout (maximum 8h)")
-    resume.add_argument("--prompt", default=None, help="replacement resume instruction")
+    resume_prompt = resume.add_mutually_exclusive_group()
+    resume_prompt.add_argument("--prompt", default=None, help="replacement resume instruction")
+    resume_prompt.add_argument(
+        "--prompt-file", default=None, help="read the resume instruction from a file ('-' for stdin)"
+    )
     resume.add_argument("--new-session", action="store_true", help="start a new OpenCode session")
     resume.add_argument("--force", action="store_true", help="allow resuming a SUCCESS job")
     resume.add_argument("--json", action="store_true")
     resume.set_defaults(func=command_resume)
+
+    cancel = subparsers.add_parser("cancel", help="safely cancel a RUNNING job")
+    add_state_argument(cancel)
+    cancel.add_argument("job_id", help="job ID to cancel")
+    cancel.add_argument(
+        "--grace",
+        type=float,
+        default=None,
+        help="seconds to wait for the worker to finalize (default: 20)",
+    )
+    cancel.add_argument("--json", action="store_true")
+    cancel.set_defaults(func=command_cancel)
 
     accept = subparsers.add_parser("accept", help="record manual owner acceptance")
     add_state_argument(accept)

@@ -329,7 +329,8 @@ elif args[:1] == ["start"]:
     print(json.dumps(job))
     sys.exit(0 if desired == "RUNNING" else 20)
 elif args[:1] == ["resume"]:
-    record(args)
+    stdin_text = sys.stdin.read() if "--prompt-file" in args else ""
+    record(args, stdin_text)
     job_id = args[1]
     job = jobs[job_id]
     job["state"] = "RUNNING"
@@ -349,6 +350,33 @@ elif args[:1] == ["resume"]:
     append_event(job, "resume_requested", "resume_count=%d" % job["resume_count"])
     append_event(job, "attempt_started", "attempt=%d resume=True" % job["attempt_number"])
     print(json.dumps(job))
+elif args[:1] == ["cancel"]:
+    record(args)
+    job_id = args[1]
+    job = jobs.get(job_id)
+    if not job:
+        print("fake dev: job not found", file=sys.stderr)
+        sys.exit(2)
+    if job.get("state") != "RUNNING" or not job.get("worker_alive"):
+        print("fake dev: only a RUNNING job can be cancelled", file=sys.stderr)
+        sys.exit(2)
+    job["state"] = "CANCELLED"
+    job["blocker"] = "cancelled by owner request"
+    job["worker_alive"] = False
+    job["ended_at"] = now()
+    if job.get("attempts"):
+        job["attempts"][-1]["ended_at"] = now()
+    save()
+    write_job_files(job)
+    append_event(job, "cancel_requested", "attempt=1 guard_pid=%s" % job.get("guard_pid"))
+    append_event(job, "cancel_observed", "attempt=1")
+    append_event(job, "finished", "state=CANCELLED exit=143")
+    payload = {
+        "cancel_status": "cancelled",
+        "detail": "fake verified cancellation",
+        "job": job,
+    }
+    print(json.dumps(payload))
 else:
     print("fake dev: unsupported command", file=sys.stderr)
     sys.exit(2)

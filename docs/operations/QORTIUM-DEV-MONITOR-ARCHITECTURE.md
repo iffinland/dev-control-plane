@@ -1,8 +1,9 @@
 # Qortium Dev Monitor — Telegram remote control architecture
 
-Status: **P1 read-only observer and P2 authorized control implemented with an
-optional systemd user unit; P3-P5 remain proposed.** Activation remains manual;
-see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
+Status: **P1 read-only observer, P2 authorized control and P3 cancellation plus
+queued owner messaging implemented with an optional systemd user unit; P4-P5
+remain proposed.** Activation remains manual; see
+[QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 
 | Field | Value |
 | --- | --- |
@@ -15,7 +16,7 @@ see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | P1 read-only observer and P2 authorized control implemented in `tools/dev_monitor.py` and `tools/devmonitor/`. P2 adds the registered-project start wizard, mandatory acceptance criteria, confirmation previews, fixed-shape `dev start`/`dev resume` calls, per-project admission, global guard awareness, STARTED/RESUMED and terminal notifications with durable deduplication, optional local unlock and idempotent one-time confirmations. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. P3 cancel/two-way messaging is not implemented. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Workflow v3 file, job, Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
+| Implementation state | P1 read-only observer, P2 authorized control and P3 additive cancellation plus queued owner messaging are implemented in `tools/dev_monitor.py`, `tools/devmonitor/` and additive Workflow v3 changes. P3 adds the `CANCELLED` state, verified `dev cancel`, optional `dev resume --prompt-file -`, durable queued owner instructions with explicit delivery state, safe resume composition and explicit new-session confirmation. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 
@@ -847,8 +848,8 @@ Owner to agent:
   the working tree, do not expand scope, and finish with verifiable evidence.
 - Delivery is exactly once per message per resume attempt; delivered messages are
   marked and shown as history. Failed resume attempts do not lose the queue.
-- The monitor recommends adding `--prompt-file -` to `dev resume` in Phase 3 so
-  long instructions are not exposed in the process argument list.
+- Phase 3 adds `dev resume --prompt-file -`, so composed owner instructions are
+  passed over standard input rather than the process argument list.
 
 Agent to owner:
 
@@ -1114,7 +1115,8 @@ browses(browse_id PRIMARY KEY, user_id, chat_id, root_id, rel_dir, page, created
 confirmations(nonce PRIMARY KEY, user_id, chat_id, action, payload_json,
               created_at, expires_at, used_at)
 owner_messages(message_id PRIMARY KEY, job_id, user_id, chat_id, body,
-               created_at, delivered_at, delivered_attempt)
+               created_at, delivery_state, delivered_at, delivered_attempt,
+               last_error_redacted)
 project_queue(queue_id PRIMARY KEY, project_id, payload_json, created_at,
               expires_at, state)
 audit(id PRIMARY KEY, ts, user_id, chat_id, update_id, action, job_id,
@@ -1182,8 +1184,8 @@ Properties:
 - Agent and model are selected from config allowlists, not free text.
 - Prompt text is written to `dev start` through `--prompt-file -`, not an
   argument.
-- Resume text is passed as one argv element; the recommended Phase 3 improvement
-  is `--prompt-file -` for `dev resume` to avoid long-argument exposure.
+- Resume text is passed over stdin with `dev resume --prompt-file -` to avoid
+  long-argument exposure. The P2 one-argv-element form remains supported.
 - The monitor never calls `bash -c`, `sh -c`, `eval`, `exec` or a shell wrapper for
   its own operations.
 - Acceptance commands are the one intentional shell surface, because Workflow v3
@@ -1347,7 +1349,7 @@ it owns for that job. Name-based `kill`, `pkill`, `killall` and
 | P0 | Audit and architecture (this document) | No | No | Document reviewed; no code changes; validators pass |
 | P1 | Read-only observer: config, auth, long polling, state, redaction, menus, job list/status/logs/report, project list, doc browser | No | No | Unauthorized users denied; read-only flows pass; no listener; no secrets |
 | P2 (implemented) | Control: start wizard, resume, per-project admission, STARTED/RESUMED, final relay, confirmations, optional unlock | Yes, through existing CLI | No | Start/resume acceptance passes; concurrency tests pass; no duplicate notifications |
-| P3 | Cancel and owner messaging: additive `dev cancel`, optional `dev resume --prompt-file -`, queued instructions | Yes | Additive only | Separate authorization; v3 regression tests; cancel safety tests; queue exactly-once |
+| P3 (implemented) | Cancel and owner messaging: additive `dev cancel`, optional `dev resume --prompt-file -`, queued instructions | Yes | Additive only | Separate authorization; v3 regression tests; cancel safety tests; queue exactly-once |
 | P4 | Hardening and operations: docs download policy, rate limits, incident runbook, real-runtime acceptance | No new semantics | No | Security acceptance matrix passes; owner accepts real bot flow |
 | P5 (optional) | Advanced: latest assistant message view, richer queues, multi-chat, search | Maybe | Additive | Separate owner decision and scope |
 
@@ -1392,7 +1394,8 @@ The implemented P2 surface is deliberately smaller than a general job console:
   timeout and optional branch label before a one-time confirmation nonce.
 - `dev start` is invoked with `--no-notify --json`, the exact fixed argument
   shape from section 5.5, and the prompt over stdin. `dev resume` uses
-  `--prompt` as one argv element; P3 may add `--prompt-file -`.
+  `--prompt` as one argv element in P2; P3 uses the additive
+  `--prompt-file -` form.
 - Per-project admission uses `monitor/locks/project-<sha256>.lock` held only for
   the check-and-invoke section. A running job in another project is reported as
   global-guard busy rather than creating a doomed attempt.
@@ -1403,20 +1406,28 @@ The implemented P2 surface is deliberately smaller than a general job console:
 - The optional local passphrase uses a salted scrypt hash in owner-local config,
   an in-process unlock window and `/unlock`/`/lock`. Passphrases are never stored
   in monitor state or audit rows. Restarting the monitor re-locks control.
-- P3 cancel and owner-to-agent queued messaging are intentionally absent. The
-  `/cancel` command only cancels an active wizard.
+- The P3 cancel and owner-to-agent queued messaging extensions are described
+  below. In P2-only deployments, `/cancel` cancelled only an active wizard.
 
-P3 — cancel and messaging:
+P3 — cancel and messaging (implemented 2026-11-01):
 
-- Separate owner authorization to modify Workflow v3.
-- Add `CANCELLED` as an additive terminal state; update state lists, `status`,
-  `notify`, report rendering and tests.
-- Add `dev cancel` with identity verification and safe signal handling.
-- Optional `dev resume --prompt-file -`.
-- Add queued owner messages and resume composition.
-- Regression tests must prove existing start/status/report/logs/resume/accept
-  behaviour is unchanged.
-- The monitor must not expose a cancel action before this phase is accepted.
+- Separate owner authorization to modify Workflow v3 was granted by the P3 task.
+- `CANCELLED` is an additive terminal state in `store`, `notify`, `status`,
+  report rendering and tests.
+- `dev cancel` verifies the recorded guard against `/proc/<pid>/cmdline`, writes
+  a durable attempt-scoped cancel marker and sends `SIGTERM` to that exact PID.
+  It never signals by name and never escalates during the bounded grace period.
+- `dev resume --prompt-file -` passes long owner instructions over stdin.
+- Queued owner messages are stored in monitor SQLite with explicit
+  `queued`/`delivered` state and `delivered_attempt`; they are composed into the
+  resume prompt and marked delivered only after Workflow v3 accepts the resume.
+  A failed resume leaves the queue intact.
+- A job with no known OpenCode session still requires the explicit New session
+  toggle before resume.
+- Regression tests cover existing start/status/report/logs/resume/accept
+  behaviour, cancel safety, queue exactly-once delivery and notification dedupe.
+- The monitor exposes cancel only in control mode and only for a RUNNING job with
+  a live worker.
 
 P4 — hardening and operations:
 

@@ -158,6 +158,56 @@ class StateTests(unittest.TestCase):
         self.state.consume_confirmation(nonce, 1, 2, "start_job")
         self.assertIsNone(self.state.confirmation_action(nonce, 1, 2))
 
+    def test_owner_messages_are_durable_and_explicitly_delivered(self) -> None:
+        message_id = self.state.add_owner_message("job-1", 1, 2, "first instruction")
+        self.state.add_owner_message("job-2", 1, 2, "other job")
+        self.assertEqual(self.state.count_pending_owner_messages("job-1"), 1)
+        pending = self.state.list_owner_messages("job-1", pending_only=True)
+        self.assertEqual([item["message_id"] for item in pending], [message_id])
+        self.state.close()
+        reopened = MonitorState(self.path)
+        try:
+            self.assertEqual(reopened.count_pending_owner_messages("job-1"), 1)
+            delivered = reopened.mark_owner_messages_delivered([message_id], 2)
+            self.assertEqual(delivered, 1)
+            self.assertEqual(reopened.count_pending_owner_messages("job-1"), 0)
+            row = reopened.list_owner_messages("job-1")[0]
+            self.assertEqual(row["delivery_state"], "delivered")
+            self.assertEqual(row["delivered_attempt"], 2)
+            self.assertIsNotNone(row["delivered_at"])
+            # Delivering the same message again is a no-op.
+            self.assertEqual(reopened.mark_owner_messages_delivered([message_id], 3), 0)
+        finally:
+            reopened.close()
+        self.state = MonitorState(self.path)
+
+    def test_owner_message_errors_are_redacted_and_queue_is_kept(self) -> None:
+        message_id = self.state.add_owner_message("job-1", 1, 2, "instruction")
+        secret = "queue-" + "secret-" + "789"
+        self.state.record_owner_message_error([message_id], "pass" + "word=" + secret)
+        row = self.state.list_owner_messages("job-1")[0]
+        self.assertEqual(row["delivery_state"], "queued")
+        self.assertNotIn(secret, row["last_error_redacted"])
+        self.assertIn("<redacted>", row["last_error_redacted"])
+
+    def test_prune_removes_only_old_delivered_owner_messages(self) -> None:
+        now = [1_000_000]
+        state = MonitorState(self.root / "owner-clock.db", clock=lambda: now[0])
+        try:
+            delivered_id = state.add_owner_message("job-1", 1, 2, "old")
+            queued_id = state.add_owner_message("job-1", 1, 2, "keep")
+            state.mark_owner_messages_delivered([delivered_id], 1)
+            now[0] += 7200
+            state.prune(
+                seen_retention_seconds=1,
+                owner_message_retention_seconds=3600,
+            )
+            remaining = {item["message_id"] for item in state.list_owner_messages("job-1")}
+            self.assertNotIn(delivered_id, remaining)
+            self.assertIn(queued_id, remaining)
+        finally:
+            state.close()
+
     def test_audit_redacts_credentials(self) -> None:
         secret = "audit-" + "secret-" + "123"
         self.state.record_audit(

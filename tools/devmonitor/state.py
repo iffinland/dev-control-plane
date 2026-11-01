@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .redact import redact_text
 from .timings import TimingRecorder, default_recorder
@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS notification_log (
     kind TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS owner_messages (
+    message_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    delivery_state TEXT NOT NULL DEFAULT 'queued',
+    delivered_at INTEGER,
+    delivered_attempt INTEGER,
+    last_error_redacted TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS owner_messages_job
+    ON owner_messages(job_id, created_at);
 """
 
 
@@ -377,6 +391,84 @@ class MonitorState:
         ).fetchone()
         return row is not None
 
+    # ---- queued owner instructions ----------------------------------------------
+    def add_owner_message(
+        self,
+        job_id: str,
+        user_id: int,
+        chat_id: int,
+        body: str,
+    ) -> str:
+        """Persist one owner instruction until it is delivered by a resume."""
+
+        message_id = uuid.uuid4().hex[:12]
+        self.connection.execute(
+            "INSERT INTO owner_messages(message_id, job_id, user_id, chat_id, body, "
+            "created_at, delivery_state) VALUES(?, ?, ?, ?, ?, ?, 'queued')",
+            (
+                message_id,
+                job_id,
+                int(user_id),
+                int(chat_id),
+                body,
+                self.clock(),
+            ),
+        )
+        return message_id
+
+    def list_owner_messages(
+        self,
+        job_id: str,
+        *,
+        pending_only: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT message_id, job_id, user_id, chat_id, body, created_at, "
+            "delivery_state, delivered_at, delivered_attempt, last_error_redacted "
+            "FROM owner_messages WHERE job_id = ?"
+        )
+        values: list[Any] = [job_id]
+        if pending_only:
+            query += " AND delivery_state = 'queued'"
+        query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+        values.append(max(1, int(limit)))
+        rows = self.connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_pending_owner_messages(self, job_id: str) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM owner_messages "
+            "WHERE job_id = ? AND delivery_state = 'queued'",
+            (job_id,),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def mark_owner_messages_delivered(
+        self, message_ids: Sequence[str], attempt_number: int
+    ) -> int:
+        if not message_ids:
+            return 0
+        now = self.clock()
+        updated = 0
+        for message_id in message_ids:
+            cursor = self.connection.execute(
+                "UPDATE owner_messages SET delivery_state = 'delivered', "
+                "delivered_at = ?, delivered_attempt = ?, last_error_redacted = '' "
+                "WHERE message_id = ? AND delivery_state = 'queued'",
+                (now, int(attempt_number), message_id),
+            )
+            updated += int(cursor.rowcount or 0)
+        return updated
+
+    def record_owner_message_error(self, message_ids: Sequence[str], error: str) -> None:
+        for message_id in message_ids:
+            self.connection.execute(
+                "UPDATE owner_messages SET last_error_redacted = ? "
+                "WHERE message_id = ? AND delivery_state = 'queued'",
+                (redact_text(error, limit=300), message_id),
+            )
+
     # ---- browser and confirmation state -----------------------------------------
     def create_browse(
         self,
@@ -538,7 +630,12 @@ class MonitorState:
             )
             return count <= int(limit)
 
-    def prune(self, *, seen_retention_seconds: int = 7 * 86400) -> None:
+    def prune(
+        self,
+        *,
+        seen_retention_seconds: int = 7 * 86400,
+        owner_message_retention_seconds: int = 30 * 86400,
+    ) -> None:
         with self.timings.measure("sqlite:prune"):
             now = self.clock()
             self.connection.execute("DELETE FROM browses WHERE expires_at < ?", (now,))
@@ -549,6 +646,11 @@ class MonitorState:
             self.connection.execute(
                 "DELETE FROM seen_updates WHERE received_at < ?",
                 (now - int(seen_retention_seconds),),
+            )
+            self.connection.execute(
+                "DELETE FROM owner_messages WHERE delivery_state = 'delivered' "
+                "AND delivered_at IS NOT NULL AND delivered_at < ?",
+                (now - int(owner_message_retention_seconds),),
             )
 
     def snapshot(self) -> dict[str, Any]:
@@ -561,6 +663,7 @@ class MonitorState:
                 "confirmations",
                 "wizards",
                 "notification_log",
+                "owner_messages",
                 "audit",
             ):
                 row = self.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()

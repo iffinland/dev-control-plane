@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qortium Dev Monitor (P2 observer plus authorized control).
+"""Qortium Dev Monitor (P3 observer plus authorized control).
 
 Commands:
     run              run the long-polling monitor (foreground or systemd user service)
@@ -8,7 +8,7 @@ Commands:
     stop             request a graceful stop through the monitor's flag file
     hash-passphrase  create a control_passphrase_hash without echoing it
 
-Read-only mode is the default. Start and resume are available only when the
+Read-only mode is the default. Start, resume and cancel are available only when the
 owner explicitly configures ``monitor.mode = "control"``. Every mutating action
 goes through the existing Workflow v3 CLI with fixed arguments and an explicit
 confirmation. The monitor never touches Qortium or VPS system configuration.
@@ -233,7 +233,7 @@ def command_stop(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev-monitor",
-        description="Qortium Dev Monitor P2 (Telegram observer with explicit control mode).",
+        description="Qortium Dev Monitor P3 (Telegram observer with explicit control mode).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"dev-monitor {__version__}")

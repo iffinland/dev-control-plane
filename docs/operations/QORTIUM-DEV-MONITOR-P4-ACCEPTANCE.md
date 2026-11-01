@@ -1,11 +1,19 @@
 # Qortium Dev Monitor P4 — real-runtime owner acceptance checklist
 
 Status: **P4 automated hardening is implemented and tested; the monitor health
-check now distinguishes start readiness from running-instance health. Real-
-Telegram owner acceptance remains pending until the owner executes this checklist
-with the real bot. No real-Telegram or owner-attested P4 evidence is recorded in
-this repository as of 2026-11-01.** This document does not authorize Telegram
-actions, a service restart or a live-job cancellation by an agent.
+check distinguishes start readiness from running-instance health. The owner also
+completed the real P3 E1-E7 Telegram run through the actual authorized bot with
+the isolated synthetic worker: Queue instruction, two cancellations, Resume and
+exactly-once delivery into synthetic attempt #2 passed the harness's formal
+verification. The temporary evidence directory was cleaned up, so no message
+IDs, update IDs, timestamps, journal or report from that run are retained in this
+repository. R-08, R-09 and R-10 therefore carry real-Telegram/synthetic-backend
+evidence only, never production-worker verification. Menu, Refresh and monitor
+service stop/start were observed during that run and are recorded only as
+owner-attested observations. Real token rotation and deliberate network fault
+injection remain unexecuted owner-only exceptions. No P4 production-worker
+acceptance is claimed.** This document does not authorize Telegram actions, a
+service restart or a live-job cancellation by an agent.
 
 | Field | Value |
 | --- | --- |
@@ -83,39 +91,42 @@ Every row distinguishes what is actually proved:
 | Class | Meaning | Trust level |
 | --- | --- | --- |
 | **A — automated** | Isolated unit, integration or fault-injection tests using a fake Telegram transport, fake Workflow v3 CLI, temporary SQLite state and/or test-owned helper processes. No real bot, token, production job or service is used. | Proves code paths only. Never proves real Telegram delivery, real OpenCode work, VPS state or production-job semantics. |
-| **S — synthetic P3 E1-E7** | The already verified P3 queue/cancel/resume acceptance harness and its automated E1-E7 tests. They exercise the real monitor router, authorization, callback handling, confirmation nonces and renderers against a scripted or isolated transport and a synthetic, forced-`CANCELLED` job. | Proves the synthetic callback/queue/cancel/resume contract. Does **not** prove real production-job delivery, real OpenCode execution, real Qortium behavior or every P4 row. A real-bot P3 run is still owner-only and is not recorded here. |
-| **T — real Telegram observed** | Sanitized journal/evidence produced by an actual owner interaction with the real bot (message IDs, update IDs, button/callback labels). | The only class that can prove real Telegram round-trips. **None recorded for P4.** |
-| **O — owner-attested** | A dated owner statement about an observation that is not otherwise captured by the harness. | Weakest live evidence; must name what was observed and when. **None recorded for P4.** |
-| **U — unexecuted live check** | A required real-runtime step that has not been performed. | Not a pass. Must remain pending in the sign-off. |
+| **S — synthetic P3 E1-E7 (scripted)** | The P3 queue/cancel/resume acceptance harness and its automated E1-E7 tests, driven by a scripted or isolated transport and a synthetic, forced-`CANCELLED` job. | Proves the synthetic callback/queue/cancel/resume contract. Does **not** prove a real Telegram round-trip. |
+| **RT/S — real Telegram with synthetic backend** | A genuine interaction with the actual authorized bot, routed through the isolated P3 worker and a synthetic job, that passed the harness's formal verification. | Proves the observed real Telegram round-trip and the synthetic backend behavior only. It does **not** prove production-worker, production-job, OpenCode or Qortium behavior. If the temporary evidence directory was cleaned, no identifiers are reconstructed. |
+| **T — retained real Telegram evidence** | A sanitized journal or report retained from a real bot interaction, including message/update IDs, callback labels and timestamps. | The strongest retained live evidence. **None retained for P4.** |
+| **O — owner-attested** | A dated owner statement about an observation that is not captured by retained harness evidence. | Weakest live evidence; must name what was observed and when, and must not be expanded into an unobserved guarantee. |
+| **U — unexecuted live check** | A required real-runtime step that has not been performed. | Not a pass. Must remain pending in the sign-off or be recorded as an explicit exception. |
 
-Automated tests and synthetic P3 results must never be relabelled as real
-Telegram or production-job evidence.
+Automated tests, scripted synthetic results and real-Telegram/synthetic-backend
+results must never be relabelled as production-worker or production-job evidence.
+A cleaned temporary evidence directory is not permission to invent identifiers.
 
 ### 3.2 Consolidated R-01 through R-16
 
-The "Automated / synthetic" column names current repository coverage. The
-"Real Telegram" and "Owner-attested" columns are deliberately empty until the
-owner performs the interaction and records sanitized evidence. `U` means the
-live check is unexecuted.
+The "Automated / scripted" column names current repository coverage. "RT/S"
+records the observed real-bot run with the isolated synthetic backend, whose
+temporary evidence was cleaned. "O" records observations without retained
+harness evidence. `U` means the live check remains unexecuted. No row is promoted
+to production-worker, production-job or retained-journal evidence.
 
-| ID | Scenario | Automated / synthetic coverage | Real Telegram evidence (T) | Owner-attested (O) | Live status |
+| ID | Scenario | Automated / scripted synthetic coverage | Real Telegram + synthetic backend (RT/S) | Owner-attested (O) | Live status / remaining gap |
 | --- | --- | --- | --- | --- | --- |
-| R-01 | Authorized owner menu | `test_dev_monitor_integration.py::test_authorized_start_returns_main_menu`, `::test_help_and_unknown_commands`; `test_dev_monitor_auth.py` allowlist cases | none recorded | none recorded | U — not executed with the real bot |
-| R-02 | Unauthorized account | `test_dev_monitor_p4.py::test_unauthorized_identities_are_denied_without_job_data`; `test_dev_monitor_integration.py::test_unknown_user_gets_generic_denial_without_job_data`, `::test_unauthorized_callback_is_rejected_before_state_lookup`; `test_dev_monitor_auth.py` denial cases | none recorded | none recorded | U — no second real account used |
-| R-03 | Read-only browsing | `test_dev_monitor_integration.py::test_job_list_status_logs_and_report`, `::test_document_browse_preview_and_redacted_download`; `test_dev_monitor_p4.py` document-hardening tests | none recorded | none recorded | U — production previews not exercised |
-| R-04 | Document traversal and symlink | `test_dev_monitor_p4.py::test_traversal_absolute_and_encoded_paths_are_refused`, `::test_listing_excludes_hidden_symlinks_sensitive_and_special_files`, `::test_symlink_swap_between_listing_and_open_is_refused`, `::test_symlinked_root_is_refused` | none recorded | none recorded | U — isolated fixtures only |
-| R-05 | Redacted download | `test_dev_monitor_p4.py::test_text_preview_and_download_are_redacted_and_source_is_unchanged`; `test_dev_monitor_integration.py::test_job_download_log` | none recorded | none recorded | U — no real report/document download |
-| R-06 | Start a disposable job | `test_dev_monitor_p4.py::test_start_queue_cancel_resume_with_fake_cli` (fake `dev start`, no OpenCode) | none recorded | none recorded | U — no real start; synthetic P3 results do not prove real job delivery |
-| R-07 | Duplicate confirmation | `test_dev_monitor_p4.py::test_duplicate_update_runs_its_action_once`, `::test_confirmation_nonces_are_single_use_across_connections`, `::test_confirmation_rejects_wrong_owner_action_and_expiry`; `test_dev_monitor_integration.py` duplicate/restart cases | none recorded | none recorded | U — no real double button press |
-| R-08 | Queue an instruction | S: P3 `test_p3_live_acceptance.py::test_live_flow_queue_and_cancel_produces_verifiable_evidence`, `::test_e7_waits_for_resume_then_stops_only_after_second_cancel`; A: `test_dev_monitor_p4.py` fake-CLI queue flow | none recorded | none recorded | U — synthetic/scripted only; real P3 live run not recorded |
-| R-09 | Cancel only the disposable job | S: P3 E1-E7 automated cancel flow and `dev cancel` fake worker; A: `test_dev_monitor_p4.py::test_cancel_revalidates_running_state_before_signal`; `test_dev_monitor_p3.py` cancel tests | none recorded | none recorded | U — no live production or synthetic job was cancelled by this job |
-| R-10 | Resume and deliver once | S: P3 E7 automated two-cancellation lifecycle and exactly-once delivery test; A: `test_dev_monitor_p4.py::test_start_queue_cancel_resume_with_fake_cli` | none recorded | none recorded | U — synthetic only; no real resume/delivery |
-| R-11 | Failed resume keeps the queue | `test_dev_monitor_p3.py::test_failed_resume_keeps_the_queue_queued`; `test_dev_monitor_p4.py` queue/resume integration | none recorded | none recorded | U — no real refused resume |
-| R-12 | Restart persistence | `test_dev_monitor_p4.py::test_restart_preserves_offset_seen_updates_nonces_and_queue`, `::test_notification_dedupe_survives_restart`; `test_dev_monitor_integration.py` restart cases | none recorded | none recorded | U — monitor was not restarted |
-| R-13 | Polling fault recovery | `test_dev_monitor_p4.py::test_polling_recovers_from_transient_and_rate_limit_without_losing_updates`, `::test_fatal_poll_error_stops_without_advancing_offset`, `::test_transient_action_failure_is_not_replayed`; `test_dev_monitor_integration.py` 429/transient cases | none recorded | none recorded | U — no owner-approved network fault |
-| R-14 | Token rotation | No automated real-token rotation; configuration validation rejects malformed/insecure config, but rotation itself requires the real BotFather flow | none recorded | none recorded | U — owner-only; not executed and no token was read or changed |
-| R-15 | No listener and no Qortium/VPS change | `test_dev_monitor_integration.py::test_monitor_source_has_no_listener_or_host_mutation` (static source assertion); no before/after real runtime comparison | none recorded | none recorded | U — no live before/after listener/PID/config comparison was performed |
-| R-16 | Graceful shutdown | `test_dev_monitor_service_unit.py` systemd/stop contract; `test_dev_monitor_integration.py::test_stop_flag_stops_between_iterations`; `test_dev_monitor_p4.py` stop/lock cases | none recorded | none recorded | U — no service stop or flag-file stop was performed |
+| R-01 | Authorized owner menu | `test_dev_monitor_integration.py::test_authorized_start_returns_main_menu`, `::test_help_and_unknown_commands`; `test_dev_monitor_auth.py` allowlist cases | The authorized owner navigated `/jobs` and the synthetic job view through the real bot. No retained journal or IDs. | Main menu and job navigation observed on 2026-11-01 during the P3 E1-E7 run. | Partial — real menu path observed; a dedicated `/start` and secret-exposure check was not separately captured. |
+| R-02 | Unauthorized account | `test_dev_monitor_p4.py::test_unauthorized_identities_are_denied_without_job_data`; `test_dev_monitor_integration.py::test_unknown_user_gets_generic_denial_without_job_data`, `::test_unauthorized_callback_is_rejected_before_state_lookup`; `test_dev_monitor_auth.py` denial cases | none | none | U — no second real account was used. |
+| R-03 | Read-only browsing | `test_dev_monitor_integration.py::test_job_list_status_logs_and_report`, `::test_document_browse_preview_and_redacted_download`; `test_dev_monitor_p4.py` document-hardening tests | The synthetic job status view was browsed through the real bot. | Refresh was pressed on the synthetic job view and its normal feedback was observed. | Partial — job view and Refresh observed; real document preview/download not exercised. |
+| R-04 | Document traversal and symlink | `test_dev_monitor_p4.py::test_traversal_absolute_and_encoded_paths_are_refused`, `::test_listing_excludes_hidden_symlinks_sensitive_and_special_files`, `::test_symlink_swap_between_listing_and_open_is_refused`, `::test_symlinked_root_is_refused` | none | none | U — isolated fixtures only. |
+| R-05 | Redacted download | `test_dev_monitor_p4.py::test_text_preview_and_download_are_redacted_and_source_is_unchanged`; `test_dev_monitor_integration.py::test_job_download_log` | none | none | U — no real report/document download. |
+| R-06 | Start a disposable job | `test_dev_monitor_p4.py::test_start_queue_cancel_resume_with_fake_cli` (fake `dev start`, no OpenCode) | none — the P3 harness deliberately never starts OpenCode | none | U — no real start; synthetic P3 results do not prove production job delivery. |
+| R-07 | Duplicate confirmation | `test_dev_monitor_p4.py::test_duplicate_update_runs_its_action_once`, `::test_confirmation_nonces_are_single_use_across_connections`, `::test_confirmation_rejects_wrong_owner_action_and_expiry`; `test_dev_monitor_integration.py` duplicate/restart cases | none | none | U — no real double button press or replayed confirmation. |
+| R-08 | Queue an instruction | S: P3 `test_p3_live_acceptance.py::test_live_flow_queue_and_cancel_produces_verifiable_evidence`, `::test_e7_waits_for_resume_then_stops_only_after_second_cancel`; A: `test_dev_monitor_p4.py` fake-CLI queue flow | Yes — real bot Queue instruction on the synthetic job; harness formal verification passed. Evidence cleaned; no IDs/timestamps retained. | Queue flow observed during the same real-bot run. | RT/S only — proves the real Telegram queue round-trip with a synthetic backend, not production-worker delivery. |
+| R-09 | Cancel only the disposable job | S: P3 E1-E7 automated cancel flow and `dev cancel` fake worker; A: `test_dev_monitor_p4.py::test_cancel_revalidates_running_state_before_signal`; `test_dev_monitor_p3.py` cancel tests | Yes — two real-bot cancellations of the synthetic job; formal verification passed. Evidence cleaned; no IDs/timestamps retained. | Cancel flow observed during the same real-bot run. | RT/S only — no production job was cancelled and production-worker cancellation is not proved. |
+| R-10 | Resume and deliver once | S: P3 E7 automated two-cancellation lifecycle and exactly-once delivery test; A: `test_dev_monitor_p4.py::test_start_queue_cancel_resume_with_fake_cli` | Yes — real-bot Resume delivered the queued instruction into synthetic attempt #2 exactly once; formal verification passed. Evidence cleaned; no IDs/timestamps retained. | Resume and delivery observed during the same real-bot run. | RT/S only — proves exactly-once synthetic attempt-#2 delivery, not production-worker resume. |
+| R-11 | Failed resume keeps the queue | `test_dev_monitor_p3.py::test_failed_resume_keeps_the_queue_queued`; `test_dev_monitor_p4.py` queue/resume integration | none | none | U — no real refused resume. |
+| R-12 | Restart persistence | `test_dev_monitor_p4.py::test_restart_preserves_offset_seen_updates_nonces_and_queue`, `::test_notification_dedupe_survives_restart`; `test_dev_monitor_integration.py` restart cases | none | The production monitor was stopped and restarted around the P3 run, but not while a disposable job was RUNNING. | U — offset/queue/nonce/dedupe persistence across a running-job restart was not captured. |
+| R-13 | Polling fault recovery | `test_dev_monitor_p4.py::test_polling_recovers_from_transient_and_rate_limit_without_losing_updates`, `::test_fatal_poll_error_stops_without_advancing_offset`, `::test_transient_action_failure_is_not_replayed`; `test_dev_monitor_integration.py` 429/transient cases | none | none | U — deliberate network fault injection remains an unexecuted owner-only exception. |
+| R-14 | Token rotation | No automated real-token rotation; configuration validation rejects malformed/insecure config, but rotation itself requires the real BotFather flow | none | none | U — unexecuted owner-only exception; no token was read, printed or changed. |
+| R-15 | No listener and no Qortium/VPS change | `test_dev_monitor_integration.py::test_monitor_source_has_no_listener_or_host_mutation` (static source assertion); no before/after real runtime comparison | none — the P3 run does not prove host/listener invariants | none | U — no live before/after listener/PID/config comparison was performed. |
+| R-16 | Graceful shutdown | `test_dev_monitor_service_unit.py` systemd/stop contract; `test_dev_monitor_integration.py::test_stop_flag_stops_between_iterations`; `test_dev_monitor_p4.py` stop/lock cases | none | The monitor service was stopped and started through its documented service path for the P3 run. | Partial — stop/start observed; graceful exit status, lock release and running-job independence were not separately captured. |
 
 Row-level rule: a failing live security row (authorization, redaction,
 traversal/symlink, cancel identity or duplicate side effect) blocks acceptance
@@ -138,6 +149,48 @@ probe and `--expect start` for a strict preflight probe. A stale lock file is
 reported but does not block a new start; an unknown lock owner or competing
 instances fail closed. See the runbook for exact output and exit behavior.
 
+### 3.4 Remaining safe operator checklist
+
+Owner-only actions. An agent must not execute them. Use only the authorized
+private chat, prefer a disposable synthetic job, and never use a production job,
+real wallet data, the Qortium node or a deliberately sensitive production file
+as a test input.
+
+Preflight (read-only):
+
+```bash
+cd /home/iffi/dev-workspace/control-plane
+python3 tools/dev_monitor.py check --expect running
+python3 tools/dev_monitor.py status --json
+ps -o pid,rss,args -p "$(pgrep -f 'Qortium.jar' | head -n1)" || true
+ss -ltnp | grep -E 'qortium|dev-monitor|python' || true
+```
+
+Record the application SHA, monitor version, sanitized check output, Qortium
+PID/RSS and listener list before starting. `pgrep` is read-only PID discovery;
+never use a name-based kill.
+
+| Step | Safe action | Expected outcome | Evidence capture | Stop / rollback |
+| --- | --- | --- | --- | --- |
+| 1. Baseline | Run the preflight above. | The running monitor is healthy; no unexpected listener or Qortium change. | Sanitized check output, Qortium PID/RSS, listener list, UTC time. | `check --expect running` fails or Qortium/listener state is unexpected: stop, do not test. |
+| 2. R-01 / R-03 menu and Refresh | Send `/start`, `/jobs`; open the disposable synthetic job; press Refresh twice on an unchanged view. | Menu and job view open; mode is visible; no token, chat ID or path leaks; Refresh gives explicit feedback rather than silence. | Sanitized command/button labels, timestamps and result; no credentials. | Any secret or unexpected data appears: revert to `read_only` and stop. |
+| 3. R-02 unauthorized account | Only with an owner-controlled second Telegram account not in the allowlist, send `/start`, `/jobs` and press a stale callback. Never automate an unauthorized real account. | Generic `Access denied.` only; no job, project, path or configuration data. | Sanitized denial text and timestamp. | Any data disclosure: stop and record a failed security row. |
+| 4. R-03 / R-05 document redaction | Browse an existing harmless document; preview and download it. Do not create a secret-bearing production file. | Text is redacted; the source hash and metadata are unchanged; no secret appears. | Sanitized preview/download result and before/after file hash. | Any unredacted secret: stop and record a failed security row. |
+| 5. R-04 traversal and symlink | Try absolute, `..`, backslash and percent-encoded paths. If needed, create one disposable symlink under the docs root and remove it afterwards. | Every attempt is refused; no file outside the trusted root is read. | Sanitized refusal result and timestamp. | Any successful escape: stop and record a failed security row. |
+| 6. R-07 confirmation replay | On the disposable synthetic job only, press the same confirmation button twice or replay a stale callback. | The action runs once; the duplicate is acknowledged without a second side effect. | Sanitized messages and observed state. | A second side effect: stop and record a failed security row. |
+| 7. R-08 / R-09 / R-10 retention (optional) | Re-run the P3 harness with `--mode e7` if a retained journal is desired. Queue one instruction, cancel, Resume, then cancel again. | Synthetic job only; exactly one queued instruction delivered into attempt #2; two cancellations; final state `CANCELLED`, never `SUCCESS`. | Retained private `telegram-journal.jsonl`, `verify` output and timestamp. If the original run's directory was already cleaned, record only "observed, formal verification passed, evidence not retained" and invent nothing. | Any production job, duplicate delivery or `SUCCESS`: stop and keep the failure record. |
+| 8. R-11 failed resume | With a disposable synthetic job, queue an instruction and attempt a resume that is deliberately refused. | The instruction remains `[queued]`; nothing is delivered or lost. | Sanitized refusal and queued state. | A lost or duplicated instruction: stop and record a failure. |
+| 9. R-12 restart persistence | With a disposable synthetic job RUNNING, restart only the monitor via its documented path. | The job continues; no duplicate STARTED/RESUMED/terminal message; offset, queue and confirmations survive. | Sanitized pre/post status, message counts and UTC time. | If Qortium is touched or messages duplicate: stop and record a failure. |
+| 10. R-13 fault injection | Only if the owner deliberately injects a safe network fault; otherwise leave this as an unexecuted exception. | Polling backs off and recovers without losing updates or replaying an in-handler action. | Sanitized observed behavior and recovery time. | Any lost or replayed action: stop and record a failure. |
+| 11. R-14 token rotation | Owner-only BotFather rotation, owner config update at `0600`, monitor restart, `check`. Never paste the token. | Old token fails cleanly; new token works after restart; no token in logs, chat, audit or reports. | Only "rotated and verified" plus timestamp; no token or hash. | Old token still works or a token appears: stop and record a failure. This job did not execute rotation. |
+| 12. R-15 / R-16 host invariants and shutdown | Re-run the preflight; stop/start the monitor through its documented service or flag path. | No new monitor listener; Qortium PID/RSS and VPS configuration unchanged; graceful exit, released lock, unaffected jobs. | Before/after sanitized comparison, exit/status output, UTC time. | Any Qortium/VPS change or forced shutdown: stop and record a failure. Never use a name-based kill. |
+
+Common rollback: set `monitor.mode` back to `read_only`; stop the monitor through
+its documented service or flag path; restore the owner config from its private
+backup if it changed; run `dev_monitor.py check`; remove only disposable test
+jobs, documents and symlinks. Do not restart, stop or reconfigure Qortium, and do
+not change VPS settings.
+
 ## 4. Evidence capture
 
 Store a short sanitized record under the central workspace validation tree:
@@ -155,6 +208,12 @@ Include:
 - any owner-only step that could not be executed and why;
 - no tokens, chat IDs, passphrases, prompts, private paths or raw logs.
 
+For the already observed real-bot E1-E7 run whose temporary directory was
+cleaned, record only "observed; harness formal verification passed; temporary
+evidence not retained". Do not reconstruct unavailable message IDs, update IDs,
+timestamps or reports, and do not present RT/S evidence as production-worker
+evidence.
+
 Do not copy the owner-local `telegram.json` or monitor SQLite database into Git or
 a report.
 
@@ -167,8 +226,9 @@ a report.
 | Application SHA | |
 | Monitor version | |
 | Mode (`read_only` / `control`) | |
-| Rows passed | |
-| Rows failed or not executed | |
+| Rows passed with retained evidence | |
+| Rows observed as RT/S or owner-attested | |
+| Rows failed, unexecuted or explicit exceptions | |
 | Reason for any exception | |
 | Rollback performed? | |
 | Remaining risk accepted? | |
@@ -176,7 +236,9 @@ a report.
 A failed security row (authorization, redaction, traversal/symlink, cancel
 identity, duplicate side effect) blocks acceptance. Revert `monitor.mode` to
 `read_only`, stop the monitor through its documented path, and record the failure
-without modifying Qortium or VPS configuration.
+without modifying Qortium or VPS configuration. Real token rotation and deliberate
+network fault injection remain explicit unexecuted exceptions until the owner
+performs them.
 
 ## 6. Optional `control_passphrase_hash` assessment
 
@@ -221,7 +283,14 @@ changed or committed by this job.
 
 ## 7. Current evidence verdict
 
-As of 2026-11-01, the automated and synthetic layers are green, the health-check
-semantics are corrected and covered, and the R-matrix is consolidated. The
-real-Telegram (T) and owner-attested (O) columns are empty, and every live row
-remains `U`. The owner must perform and record the live checks before sign-off.
+As of 2026-11-01, the automated and scripted-synthetic layers are green, the
+health-check semantics are corrected and covered, and the R-matrix distinguishes
+each evidence class. R-08, R-09 and R-10 have genuine real-Telegram interaction
+with the isolated synthetic backend and passed the harness's formal verification;
+their temporary evidence was cleaned, so no message IDs, timestamps or reports are
+retained. Menu, Refresh and monitor service stop/start were observed and remain
+owner-attested observations only. The retained real-Telegram (T) column is empty.
+Every other live row remains `U`, with real token rotation and deliberate network
+fault injection recorded as explicit unexecuted owner-only exceptions. This is
+not production-worker acceptance; the owner must perform and record the remaining
+safe checks before sign-off.

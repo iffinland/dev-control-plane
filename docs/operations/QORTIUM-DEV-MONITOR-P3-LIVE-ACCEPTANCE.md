@@ -1,8 +1,12 @@
 # Qortium Dev Monitor — P3 live Telegram acceptance harness
 
-Status: **implemented and covered by isolated regression tests. The live
-Telegram run is explicit operator work and was not executed by the implementing
-agent.**
+Status: **implemented and covered by isolated regression tests. The implementing
+agent did not execute the live Telegram run. The owner later completed E1-E7
+through the actual authorized bot with the isolated synthetic worker; Queue
+instruction, two cancellations, Resume and exactly-once delivery into synthetic
+attempt #2 passed `verify`. The temporary evidence directory was cleaned up, so
+no journal, message IDs, update IDs, timestamps or report are retained in this
+repository.**
 
 | Field | Value |
 | --- | --- |
@@ -329,12 +333,19 @@ The repository has verified automated E1-E7 synthetic coverage in
   unrecorded evidence, changed sources and non-synthetic jobs;
 - the default E1-E6 run still stops after the first cancellation.
 
-The P4 acceptance matrix cites these results as **S — synthetic P3 E1-E7**. They
-prove the synthetic queue/cancel/resume contract only. They do **not** prove
-real production-job delivery, real OpenCode execution, real Telegram journal
-capture or every P4 row. The real-bot E1-E7 run described above remains
-unexecuted and owner-only; no live `telegram-evidence.json` or journal is stored
-in this repository.
+The P4 acceptance matrix cites the automated results as **S — synthetic P3
+E1-E7**. They prove the synthetic queue/cancel/resume contract only.
+
+The P4 matrix separately records a later **RT/S — real Telegram with synthetic
+backend** observation: the owner completed E1-E7 through the actual authorized
+bot and the isolated synthetic worker, and `verify` passed. That run proves the
+observed real Telegram Queue-instruction, two-cancellation, Resume and
+attempt-#2 delivery round-trip against the synthetic backend. It does **not**
+prove real production-job delivery, real OpenCode execution, a retained journal or
+every P4 row. Its temporary evidence directory was cleaned, so this repository
+retains no `telegram-evidence.json`, journal, message/update IDs or timestamps;
+those values must not be reconstructed. Do not present this RT/S result as
+production-worker evidence.
 
 ## 12. Troubleshooting
 

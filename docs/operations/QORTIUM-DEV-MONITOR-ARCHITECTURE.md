@@ -1591,6 +1591,12 @@ These require the owner's real bot, real Telegram account and the VPS. They are
 not committed credentials and are not part of CI. The maintained P4 checklist
 with preflight, evidence capture and sign-off is
 [QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+As of 2026-11-01 the owner completed the real-bot P3 E1-E7 run with the isolated
+synthetic backend and `verify` passed; that is real-Telegram/synthetic-backend
+evidence for Queue instruction, cancellation and Resume delivery only, not
+production-worker acceptance. Its temporary evidence was cleaned, so no journal
+or identifiers are retained. The remaining P4 rows, including token rotation and
+deliberate fault injection, stay owner-only and explicitly unexecuted.
 
 | ID | Scenario | Expected evidence |
 | --- | --- | --- |

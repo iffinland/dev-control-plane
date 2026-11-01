@@ -180,6 +180,26 @@ This is read-only inspection of the lock and `/proc`; it never signals the
 monitor and does not replace real-Telegram acceptance evidence. Do not relabel
 synthetic or automated monitor tests as real production-job delivery.
 
+## Acceptance evidence classes
+
+When a task reports live acceptance, keep these classes separate in the matrix:
+
+- **automated/scripted** — fake transport, fake CLI or scripted harness; proves
+  code paths only;
+- **real transport + synthetic backend** — an actual bot or network round-trip
+  driving an isolated synthetic worker; proves the transport path, not a
+  production worker or production job;
+- **retained real-runtime evidence** — sanitized journal or report with IDs and
+  timestamps; the strongest live evidence;
+- **owner-attested** — a dated owner observation without retained harness
+  evidence; record exactly what was seen and never expand it into an unobserved
+  guarantee;
+- **unexecuted** — keep as pending or an explicit exception, never a pass.
+
+Cleaning a temporary evidence directory does not authorize reconstructing
+identifiers. Do not promote automated, scripted or synthetic-backend results to
+production-worker evidence.
+
 ## Known failure modes
 
 - Treating OpenCode exit `0`, a green acceptance command or a push command exit
@@ -232,6 +252,9 @@ detector now treats only that explicit, evidenced check-mode WARN as
 informational while preserving guard refusals, errors and ordinary non-zero
 exits as failures.
 Maturity stays `candidate` until a real job completes through the mandatory
-default with an authorized push and verified remote SHA. Re-check after any
-change to job schema, check IDs, override policy or state mapping; update the
-skills index and operating docs in the same change.
+default with an authorized push and verified remote SHA. It also gained a
+reusable acceptance-evidence classification so automated, scripted,
+real-transport/synthetic-backend, owner-attested and unexecuted results are not
+collapsed into one another. Re-check after any change to job schema, check IDs,
+override policy or state mapping; update the skills index and operating docs in
+the same change.

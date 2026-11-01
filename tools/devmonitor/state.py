@@ -547,22 +547,25 @@ class MonitorState:
     def consume_confirmation(
         self, nonce: str, user_id: int, chat_id: int, action: str
     ) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM confirmations WHERE nonce = ? AND user_id = ? AND chat_id = ? "
-            "AND action = ?",
-            (nonce, int(user_id), int(chat_id), action),
-        ).fetchone()
-        if not row:
-            return None
         now = self.clock()
-        if row["used_at"] is not None or int(row["expires_at"]) < now:
-            return None
-        self.connection.execute(
-            "UPDATE confirmations SET used_at = ? WHERE nonce = ?", (now, nonce)
+        # Claim the nonce and mark it used in one statement. A read-then-write
+        # sequence would let two connections consume the same confirmation and
+        # could create a duplicate job after a restart or replay.
+        cursor = self.connection.execute(
+            "UPDATE confirmations SET used_at = ? WHERE nonce = ? AND user_id = ? "
+            "AND chat_id = ? AND action = ? AND used_at IS NULL AND expires_at >= ?",
+            (now, nonce, int(user_id), int(chat_id), action, now),
         )
+        if cursor.rowcount != 1:
+            return None
+        row = self.connection.execute(
+            "SELECT payload_json FROM confirmations WHERE nonce = ?", (nonce,)
+        ).fetchone()
+        if row is None:
+            return None
         try:
             payload = json.loads(row["payload_json"])
-        except json.JSONDecodeError:
+        except (TypeError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
 

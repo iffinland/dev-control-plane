@@ -26,7 +26,6 @@ from .timings import TimingRecorder, default_recorder
 
 JOBS_PAGE_SIZE = 6
 PREVIEW_BYTES = 20000
-RATE_LIMIT_ACTIONS = 30
 RATE_LIMIT_WINDOW = 60
 SAFE_COMMAND_LABELS = frozenset(
     {
@@ -182,9 +181,22 @@ class Router:
             return
         assert kind is not None and event is not None
         if not self.state.hit_rate_limit(
-            f"user:{decision.user_id}", RATE_LIMIT_ACTIONS, RATE_LIMIT_WINDOW
+            f"user:{decision.user_id}",
+            self.config.max_actions_per_minute,
+            RATE_LIMIT_WINDOW,
         ):
-            self._audit(decision, "rate_limited", "refused")
+            self._audit(decision, "rate_limited", "refused", "user")
+            if kind == "callback_query":
+                self._answer(event, "Rate limit exceeded; try again shortly.", decision)
+            else:
+                self._send(decision.chat_id or 0, "Rate limit exceeded; try again shortly.")
+            return
+        if not self.state.hit_rate_limit(
+            f"chat:{decision.chat_id}",
+            self.config.max_actions_per_chat_per_minute,
+            RATE_LIMIT_WINDOW,
+        ):
+            self._audit(decision, "rate_limited", "refused", "chat")
             if kind == "callback_query":
                 self._answer(event, "Rate limit exceeded; try again shortly.", decision)
             else:

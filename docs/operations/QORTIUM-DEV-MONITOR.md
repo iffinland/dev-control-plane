@@ -1,17 +1,21 @@
-# Qortium Dev Monitor — P3 operations and activation
+# Qortium Dev Monitor — P4 operations and activation
 
-Status: **P1 read-only observer, P2 authorized control and P3 cancellation plus
-queued owner messaging implemented. Default mode remains `read_only`; owner
-activation is manual.** A production systemd user unit is stored in this
-repository. This task did not install, enable, restart or start it, and it did
-not modify the owner-local `telegram.json`.
+Status: **P1 read-only observer, P2 authorized control, P3 cancellation plus
+queued owner messaging and P4 hardening are implemented. Default mode remains
+`read_only`; owner activation is manual.** A production systemd user unit is
+stored in this repository. This task did not install, enable, restart or start
+it, and it did not modify the owner-local `telegram.json`.
 
-This runbook covers the Phase P3 Telegram control surface described in the
-[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P3 adds
-verified job cancellation, persistent queued owner instructions with explicit
-delivery state, safe resume composition and explicit new-session confirmation.
-It preserves the P1 read-only surface, P2 start/resume control, per-project
-admission, notification deduplication and every security boundary.
+This runbook covers the Phase P4 Telegram control surface described in the
+[Qortium Dev Monitor architecture](QORTIUM-DEV-MONITOR-ARCHITECTURE.md). P4 adds
+detector-classification regression fixes, lifecycle-notification redaction,
+per-user and per-chat rate limits, an hourly start cap, atomic one-time
+confirmation claims, job-directory symlink resistance, comprehensive
+fault-injection tests and the
+[real-runtime owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+It preserves the P1 read-only surface, P2 start/resume control, P3 cancel and
+queued instructions, per-project admission, notification deduplication and every
+security boundary.
 
 ## 1. What the monitor provides
 
@@ -46,6 +50,9 @@ Control mode (explicit owner configuration only):
   successful resume through `dev resume --prompt-file -`.
 - Explicit New session confirmation when a job has no known OpenCode session.
 - Optional local unlock passphrase using a salted scrypt hash.
+- P4 controls: per-user and per-chat action rate limits, an hourly start cap,
+  lifecycle-notification redaction, atomic single-use confirmations and a
+  symlink-resistant job artifact boundary.
 
 The monitor reuses the existing Workflow v3 job store and CLI plus the existing
 owner-local Telegram configuration. It is not a second job manager, scheduler or
@@ -121,6 +128,9 @@ Example shape (placeholders only; never commit real values):
     "slow_timing_seconds": 1.0,
     "status_refresh_seconds": 30,
     "max_inline_chars": 3500,
+    "max_actions_per_minute": 30,
+    "max_actions_per_chat_per_minute": 60,
+    "max_starts_per_hour": 6,
     "max_text_download_bytes": 2097152,
     "max_binary_download_bytes": 10485760,
     "allow_binary_downloads": false,
@@ -171,6 +181,9 @@ Timeouts and control limits:
 | `request_timeout_seconds` | `10` | Ordinary Bot API calls, separate from long polling. |
 | `document_timeout_seconds` | `60` | `sendDocument` uploads. |
 | `slow_timing_seconds` | `1.0` | A measured operation at or above this duration is logged as `timing slow`. |
+| `max_actions_per_minute` | `30` | Per-user action budget in a rolling minute. |
+| `max_actions_per_chat_per_minute` | `60` | Per-chat action budget, covering every authorized user in that chat. |
+| `max_starts_per_hour` | `6` | Maximum admitted monitor-started jobs per rolling hour. |
 | `unlock_ttl_seconds` | `900` | In-process control unlock window. |
 | `admission_lock_timeout_seconds` | `5` | Per-project check-and-invoke lock wait. |
 | `lifecycle_poll_seconds` | `30` | Minimum interval between lifecycle event scans. |
@@ -482,8 +495,10 @@ Monitor state is private and separate from job state:
 
 P2 adds durable tables for wizards, notification deduplication and lifecycle
 event cursors. P3 adds `owner_messages` with explicit `queued`/`delivered` state,
-`delivered_at`, `delivered_attempt` and a short redacted error. Owner instructions
-are private monitor state; they are never written to the audit table.
+`delivered_at`, `delivered_attempt` and a short redacted error. P4 uses the
+`rate_limits` table for per-user, per-chat and hourly-start budgets and claims
+confirmation nonces atomically. Owner instructions are private monitor state;
+they are never written to the audit table.
 
 Use `DEV_MONITOR_STATE` to override the monitor state directory and
 `--state-dir` on the CLI for a one-off override. Deleting monitor state resets UI
@@ -560,7 +575,7 @@ are written in one transaction instead of two separate commits.
 | `401 Unauthorized` | Correct the owner-local token; never print it into chat, logs or Git. The service does not restart on this exit code. |
 | Config refused | Set mode `0600`, add non-empty numeric user/chat allowlists, and in control mode add non-empty agent/model allowlists. |
 | Control action refused | The monitor is read-only, or a passphrase is configured and the chat has not run `/unlock`. |
-| Start refused: project busy | A job is running in that project. Wait for it to finish and start again. P3 queues owner instructions for a job, not new starts; there is no scheduler. |
+| Start refused: project busy | A job is running in that project. Wait for it to finish and start again. The monitor queues owner instructions for a job, not new starts; there is no scheduler. |
 | Start refused: global guard busy | Another heavyweight execution is running. The existing guard allows one at a time; wait for it to finish. |
 | Start refused: BLOCKED | Workflow v3 guard preflight refused. Read the sanitized blocker; no STARTED is sent. |
 | Resume refused: live RUNNING | The job has a live worker. Inspect it instead of starting a duplicate attempt. |
@@ -577,10 +592,12 @@ are written in one transaction instead of two separate commits.
 | Cancel pending | Workflow v3 sent SIGTERM to the verified guard but it survived the grace period. No escalation is attempted; inspect status or retry `/cancel <job>`. |
 | Instruction is not live | Queued instructions are delivered only on the next resume by design. Open Resume to deliver them. |
 | Queued instruction remains queued | The resume was refused or failed. Fix the refusal and resume again; the queue is preserved. |
+| `Rate limit exceeded` | The per-user or per-chat action budget was reached. Wait for the rolling minute to pass; do not raise the limit just to bypass an unexpected burst. |
+| `start rate limit reached` | The hourly monitor-start cap was reached. Wait, or change `max_starts_per_hour` deliberately and restart the monitor. |
 
 ## 9. Validation
 
-The P3 tests use fake Telegram transports, an isolated fake `dev` CLI and
+The P1-P4 tests use fake Telegram transports, an isolated fake `dev` CLI and
 test-owned child processes. They never contact production Telegram and never
 start a real OpenCode session:
 
@@ -599,22 +616,23 @@ python3 tools/test_dev_monitor_lifecycle.py
 python3 tools/test_dev_monitor_control.py
 python3 tools/test_dev_monitor_p3.py
 python3 tools/test_dev_monitor_integration.py
+python3 tools/test_dev_monitor_p4.py
 python3 tools/test_dev_cancel.py
 ```
 
-The P3 tests use fake Telegram transports, a fake `dev` CLI and test-owned child
-processes. They never start a real OpenCode session and never signal a live job
-or Qortium process.
+The P4 suite adds isolated authorization/replay/rate-limit tests, trusted-root
+document fuzzing, symlink-swap and special-file tests, cross-boundary redaction
+checks, restart persistence, Telegram polling fault injection, notification
+dedupe after restart, atomic confirmation claims and a fake-CLI
+start/queue/cancel/resume integration flow. It also contains the detector
+regression that keeps a `FileNotFoundError` for a test fixture from being
+classified as `missing_dependency` while real missing commands/modules remain
+blocking.
 
-The unit can be syntax-checked without installing it:
+The complete automated gate is:
 
 ```bash
-systemd-analyze verify deploy/systemd/user/qortium-dev-monitor.service
-```
-
-The full control-plane release gate remains:
-
-```bash
+python3 -m unittest discover -s tools -p 'test_*.py' -q
 python3 tools/validate_control_plane.py
 python3 tools/validate_skills.py
 python3 tools/validate_security.py --self-test
@@ -622,19 +640,37 @@ python3 tools/validate_security.py .
 python3 tools/validate_agent_permissions.py --check
 ```
 
+The P4 tests use fake Telegram transports, a fake `dev` CLI, test-owned child
+processes and isolated temporary state. No test contacts production Telegram,
+starts a real OpenCode session, cancels a live job or signals a Qortium process.
+
+The unit can be syntax-checked without installing it:
+
+```bash
+systemd-analyze verify deploy/systemd/user/qortium-dev-monitor.service
+```
+
 ## 10. Deferred to later phases
 
-- P4: real-runtime acceptance matrix, incident-runbook hardening and any binary
-  document policy change.
+- P4 real-runtime acceptance remains pending until the owner executes the
+  [owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md). Automated
+  hardening, detector corrections and fault-injection tests are implemented.
 - P5: optional read-only latest assistant message, richer queues and search.
 
-P3 does not expose manual acceptance, live prompt injection, arbitrary process
+P4 does not expose manual acceptance, live prompt injection, arbitrary process
 signals or scheduler behaviour. OpenCode exit code 0 is never treated as
 acceptance; Workflow v3 criteria remain authoritative.
 
-## 11. P3 owner acceptance
+## 11. P4 owner acceptance
 
-After activating the new code (restart the monitor; running jobs are unaffected):
+Use the dedicated
+[real-runtime owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+It expands the P3 cancel/queue smoke checks into R-01 through R-16 and covers
+authorization, replay, redaction, traversal/symlink resistance, restart
+persistence, polling fault recovery, token rotation and the no-listener /
+no-Qortium-change invariant.
+
+The P3 smoke path still applies inside that checklist:
 
 1. Confirm `dev cancel` refuses a completed job:
    `python3 tools/dev.py cancel <terminal-job-id>` returns a sanitized error and
@@ -654,3 +690,68 @@ After activating the new code (restart the monitor; running jobs are unaffected)
    must refuse until the owner explicitly enables New session.
 8. Restart the monitor during a running job. The job must continue, and no
    duplicate STARTED/RESUMED/terminal notification may be sent.
+
+## 12. Incident response and credential rotation
+
+### 12.1 Telegram account or token compromise
+
+1. Remove the affected numeric user ID or chat ID from the owner-local config.
+2. Rotate the bot token with BotFather and update
+   `~/.config/dev-control-plane/telegram.json` at mode `0600`.
+3. Restart the monitor through its documented path, then run
+   `dev_monitor.py check` and confirm no webhook is configured.
+4. Review the sanitized audit rows (`action`, `result`, numeric IDs and job ID
+   only). Do not paste message bodies, prompts or tokens into a report.
+5. Inspect affected jobs with `dev status`. Cancel only through the verified
+   `dev cancel` flow and only a job the owner intends to stop.
+6. Do not modify Qortium, VPS networking, mounts, packages or system services
+   during incident response.
+
+### 12.2 Suspected secret exposure
+
+1. Rotate the exposed credential at its source first.
+2. Search job logs, reports, monitor audit rows and documentation for the
+   redacted marker and the original value. Do not copy the value into a report.
+3. Fix the source, add a redaction regression fixture, and run
+   `python3 tools/test_dev_monitor_p4.py` and
+   `python3 tools/test_dev_monitor_redact.py`.
+4. Record a sanitized incident note under the central workspace validation tree.
+
+### 12.3 Lost or stolen device
+
+1. Revoke the Telegram session externally and remove the device.
+2. Remove the user/chat IDs from config and rotate the bot token.
+3. Review jobs and monitor state; preserve evidence before deleting anything.
+4. Delete only monitor state if necessary. Never delete or rewrite Workflow v3
+   job state to hide an incident.
+
+### 12.4 Telegram outage, `401`, `409` or repeated `429`
+
+| Symptom | Action |
+| --- | --- |
+| `401`/`403` | Treat as fatal configuration/auth failure. Fix the owner-local token; the service exits `78` and does not hot-loop. |
+| `409 Conflict` | Another poller or a webhook is active. Stop the other poller or clear the webhook explicitly; never run two pollers. |
+| Repeated `429` | Honor `retry_after`, confirm only one monitor instance holds the lock, and inspect for a duplicate poller. |
+| Timeouts / `5xx` | The monitor backs off with jitter and keeps the offset unmoved, so the unhandled update is retried. |
+| Service crash loop | Run `check`, inspect the journal, and verify the single-instance lock. Do not use a name-based kill. |
+
+### 12.5 Monitor or state corruption
+
+1. Stop the monitor through the flag/service path.
+2. Back up the private state directory if evidence is needed.
+3. Delete only the monitor database, lock or stop flag. Workflow v3 job state is
+   separate and must not be deleted.
+4. Start the monitor and run `check`; confirm jobs are still visible.
+5. Never modify `/home/iffi/qortium-preview/**`, `/home/iffi/qortium-data/**` or
+   the Qortium service as part of monitor recovery.
+
+### 12.6 Routine rotation and upgrade
+
+1. Run the full automated gate before deploying new monitor code.
+2. Stop the monitor, update the repository, run `check`, then start it again.
+   Running jobs are detached and unaffected.
+3. Rotate a token only while the monitor is stopped; verify the new identity with
+   `check` before resuming polling.
+4. Keep `allow_binary_downloads` false unless a separate owner decision and
+   per-file confirmation policy is in place.
+5. Leave `auto_start_queued` false; the monitor is not a scheduler.

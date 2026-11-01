@@ -15,6 +15,7 @@ from . import menus, render
 from .config import MonitorConfig
 from .jobs import JobError, JobFacade
 from .projects import Registry, RegistryError
+from .redact import redact_text
 from .state import MonitorState
 
 TERMINAL_STATES = frozenset(
@@ -233,8 +234,12 @@ class LifecycleNotifier:
             if ref
             else menus.back_to_main()
         )
+        # Lifecycle text contains job-derived fields such as blocker, title and
+        # alert detail. Redact here as well as in the interactive router so a
+        # secret in job state cannot bypass the outbound redaction boundary.
+        safe_text = redact_text(text, self.config.secrets, self.config.max_inline_chars)
         try:
-            self.api.send_message(chat_id, text, markup)
+            self.api.send_message(chat_id, safe_text, markup)
         except Exception:  # noqa: BLE001 - a notification failure must not stop polling
             return False
         return True

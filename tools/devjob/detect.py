@@ -83,6 +83,8 @@ RUNTIME_PREFIXES = (
     "sh:",
     "zsh:",
     "dash:",
+    "/usr/bin/env:",
+    "env:",
     "npm err!",
     "pnpm err!",
     "yarn error",
@@ -142,10 +144,31 @@ PATTERNS: tuple[tuple[str, str, re.Pattern[str], str], ...] = (
         "missing_dependency",
         "blocked",
         re.compile(
-            r"(?i)\b(?:command not found|no such file or directory|"
+            r"(?i)\b(?:command not found|"
             r"module not found error|import error: no module named|"
-            r"no module named|cannot find module|err_module_not_found|enoent|"
+            r"no module named|cannot find module|err_module_not_found|"
             r"missing dependenc(?:y|ies)|is not installed)\b"
+        ),
+        "a required command, module or dependency is missing",
+    ),
+    # A bare "No such file or directory" is not enough: Python/Node tracebacks
+    # use it for ordinary missing data files (for example a test fixture's
+    # job.json). Only a shell-style exec failure identifies a missing command.
+    (
+        "missing_dependency",
+        "blocked",
+        re.compile(
+            r"(?i)\b(?:bash|dash|sh|zsh|env|/usr/bin/env):\s*"
+            r"(?:line \d+:\s*|\d+:\s*)?[^\s:]+:\s*no such file or directory\b"
+        ),
+        "a required command, module or dependency is missing",
+    ),
+    (
+        "missing_dependency",
+        "blocked",
+        re.compile(
+            r"(?i)\b(?:bash|dash|sh|zsh):\s*"
+            r"(?:line \d+:\s*|\d+:\s*)?[^\s:]+:\s*(?:command )?not found\b"
         ),
         "a required command, module or dependency is missing",
     ),

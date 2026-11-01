@@ -1,9 +1,10 @@
 # Qortium Dev Monitor — Telegram remote control architecture
 
-Status: **P1 read-only observer, P2 authorized control and P3 cancellation plus
-queued owner messaging implemented with an optional systemd user unit; P4-P5
-remain proposed.** Activation remains manual; see
-[QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md).
+Status: **P1 read-only observer, P2 authorized control, P3 cancellation plus
+queued owner messaging and P4 hardening implemented with an optional systemd
+user unit; P5 remains proposed.** Activation remains manual; see
+[QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md) and the
+[P4 owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
 
 | Field | Value |
 | --- | --- |
@@ -16,7 +17,7 @@ remain proposed.** Activation remains manual; see
 | Base repository / branch / HEAD | `/home/iffi/dev-workspace/control-plane`, `agent/control-plane/workflow-v3-20261031`, `be5fde3` |
 | Reference contract | [AGENTS.md](../../AGENTS.md), [WORKFLOW.md](../../WORKFLOW.md), [GIT-AND-HANDOFF.md](../../GIT-AND-HANDOFF.md) |
 | Report policy note | The owner explicitly requested this path. This is an operations/architecture document, not a substitute for later implementation evidence. Later implementation and validation evidence must still be stored under `/home/iffi/dev-workspace/docs/workspace/implementation/` and `/validation/` per [REPORT-STORAGE-POLICY.md](../REPORT-STORAGE-POLICY.md). |
-| Implementation state | P1 read-only observer, P2 authorized control and P3 additive cancellation plus queued owner messaging are implemented in `tools/dev_monitor.py`, `tools/devmonitor/` and additive Workflow v3 changes. P3 adds the `CANCELLED` state, verified `dev cancel`, optional `dev resume --prompt-file -`, durable queued owner instructions with explicit delivery state, safe resume composition and explicit new-session confirmation. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
+| Implementation state | P1 read-only observer, P2 authorized control, P3 additive cancellation plus queued owner messaging and P4 hardening are implemented in `tools/dev_monitor.py`, `tools/devmonitor/` and additive Workflow v3 changes. P3 adds the `CANCELLED` state, verified `dev cancel`, optional `dev resume --prompt-file -`, durable queued owner instructions with explicit delivery state, safe resume composition and explicit new-session confirmation. P4 adds detector-classification regression fixes, lifecycle-notification redaction, per-user/per-chat rate limits, an hourly start cap, atomic one-time confirmation claims, job-directory symlink resistance, isolated fault-injection tests and the real-runtime owner acceptance checklist. `read_only` remains the default; control mode is explicit owner configuration and remains restricted to the numeric private-chat allowlist. The optional systemd user unit under `deploy/systemd/user/` was not installed, enabled, restarted or started by the repository, and owner-local `telegram.json` was not modified. No Qortium service, listener, node or VPS setting was changed. The owner must activate the bot manually; see [QORTIUM-DEV-MONITOR.md](QORTIUM-DEV-MONITOR.md). |
 
 ## 1. Executive summary
 
@@ -1350,7 +1351,7 @@ it owns for that job. Name-based `kill`, `pkill`, `killall` and
 | P1 | Read-only observer: config, auth, long polling, state, redaction, menus, job list/status/logs/report, project list, doc browser | No | No | Unauthorized users denied; read-only flows pass; no listener; no secrets |
 | P2 (implemented) | Control: start wizard, resume, per-project admission, STARTED/RESUMED, final relay, confirmations, optional unlock | Yes, through existing CLI | No | Start/resume acceptance passes; concurrency tests pass; no duplicate notifications |
 | P3 (implemented) | Cancel and owner messaging: additive `dev cancel`, optional `dev resume --prompt-file -`, queued instructions | Yes | Additive only | Separate authorization; v3 regression tests; cancel safety tests; queue exactly-once |
-| P4 | Hardening and operations: docs download policy, rate limits, incident runbook, real-runtime acceptance | No new semantics | No | Security acceptance matrix passes; owner accepts real bot flow |
+| P4 (implemented) | Hardening and operations: docs download policy, rate limits, incident runbook, real-runtime acceptance | No new semantics | No | Security acceptance matrix passes; owner accepts real bot flow |
 | P5 (optional) | Advanced: latest assistant message view, richer queues, multi-chat, search | Maybe | Additive | Separate owner decision and scope |
 
 ### 8.2 Phase details
@@ -1429,13 +1430,30 @@ P3 — cancel and messaging (implemented 2026-11-01):
 - The monitor exposes cancel only in control mode and only for a RUNNING job with
   a live worker.
 
-P4 — hardening and operations:
+P4 — hardening and operations (implemented 2026-11-01; owner acceptance pending):
 
-- Finalize redaction fixtures and fuzz the document resolver.
-- Confirm rate limits and cap enforcement.
-- Run the real-runtime acceptance matrix with the owner's bot.
-- Document incident response and rotation.
-- Record validation evidence in the central docs tree.
+- Detector regression: a Python/Node `FileNotFoundError` or a bare
+  `No such file or directory` for an ordinary data file is classified as a
+  failed command, not `missing_dependency`. Shell-style exec failures,
+  `command not found`, missing modules and `missing dependency` text remain
+  blocking. The P3 job
+  `20261101T061959Z-qortium-dev-monitor-p3-961a2a11` had been falsely blocked by
+  a cancel-test traceback naming a missing fixture `job.json`; the underlying
+  test failure was real and was fixed, but its classification was wrong.
+- Lifecycle STARTED/RESUMED/terminal and alert notifications now pass through
+  the same credential redaction boundary as interactive messages.
+- Per-user and per-chat action budgets plus an hourly start cap are enforced in
+  durable monitor state. Confirmation nonces are claimed atomically, and a job
+  artifact path is rejected if the job directory is a symlink or resolves
+  outside the job store.
+- `tools/test_dev_monitor_p4.py` adds isolated authorization, replay,
+  rate-limit, document fuzzing, symlink-swap, redaction, restart-persistence,
+  polling fault-injection, atomic-claim and fake-CLI start/queue/cancel/resume
+  integration tests. The detector regression is covered in `test_detect.py`.
+- The English runbook includes incident response, token rotation and the
+  [real-runtime owner acceptance checklist](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
+- P4 adds no new job semantics, no listener, no Qortium/VPS change and no
+  automatic scheduler. Real-runtime R-01 through R-16 remain owner-executed.
 
 P5 — optional advanced:
 
@@ -1535,7 +1553,9 @@ tree.
 ### 9.2 Real-runtime owner acceptance
 
 These require the owner's real bot, real Telegram account and the VPS. They are
-not committed credentials and are not part of CI.
+not committed credentials and are not part of CI. The maintained P4 checklist
+with preflight, evidence capture and sign-off is
+[QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md](QORTIUM-DEV-MONITOR-P4-ACCEPTANCE.md).
 
 | ID | Scenario | Expected evidence |
 | --- | --- | --- |
@@ -1625,6 +1645,9 @@ Example shape (all values are placeholders; never commit real credentials):
     "poll_timeout_seconds": 25,
     "status_refresh_seconds": 30,
     "max_inline_chars": 16000,
+    "max_actions_per_minute": 30,
+    "max_actions_per_chat_per_minute": 60,
+    "max_starts_per_hour": 6,
     "max_text_download_bytes": 2097152,
     "max_binary_download_bytes": 10485760,
     "allow_binary_downloads": false,

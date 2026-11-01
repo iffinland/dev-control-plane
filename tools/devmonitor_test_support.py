@@ -319,6 +319,7 @@ elif args[:1] == ["start"]:
         "manual_criteria": options("--manual-criterion"),
         "no_notify": "--no-notify" in args,
     }
+    jobs[job_id] = job
     save()
     write_job_files(job)
     if desired == "RUNNING":

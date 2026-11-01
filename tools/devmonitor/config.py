@@ -150,6 +150,9 @@ class MonitorConfig:
     slow_timing_seconds: float
     status_refresh_seconds: float
     max_inline_chars: int
+    max_actions_per_minute: int
+    max_actions_per_chat_per_minute: int
+    max_starts_per_hour: int
     max_text_download_bytes: int
     max_binary_download_bytes: int
     allow_binary_downloads: bool
@@ -325,6 +328,15 @@ def load_monitor_config(
             monitor.get("status_refresh_seconds"), 30.0, 10.0, 600.0
         ),
         max_inline_chars=_as_int(monitor.get("max_inline_chars"), 3500, 500, 4000),
+        max_actions_per_minute=_as_int(
+            monitor.get("max_actions_per_minute"), 30, 1, 1000
+        ),
+        max_actions_per_chat_per_minute=_as_int(
+            monitor.get("max_actions_per_chat_per_minute"), 60, 1, 1000
+        ),
+        max_starts_per_hour=_as_int(
+            monitor.get("max_starts_per_hour"), 6, 1, 100
+        ),
         max_text_download_bytes=_as_int(
             monitor.get("max_text_download_bytes"), 2 * 1024 * 1024, 1024, 8 * 1024 * 1024
         ),

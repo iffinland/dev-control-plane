@@ -549,6 +549,12 @@ class ControlManager:
         try:
             with self.admission.reserve(key):
                 self.admission.check_project(key)
+                if not self.state.hit_rate_limit(
+                    "starts:global", self.config.max_starts_per_hour, 3600
+                ):
+                    raise ControlError(
+                        "start rate limit reached; wait before starting another job"
+                    )
                 job = self.jobs.start_job(
                     repo=request.repo,
                     title=request.title,
@@ -803,7 +809,8 @@ class ControlManager:
             )
         if owner_message_ids:
             delivered = self.state.mark_owner_messages_delivered(
-                owner_message_ids, previous_attempt_count + 1
+                owner_message_ids,
+                int(resumed.get("attempt_number") or (previous_attempt_count + 1)),
             )
             resumed["owner_messages_delivered"] = delivered
         if self.notifier is not None:

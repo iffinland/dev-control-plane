@@ -153,6 +153,32 @@ class CancelTests(unittest.TestCase):
             ]
         )
 
+    def wait_for_cmdline(self, pid: int, *needles: str, timeout: float = 5.0) -> None:
+        """Wait until a freshly spawned test child has exec'd its real command.
+
+        ``/proc/<pid>/cmdline`` can briefly be empty or still report the parent
+        command immediately after ``Popen`` returns under load. The production
+        cancel path correctly refuses an unverifiable PID; the test must not race
+        it.
+        """
+
+        deadline = time.time() + timeout
+        last = ""
+        while time.time() < deadline:
+            try:
+                last = (
+                    Path(f"/proc/{pid}/cmdline")
+                    .read_bytes()
+                    .replace(b"\x00", b" ")
+                    .decode("utf-8", "replace")
+                )
+            except OSError:
+                last = ""
+            if last and all(needle in last for needle in needles):
+                return
+            time.sleep(0.02)
+        self.fail(f"child {pid} did not become ready: {last!r}")
+
     def make_job(self, *, state: str = "RUNNING") -> dict:
         job_id = "20261101T120000Z-cancel-test-12345678"
         directory = job_dir(job_id, self.state)
@@ -206,6 +232,8 @@ class CancelTests(unittest.TestCase):
         job = self.make_job()
         worker = self.spawn_worker(job["id"])
         guard = self.spawn_guard(job["id"])
+        self.wait_for_cmdline(worker.pid, "_worker", job["id"])
+        self.wait_for_cmdline(guard.pid, "opencode_guard.py", "run", job["id"])
         job = load_job(job["id"], self.state)
         job["worker_pid"] = worker.pid
         job["guard_pid"] = guard.pid
@@ -239,6 +267,8 @@ class CancelTests(unittest.TestCase):
         not_guard = self.spawn(
             [sys.executable, "-c", "import time; time.sleep(30)", job["id"]]
         )
+        self.wait_for_cmdline(worker.pid, "_worker", job["id"])
+        self.wait_for_cmdline(not_guard.pid, job["id"])
         job = load_job(job["id"], self.state)
         job["worker_pid"] = worker.pid
         job["guard_pid"] = not_guard.pid

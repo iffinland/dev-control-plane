@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qortium Dev Monitor (P3 observer plus authorized control).
+"""Qortium Dev Monitor (P4 hardened observer plus authorized control).
 
 Commands:
     run              run the long-polling monitor (foreground or systemd user service)
@@ -233,7 +233,7 @@ def command_stop(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev-monitor",
-        description="Qortium Dev Monitor P3 (Telegram observer with explicit control mode).",
+        description="Qortium Dev Monitor P4 (hardened Telegram observer with explicit control mode).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"dev-monitor {__version__}")

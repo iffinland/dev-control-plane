@@ -178,8 +178,26 @@ class JobFacade:
             path = store.job_dir(job_id, self.state_root)
         except store.StoreError as exc:
             raise JobError(str(exc)) from exc
+        if path.is_symlink():
+            raise JobError("job directory may not be a symlink")
         if not path.is_dir():
             raise JobError("job directory is not available")
+        # A job ID cannot traverse, but the job directory itself is owner-created
+        # state. Reject a symlink or any resolved path outside the job store so a
+        # derived log/report/event path cannot escape the validated root.
+        try:
+            real = path.resolve(strict=True)
+        except OSError as exc:
+            raise JobError("job directory is not available") from exc
+        root = store.jobs_root(self.state_root)
+        try:
+            real_root = root.resolve(strict=True)
+        except OSError:
+            real_root = root.resolve()
+        try:
+            real.relative_to(real_root)
+        except ValueError as exc:
+            raise JobError("job directory is outside the job store") from exc
         return path
 
     def job_log(

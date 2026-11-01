@@ -121,6 +121,89 @@ class RealFailureTests(unittest.TestCase):
         self.assertIn("missing_dependency", kinds)
 
 
+class MissingDependencyClassificationTests(unittest.TestCase):
+    """A missing data file is not a missing dependency.
+
+    Job ``20261101T061959Z-qortium-dev-monitor-p3-961a2a11`` was marked BLOCKED
+    by a detector excerpt containing ``FileNotFoundError ... job.json`` from a
+    failing cancel-test fixture. The underlying test failure was real and had to
+    be fixed, but its classification as a missing dependency was wrong.
+    """
+
+    @staticmethod
+    def payload(output: str) -> dict:
+        return {
+            "info": {"id": "ses_test"},
+            "messages": [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "output": output,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_file_not_found_in_traceback_is_a_failed_command(self) -> None:
+        output = (
+            "Traceback (most recent call last):\n"
+            "  File \"/tmp/test_cancel.py\", line 1, in <module>\n"
+            "    load_job(job_id)\n"
+            "devjob.store.StoreError: job not found: cancel-test\n"
+            "FileNotFoundError: [Errno 2] No such file or directory: "
+            "'/home/iffi/.local/state/dev-control-plane/jobs/"
+            "20261101T120000Z-cancel-test-12345678/job.json'\n"
+        )
+        kinds = {issue.kind for issue in detect.scan_events(self.payload(output))}
+        self.assertIn("failed_command", kinds)
+        self.assertNotIn("missing_dependency", kinds)
+
+    def test_file_not_found_in_failed_console_block_is_a_failed_command(self) -> None:
+        log = (
+            "✗ python3 tools/test_dev_cancel.py failed\n"
+            "FileNotFoundError: [Errno 2] No such file or directory: 'job.json'\n"
+        )
+        kinds = {issue.kind for issue in detect.scan_text(log)}
+        self.assertIn("failed_command", kinds)
+        self.assertNotIn("missing_dependency", kinds)
+
+    def test_shell_missing_executable_is_still_a_dependency(self) -> None:
+        for output in (
+            "bash: /opt/missing-tool: No such file or directory",
+            "/usr/bin/env: 'python3': No such file or directory",
+            "dash: 1: missing-tool: not found",
+        ):
+            kinds = {issue.kind for issue in detect.scan_events(self.payload(output))}
+            self.assertIn("missing_dependency", kinds, output)
+
+    def test_missing_module_and_command_are_still_dependencies(self) -> None:
+        for output in (
+            "bash: vitest: command not found",
+            "ModuleNotFoundError: No module named 'missinglib'",
+            "npm ERR! missing dependency: left-pad",
+        ):
+            kinds = {issue.kind for issue in detect.scan_events(self.payload(output))}
+            self.assertIn("missing_dependency", kinds, output)
+
+    def test_missing_regular_file_is_not_a_dependency(self) -> None:
+        kinds = {
+            issue.kind
+            for issue in detect.scan_events(
+                self.payload("cat: notes.txt: No such file or directory")
+            )
+        }
+        self.assertIn("failed_command", kinds)
+        self.assertNotIn("missing_dependency", kinds)
+
+
 class ScanOffsetTests(unittest.TestCase):
     def test_scan_log_start_offset_ignores_previous_attempt(self) -> None:
         first = "✗ old command failed\nError: The user has specified a rule which prevents you from using this specific tool call.\n"

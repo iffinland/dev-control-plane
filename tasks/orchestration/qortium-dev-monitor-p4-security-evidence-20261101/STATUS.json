@@ -7,7 +7,7 @@
   "state": "owner_validation_pending",
   "state_revision": 1,
   "previous_state": "implementing",
-  "updated_at_utc": "2026-11-01T16:43:43Z",
+  "updated_at_utc": "2026-11-01T16:47:00Z",
   "next_actor": "owner",
   "application": {
     "repository": "/home/iffi/dev-workspace/control-plane",
@@ -15,7 +15,8 @@
     "commit": "6fb9962ea1be9bf98570857008d72c3ab072a858",
     "base_commit": "383a25bb6099cdb75cf968d63347c8c2a24a6da9",
     "remote": "dev-control-plane",
-    "remote_sha": null
+    "remote_sha": "4e21a55a9fc0de5e3d9680c04c703fc3df3c817d",
+    "remote_sha_note": "Verified for the documentation/task-evidence push. This status-only update is committed afterwards and becomes the final branch HEAD; the final handoff records that SHA."
   },
   "skills": {
     "loaded": [
@@ -32,7 +33,7 @@
     ],
     "harvest_result": "reusable acceptance-evidence classes harvested; R-matrix and live Telegram checklist remain control-plane-specific"
   },
-  "handoff_sync": "pending_push",
+  "handoff_sync": "pushed",
   "authorization": {
     "application_commit_push": true,
     "handoff_commit_push": true,
@@ -48,6 +49,7 @@
     "Agent permission validator: PASS, 338 rules / 98 checks",
     "Execution guard check: WARN only (current job heavyweight slot and load warning; no refusal)",
     "Documentation/skill commit 6fb9962 contains only the three monitor docs and the permitted completion-contract skill",
+    "Task-evidence commit 4e21a55 was pushed to dev-control-plane agent/control-plane/workflow-v3-20261031 and its remote SHA matched",
     "Owner-dirty skills/README.md, two skills/qortium files and the untracked browser-thumbnail skill remain untouched and unstaged"
   ],
   "missing_evidence": [

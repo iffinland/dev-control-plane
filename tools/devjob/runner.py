@@ -27,7 +27,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 import opencode_guard  # noqa: E402
 
-from . import detect, notify  # noqa: E402
+from . import contract, detect, notify  # noqa: E402
 from .store import (  # noqa: E402
     JOB_STATES,
     JobLocked,
@@ -324,12 +324,18 @@ def _new_job(
     workspace: Path,
     notifications_enabled: bool,
     preflight_payload: dict,
+    contract_spec: dict | None = None,
 ) -> dict:
     from .store import new_job_id
 
     now = utc_now()
     job_id = new_job_id(title)
     directory = ensure_private_dir(job_dir(job_id))
+    snapshot = git_snapshot(repo)
+    spec = dict(contract_spec or {})
+    if spec and not spec.get("base_sha"):
+        # The job's own starting HEAD is the baseline it must advance from.
+        spec["base_sha"] = snapshot.get("head") or None
     return {
         "schema_version": 3,
         "id": job_id,
@@ -363,9 +369,11 @@ def _new_job(
         "attempts": [],
         "acceptance_criteria": criteria,
         "verification": {},
+        "completion_contract_spec": spec or None,
+        "completion_contract": None,
         "detected_issues": [],
         "blocker": None,
-        "git": git_snapshot(repo),
+        "git": snapshot,
         "log_path": str(directory / RUN_LOG),
         "worker_log_path": str(directory / WORKER_LOG),
         "report_path": str(directory / REPORT),
@@ -399,11 +407,15 @@ def evaluate_state(
     guard_exit_code: int,
     issues: list[dict],
     verification: dict,
+    contract_result: dict | None = None,
 ) -> tuple[str, str | None]:
     criteria = job.get("acceptance_criteria") or []
     all_verified, pending_manual, _failures = _criteria_state(criteria, verification)
     blocked = any(item.get("severity") == "blocked" for item in issues)
     failed = any(item.get("severity") == "failed" for item in issues)
+    contract_state = (contract_result or {}).get("state")
+    contract_failed = contract_state == "FAILED"
+    contract_pending = contract_state == "PENDING"
 
     if guard_exit_code == opencode_guard.EXIT_TIMEOUT:
         return "TIMEOUT", "the execution guard reached the wall-clock limit"
@@ -415,6 +427,10 @@ def evaluate_state(
         return "BLOCKED", "no explicit acceptance criteria were recorded"
     if pending_manual:
         return "BLOCKED", "manual acceptance criteria are still pending owner verification"
+    if contract_failed:
+        return "FAILED", "the completion contract did not verify"
+    if contract_pending:
+        return "BLOCKED", "the completion contract is pending owner authorization"
     if failed:
         return "FAILED", "a failure condition was detected"
     if not all_verified:
@@ -511,6 +527,28 @@ def verify_criteria(
     return verification
 
 
+def verify_contract(
+    job: dict,
+    *,
+    skip: bool = False,
+    skip_detail: str = "completion contract skipped because the run timed out, was refused or was cancelled",
+) -> dict | None:
+    spec = job.get("completion_contract_spec")
+    if not spec:
+        return None
+    if skip:
+        return {
+            "configured": True,
+            "state": "SKIPPED",
+            "checks": [],
+            "detail": skip_detail,
+            "evaluated_at": utc_now(),
+        }
+    result = contract.evaluate(job, spec)
+    result["evaluated_at"] = utc_now()
+    return result
+
+
 def _timestamp_ms(value: object) -> int | None:
     if not value:
         return None
@@ -579,13 +617,16 @@ def _finish(
     session_id: str | None,
     reason_override: str | None = None,
     cancelled: bool = False,
+    contract_result: dict | None = None,
 ) -> str:
     if cancelled:
         state = "CANCELLED"
         blocker = reason_override or "cancelled by owner request"
         job["cancelled_at"] = utc_now()
     else:
-        state, blocker = evaluate_state(job, guard_exit_code, issues, verification)
+        state, blocker = evaluate_state(
+            job, guard_exit_code, issues, verification, contract_result
+        )
         if reason_override:
             blocker = reason_override
     job["state"] = state
@@ -593,6 +634,8 @@ def _finish(
     job["exit_code"] = guard_exit_code
     job["detected_issues"] = issues
     job["verification"] = verification
+    if contract_result is not None:
+        job["completion_contract"] = contract_result
     if session_id:
         job["session_id"] = session_id
     job["ended_at"] = utc_now()
@@ -1098,6 +1141,16 @@ def run_worker(job_id: str) -> int:
                             "",
                         ).asdict()
                     )
+            contract_result = verify_contract(job, skip=skip_commands)
+            if contract_result:
+                job["completion_contract"] = contract_result
+                append_event(
+                    job,
+                    "completion_contract",
+                    f"state={contract_result.get('state')} "
+                    f"failed={','.join(contract_result.get('failed_checks') or []) or '-'} "
+                    f"pending={','.join(contract_result.get('pending_checks') or []) or '-'}",
+                )
             attempt["ended_at"] = utc_now()
             attempt["duration_seconds"] = _elapsed_seconds(
                 attempt.get("started_at"), attempt.get("ended_at")
@@ -1112,6 +1165,7 @@ def run_worker(job_id: str) -> int:
                 verification=verification,
                 session_id=session_id,
                 cancelled=cancelled,
+                contract_result=contract_result,
             )
             append_event(job, "attempt_finished", f"attempt={attempt_number} state={state}")
             return 0 if state == "SUCCESS" else 1
@@ -1146,6 +1200,7 @@ def create_job(
     workspace: str | Path = DEFAULT_WORKSPACE,
     proc_root: str | Path = "/proc",
     notifications_enabled: bool = True,
+    contract_spec: dict | None = None,
 ) -> dict:
     repo_path = Path(repo).expanduser().resolve()
     if not repo_path.is_dir():
@@ -1165,6 +1220,7 @@ def create_job(
         workspace=Path(workspace).expanduser(),
         notifications_enabled=notifications_enabled,
         preflight_payload=payload,
+        contract_spec=contract_spec,
     )
     job["proc_root"] = str(proc_root)
     if payload.get("status") == "REFUSE" or payload.get("exit_code") == opencode_guard.EXIT_REFUSE:
@@ -1447,6 +1503,7 @@ def status_payload(job: dict) -> dict:
         "attempt_ended_at": attempt_info["attempt_ended_at"],
         "attempt_elapsed_seconds": attempt_info["attempt_elapsed_seconds"],
         "completion": job.get("completion"),
+        "completion_contract": job.get("completion_contract"),
         "timeout_seconds": job.get("timeout_seconds"),
         "worker_pid": job.get("worker_pid"),
         "guard_pid": job.get("guard_pid"),
@@ -1512,6 +1569,12 @@ def render_status(job: dict) -> str:
         lines.append(f"Blocker:  {payload['blocker']}")
     if payload["pending_criteria"]:
         lines.append(f"Pending:  {', '.join(payload['pending_criteria'])}")
+    contract_payload = payload.get("completion_contract") or {}
+    if contract_payload.get("configured"):
+        lines.append(f"Contract: {contract_payload.get('state')}")
+        for check in contract_payload.get("checks") or []:
+            if check.get("status") in {"failed", "pending"}:
+                lines.append(f"  - [{check.get('status')}] {check.get('id')}: {check.get('detail')}")
     if payload["issues"]:
         lines.append("Issues:")
         for issue in payload["issues"][:10]:
@@ -1591,6 +1654,27 @@ def render_report(job: dict) -> str:
             lines.append("  - skipped by the harness")
         if result.get("detail"):
             lines.append(f"  - detail: {result['detail']}")
+    contract_payload = job.get("completion_contract")
+    if isinstance(contract_payload, dict) and contract_payload.get("configured"):
+        lines.extend(["", "## Completion contract", ""])
+        lines.append(f"- State: **{contract_payload.get('state')}**")
+        lines.append(f"- Evaluated: {contract_payload.get('evaluated_at') or '-'}")
+        if contract_payload.get("branch"):
+            lines.append(f"- Branch: `{contract_payload.get('branch')}`")
+        if contract_payload.get("evidence_files"):
+            lines.append(
+                "- Evidence files: "
+                + ", ".join(f"`{item}`" for item in contract_payload["evidence_files"])
+            )
+        for check in contract_payload.get("checks") or []:
+            lines.append(
+                f"- [{check.get('status')}] {check.get('id')}: {check.get('detail')}"
+            )
+        lines.append("")
+        lines.append(
+            "The completion contract is evaluated by the harness. A configured contract "
+            "that fails or is pending blocks SUCCESS even when OpenCode exits 0."
+        )
     lines.extend(["", "## Detected issues", ""])
     issues = job.get("detected_issues") or []
     if not issues:

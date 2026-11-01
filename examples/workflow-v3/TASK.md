@@ -1,22 +1,48 @@
-# Example Workflow v3 job prompt
+# Task
 
-You are the unattended development agent for this authorized job.
+## Target
 
-Repository: `/home/iffi/dev-workspace/projects/example-app`
-Branch: `agent/example-app/settings-page`
-Outcome: implement the settings-page save flow and prove it with the checked-in
-tests. Work only inside this repository and branch.
+- Repository:
+- Branch:
+- Outcome:
+- Exit criterion:
 
-Allowed: edit project files, install project-local dependencies, run tests and a
-local preview, commit and push the feature branch and open a pull request. QDN
-publishing and development-wallet transactions are allowed only if the task
-scope explicitly requires them.
+## Task-start contract
 
-Forbidden: modifying or restarting the Qortium node, changing its configuration
-or database, changing VPS Linux configuration, installing system-wide packages,
-starting additional OpenCode executions, or merging/deploying.
+Record the task-start evidence the completion contract will verify:
 
-Acceptance criteria are provided by the job record. Do not claim completion from
-exit code 0 or from a build alone. Record exact commands, test results, the final
-commit SHA and any remaining owner-only validation in the task report. Preserve
-the existing working tree on a timeout or step limit so `dev resume` can continue.
+- Skills discovered (paths, platform, maturity, freshness result):
+- Relevant documentation read (control-plane and project paths):
+- Baseline (branch, HEAD, owner changes):
+- Tooling and environment verification:
+
+## Scope and authorization
+
+- In scope:
+- Out of scope:
+- Authorized external actions:
+- Forbidden actions:
+
+## Implementation
+
+- First confirmed mismatch or approved design boundary:
+- Smallest coherent change:
+- Files/areas allowed to change:
+
+## Validation
+
+- Commands run and results:
+- Runtime/host/QDN evidence:
+- Missing or owner-only validation:
+
+## Completion contract
+
+- Capability harvest result:
+- Documentation updates:
+- Scoped commit(s):
+- Authorized push and verified remote SHA:
+
+Do not claim completion from OpenCode exit code 0, a build alone or a publish
+response alone. The job record's acceptance criteria and completion contract are
+authoritative. Preserve the working tree and session on timeout, step exhaustion
+or cancellation so `dev resume` can continue.

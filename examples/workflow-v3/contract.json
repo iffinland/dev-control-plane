@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "branch": "agent/example-app/settings-page",
+  "base_sha": "<verified base SHA>",
+  "remote": "dev-control-plane",
+  "evidence_files": [
+    "TASK.md",
+    "STATUS.json"
+  ],
+  "allowed_paths": [
+    "src/",
+    "tests/",
+    "TASK.md",
+    "STATUS.json"
+  ],
+  "allowed_dirty_paths": [],
+  "require": {
+    "skill_discovery": true,
+    "freshness": true,
+    "documentation_loading": true,
+    "capability_harvest": true,
+    "documentation_updates": true,
+    "clean_tree": true,
+    "commit": true,
+    "no_merge_commits": true,
+    "push": true
+  },
+  "authorization": {
+    "push": false,
+    "protected_branch": false,
+    "merge": false,
+    "deploy": false,
+    "qdn_write": false,
+    "wallet_transaction": false,
+    "destructive": false
+  }
+}

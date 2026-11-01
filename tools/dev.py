@@ -104,6 +104,11 @@ def command_start(args: argparse.Namespace) -> int:
         manual=args.manual_criterion,
         files=args.acceptance_file,
     )
+    contract_spec = None
+    if args.contract_file:
+        from devjob import contract as contract_module
+
+        contract_spec = contract_module.load_contract(args.contract_file)
     timeout = runner.parse_duration(args.timeout)
     repo = Path(args.repo).expanduser().resolve()
     snapshot = runner.git_snapshot(repo)
@@ -121,6 +126,7 @@ def command_start(args: argparse.Namespace) -> int:
                     "agent": args.agent,
                     "model": args.model,
                     "criteria": criteria,
+                    "completion_contract": contract_spec,
                     "notifications_enabled": not args.no_notify,
                     "preflight": payload,
                 },
@@ -141,6 +147,7 @@ def command_start(args: argparse.Namespace) -> int:
         workspace=args.workspace,
         proc_root=args.proc_root,
         notifications_enabled=not args.no_notify,
+        contract_spec=contract_spec,
     )
     _print_job_started(job, args.json)
     return 0 if job.get("state") == "RUNNING" else 20
@@ -343,6 +350,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="JSON array of acceptance criteria; repeatable",
     )
+    start.add_argument(
+        "--contract-file",
+        default=None,
+        help="JSON completion contract; required for machine-checked delivery evidence",
+    )
     start.add_argument("--timeout", default="8h", help="wall-clock timeout (maximum 8h; default 8h)")
     start.add_argument("--agent", default=os.environ.get("DEV_AGENT", runner.DEFAULT_AGENT))
     start.add_argument("--model", default=os.environ.get("DEV_MODEL", runner.DEFAULT_MODEL))
@@ -421,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (runner.JobError, StoreError, JobLocked) as exc:
+    except (runner.JobError, StoreError, JobLocked, ValueError) as exc:
         print(f"dev: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

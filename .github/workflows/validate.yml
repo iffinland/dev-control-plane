@@ -42,6 +42,8 @@ jobs:
         run: python3 tools/test_opencode_guard.py
       - name: Test Workflow v3 development CLI
         run: python3 tools/test_dev_cli.py
+      - name: Test Workflow v3 completion contract
+        run: python3 tools/test_completion_contract.py
       - name: Test Qortium Dev Monitor P1
         run: |
           python3 tools/test_dev_monitor_redact.py

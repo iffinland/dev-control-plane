@@ -6,13 +6,22 @@ Project ID / exact repo / base SHA / agent branch:
 Platform session router / canonical project context:
 Outcome and measurable exit criterion:
 In scope / out of scope / invariants:
-Applicable skills (path / maturity / freshness result):
-Proven reference implementation to reuse (or exact missing investigation delta):
+
+Task-start evidence (also used by the Workflow v3 completion contract):
+- Applicable skills (path / platform / maturity / freshness result):
+- Documentation read (control-plane / platform pack / project):
+- Reference freshness evidence / environment IDs:
+- Proven reference implementation to reuse (or exact missing investigation delta):
+- Verification performed before implementation:
+
 Required surfaces and real runtime acceptance steps:
-Reference freshness evidence / environment IDs:
 Authorized external actions (exact repo, branch, operation; otherwise none):
+- Development-branch push authorized (and remote name):
+- Protected branch / merge / deploy / QDN write / wallet transaction / destructive
+  operation authorized (each separately; default none):
 Unattended execution authorization (only when explicitly granted):
 - Agent profile / guard command / maximum wall-clock:
+- Completion contract file:
 - Resource limits / stop condition:
 - Checkpoint cadence and recovery:
 Forbidden actions (unattended):
@@ -20,3 +29,6 @@ Acceptance evidence required (OpenCode exit code 0 alone is not success):
 Canonical report path / handoff branch:
 Owner-only steps or reason owner validation is not applicable:
 Capability-harvest expectation (likely reusable capability or project-specific):
+Documentation updates expected (or explicit none):
+Scoped commit expectation (exact paths):
+Remote SHA verification expectation:

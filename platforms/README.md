@@ -5,7 +5,7 @@ and evidence boundaries, not interchangeable copies.
 
 | Pack | Status | Authority |
 | --- | --- | --- |
-| [Qortal](qortal/README.md) | Boundary and source reference, plus condensed candidate host/audit notes added 2026-10-31 | Current Qortal Core/Hub/framework source and observed runtime |
+| [Qortal](qortal/README.md) | Boundary and source reference, condensed candidate host/audit notes (2026-10-31) and migrated Qortal task guides (2026-11-01) | Current Qortal Core/Hub/framework source and observed runtime |
 | [Qortium](qortium/README.md) | Boundary and source reference only | Current Qortium Core/Home source and observed runtime |
 
 ## Rules

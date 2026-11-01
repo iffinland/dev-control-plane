@@ -144,6 +144,28 @@ substantial reports in the central project/category tree defined by
 control-plane material belongs under `workspace/`. Compact task artifacts remain
 under `tasks/`.
 
+### Executable completion contract
+
+For Workflow v3 jobs, the completion contract is machine-checked, not prompt
+advice. A job started with `dev start --contract-file ...` must record in its
+evidence files:
+
+1. task-start skill discovery and the freshness/compatibility result;
+2. the control-plane, platform-pack and project documentation actually read;
+3. the capability-harvest result;
+4. the documentation updates, or an explicit statement that none were needed;
+5. the scoped commit(s) after the recorded base SHA;
+6. the authorized development-branch push and the verified remote SHA.
+
+The harness also rejects a protected branch without explicit authorization, a
+merge commit without merge authorization, changed paths outside the declared
+scope, uncommitted changes outside declared owner paths, and secret-bearing
+paths or diff patterns. A failed contract makes the job `FAILED`; a pending
+authorization (for example an unauthorized required push) makes it `BLOCKED`.
+Contract checks never grant authority: push, protected-branch, merge, deploy,
+QDN, wallet and destructive actions each remain separately authorized. See the
+[Workflow v3 contract](docs/operations/DEV-WORKFLOW-V3.md#executable-completion-contract).
+
 ## Authorized unattended/overnight sessions
 
 This is a delta to sections 1-8, not a second workflow and not a background

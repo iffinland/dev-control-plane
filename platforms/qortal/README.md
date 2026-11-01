@@ -1,8 +1,9 @@
 # Qortal platform pack
 
-Status: **boundary and source reference, plus condensed candidate reference
-notes added 2026-10-31.** Full Qortal platform documentation is not imported
-here.
+Status: **boundary and source reference, plus condensed candidate notes
+(2026-10-31) and migrated Qortal task guides (2026-11-01).** Current Qortal
+source and runtime remain authoritative; the migrated guides are routing and
+reference material, not platform truth.
 
 ## Canonical platform source
 
@@ -50,6 +51,20 @@ skill for the reusable audit procedure. Load the detailed notes only when the
 task needs host-level detail. Check the version pins against current source and
 runtime first.
 
+## Migrated Qortal task guides (2026-11-01)
+
+The Qortal-specific standard, session routing, QDN/bridge contract, authority
+rules, discovery/scaling, runtime diagnostics, live validation and release
+provenance guides were migrated read-only from
+`iffinland/qortal-dev-workspace` at
+`b8fd2f6fbfcff88c0ab9bc8fd116d5548679d2d2`. Start at
+[`guides/README.md`](guides/README.md), which records provenance, contents and
+remaining gaps.
+
+These guides retain the Qortal platform boundary and task-level detail. They do
+not replace current Core/Hub/framework source or a real-host validation layer.
+Qortal project-specific report trees were not imported.
+
 ## Current routing
 
 - Start with the control-plane [AGENTS.md](../../AGENTS.md) and
@@ -65,8 +80,9 @@ runtime first.
 
 ## Deferred to a later phase
 
-- Full import of the Qortal dApp standard and task guides.
-- Import of Shadow Archives and QWB project contexts and evidence.
-- Promotion of condensed reference notes to verified platform documentation
-  after current source/runtime confirmation.
-- Any commit, push, deployment, QDN write or release action.
+- Import of Shadow Archives and QWB project contexts and evidence; they remain
+  historical evidence in the legacy repository and central report history.
+- Promotion of condensed reference notes and migrated guides to
+  `verified-runtime` platform documentation after current source/runtime
+  confirmation.
+- Any deployment, QDN write or release action.

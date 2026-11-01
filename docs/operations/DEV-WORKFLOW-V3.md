@@ -40,13 +40,15 @@ execution at a time.
 | Component | Path | Purpose |
 | --- | --- | --- |
 | CLI | `tools/dev.py` | `dev start/status/report/logs/resume/cancel` (plus `accept`) |
-| Job engine | `tools/devjob/` | Durable store, detection, notifications, worker |
+| Job engine | `tools/devjob/` | Durable store, detection, notifications, worker and completion contract |
 | Execution guard | `tools/opencode_guard.py` | Preflight, one-execution lock, 8-hour maximum, session-completion watchdog, safe cancellation |
 | Development profile | `adapters/opencode/agents/opencode-development.md` | Unattended development permissions and hard boundaries |
 | Restricted profile | `adapters/opencode/agents/opencode-unattended.md` | Existing restricted profile for non-development tasks |
 | Profile installer | `tools/install_opencode_profiles.sh` | Copies/symlinks profiles into `~/.config/opencode/agents/` |
 | CLI tests | `tools/test_dev_cli.py` | Integration and unit tests with a fake OpenCode |
 | Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
+| Completion contract | `tools/devjob/contract.py` | Machine-checked task-start evidence, scoped commit, authorization, push and remote SHA |
+| Contract tests | `tools/test_completion_contract.py` | Contract evidence, scope, protected-branch, merge, secret-path and remote-SHA regressions |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
 | Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
 | Permission/installer tests | `tools/test_agent_permissions.py`, `tools/test_install_profiles.py` | Profile semantics and installer safety |
@@ -150,7 +152,7 @@ attempt with a fresh maximum.
 
 ## Example files
 
-A reusable example prompt and acceptance file live under
+A reusable example prompt, acceptance file and completion contract live under
 [`examples/workflow-v3`](../../examples/workflow-v3/TASK.md):
 
 ```bash
@@ -159,8 +161,81 @@ dev start \
   --title "settings page save flow" \
   --prompt-file examples/workflow-v3/TASK.md \
   --acceptance-file examples/workflow-v3/acceptance.json \
+  --contract-file examples/workflow-v3/contract.json \
   --timeout 8h
 ```
+
+## Executable completion contract
+
+Acceptance commands prove that the requested behavior works. The optional
+`--contract-file` adds harness-checked delivery evidence so the task-start and
+handoff rules are not prompt advice only.
+
+```bash
+dev start ... --contract-file examples/workflow-v3/contract.json
+dev start ... --contract-file contract.json --dry-run   # validate/print the plan
+```
+
+The contract is a JSON object. A reusable example is
+[`examples/workflow-v3/contract.json`](../../examples/workflow-v3/contract.json).
+
+```json
+{
+  "version": 1,
+  "branch": "agent/example-app/settings-page",
+  "base_sha": "<verified base SHA>",
+  "remote": "dev-control-plane",
+  "evidence_files": ["TASK.md", "STATUS.json"],
+  "allowed_paths": ["src/", "tests/", "TASK.md", "STATUS.json"],
+  "allowed_dirty_paths": [],
+  "require": {
+    "skill_discovery": true,
+    "freshness": true,
+    "documentation_loading": true,
+    "capability_harvest": true,
+    "documentation_updates": true,
+    "clean_tree": true,
+    "commit": true,
+    "push": true
+  },
+  "authorization": {
+    "push": false,
+    "protected_branch": false,
+    "merge": false,
+    "deploy": false,
+    "qdn_write": false,
+    "wallet_transaction": false,
+    "destructive": false
+  }
+}
+```
+
+At job completion the harness evaluates the contract in the job repository and
+records the result in `job.json`, `dev status` and `report.md`:
+
+| Check | What must be evidenced |
+| --- | --- |
+| `skill_discovery` | The evidence files record the skills searched/loaded, or explicitly that no skill applied. |
+| `freshness` | The evidence records the skill freshness/compatibility result and the source revision checked. |
+| `documentation_loading` | The evidence names the control-plane/platform/project documentation actually read. |
+| `capability_harvest` | The evidence records the reusable result or an explicit project-specific/no-harvest result. |
+| `documentation_updates` | The evidence records the documentation changed or explicitly that none was needed. |
+| `branch` / `protected_branch` | The current branch matches the contract and is not a protected branch without explicit authorization. |
+| `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
+| `commit` / `scoped_paths` | At least one commit exists after `base_sha`, and every changed path is inside `allowed_paths`. |
+| `no_merge_commits` | No merge commit exists unless `authorization.merge` is true. |
+| `sensitive_paths` / `diff_secrets` | No `.env`, key/keystore/wallet/seed path or recognized secret pattern is committed. Unmatched values are never printed. |
+| `remote_sha` | When `authorization.push` is true, the configured remote branch SHA equals local `HEAD`. When false, the result is `PENDING` (`handoff_sync=pending_authorization`), not a silent success. |
+
+A contract `FAILED` makes the job `FAILED`. A contract `PENDING` (for example a
+required but unauthorized push) makes the job `BLOCKED`. Contract checks never
+grant authority; each external action still requires its own explicit
+`authorization` flag. A configured contract whose evidence is missing cannot
+reach `SUCCESS` even when OpenCode exits `0`.
+
+The contract is evaluated after the acceptance commands and before the final
+state is computed. Cancelled, timed-out and guard-refused runs skip it and
+remain resumable.
 
 ## Job states and acceptance
 
@@ -175,8 +250,8 @@ dev start \
 
 `SUCCESS` is computed from evidence, not from the OpenCode exit code alone. A
 run that exits `0` but fails an acceptance command, reports an incomplete
-implementation, or leaves a permission denial unresolved is `FAILED` or
-`BLOCKED`.
+implementation, leaves a permission denial unresolved or fails/pends a configured
+completion contract is `FAILED` or `BLOCKED`.
 
 Detected signals include:
 
@@ -463,6 +538,7 @@ configuration.
 ```bash
 python3 tools/test_opencode_guard.py
 python3 tools/test_dev_cli.py
+python3 tools/test_completion_contract.py
 python3 tools/test_agent_permissions.py
 python3 tools/test_install_profiles.py
 python3 tools/test_detect.py

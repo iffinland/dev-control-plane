@@ -41,5 +41,31 @@
     "resource_snapshot": null,
     "acceptance_evidence": []
   },
-  "blocker": null
+  "blocker": null,
+  "documentation": {
+    "read": [],
+    "updated": [],
+    "notes": null
+  },
+  "completion_contract": {
+    "configured": false,
+    "path": null,
+    "state": null,
+    "failed_checks": [],
+    "pending_checks": [],
+    "remote": null,
+    "remote_sha": null
+  },
+  "capability_harvest": {
+    "performed": false,
+    "result": null,
+    "skills_created_or_updated": []
+  },
+  "delivery": {
+    "commit": null,
+    "pushed": false,
+    "remote": null,
+    "remote_sha": null,
+    "verified": false
+  }
 }

@@ -44,7 +44,11 @@ contract:
    transcript.
 4. Run `dev_monitor.py check` and record the sanitized output before testing.
 5. Use a disposable acceptance job and an isolated repository/worktree. Do not
-   cancel or resume a real production job as part of acceptance.
+   cancel or resume a real production job as part of acceptance. For a
+   deterministic synthetic backend for R-08 and R-09, use the
+   [P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md);
+   it isolates the repository, registry, job state and fake worker, and forces
+   the synthetic job to `CANCELLED`.
 6. Do not install, restart, stop, reconfigure or signal the Qortium node. Do not
    change VPS networking, mounts, packages, services or firewall rules.
 7. Do not run `sudo`, a service manager with mutating verbs, `crontab`, `at`, or

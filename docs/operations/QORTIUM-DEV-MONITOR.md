@@ -670,6 +670,7 @@ python3 tools/test_dev_monitor_control.py
 python3 tools/test_dev_monitor_p3.py
 python3 tools/test_dev_monitor_integration.py
 python3 tools/test_dev_monitor_p4.py
+python3 tools/test_p3_live_acceptance.py
 python3 tools/test_dev_cancel.py
 ```
 
@@ -685,6 +686,13 @@ transient in-handler failure that advances the offset without replaying the
 action. It also contains the detector regression that keeps a
 `FileNotFoundError` for a test fixture from being classified as
 `missing_dependency` while real missing commands/modules remain blocking.
+
+The P3 live harness tests cover an isolated throw-away Git repository, a
+generated synthetic project registry, a deterministic fake Workflow v3 CLI and a
+journaling Telegram wrapper. They exercise queue instruction and cancel through
+the real monitor router without contacting Telegram, starting OpenCode, editing
+the production registry or touching the live monitor state. See the
+[P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md).
 
 The complete automated gate is:
 
@@ -727,7 +735,15 @@ authorization, replay, redaction, traversal/symlink resistance, restart
 persistence, polling fault recovery, token rotation and the no-listener /
 no-Qortium-change invariant.
 
-The P3 smoke path still applies inside that checklist:
+For a deterministic synthetic backend, use the
+[P3 live Telegram acceptance harness](QORTIUM-DEV-MONITOR-P3-LIVE-ACCEPTANCE.md).
+It prepares a throw-away Git repository and a temporary registry, runs an
+isolated poller against the real bot only after the production monitor is
+stopped, and forces the synthetic job to `CANCELLED`. It never starts OpenCode
+and never reports a development success. The owner stops and restarts the
+production monitor manually.
+
+The production P3 smoke path still applies inside that checklist:
 
 1. Confirm `dev cancel` refuses a completed job:
    `python3 tools/dev.py cancel <terminal-job-id>` returns a sanitized error and

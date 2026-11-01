@@ -66,24 +66,26 @@ def _build_config(args: argparse.Namespace):
     )
 
 
-def _build_components(config, timings=None):
+def _build_components(config, timings=None, *, api=None, jobs=None):
     timings = timings or TimingRecorder(slow_seconds=config.slow_timing_seconds)
     state = MonitorState(config.state_dir / "monitor.db", timings=timings)
-    api = TelegramApi(
-        config.bot_token,
-        base_url=config.api_base,
-        # Ordinary Bot API calls must not inherit the long-poll timeout.
-        timeout_seconds=config.request_timeout_seconds,
-        document_timeout_seconds=config.document_timeout_seconds,
-        timings=timings,
-    )
+    if api is None:
+        api = TelegramApi(
+            config.bot_token,
+            base_url=config.api_base,
+            # Ordinary Bot API calls must not inherit the long-poll timeout.
+            timeout_seconds=config.request_timeout_seconds,
+            document_timeout_seconds=config.document_timeout_seconds,
+            timings=timings,
+        )
     registry = Registry(config.registry_path, config.allowed_repo_roots)
     try:
         projects = registry.load(force=True)
     except RegistryError:
         projects = []
     documents = DocumentLibrary.from_sources(config.docs_roots, projects, timings=timings)
-    jobs = JobFacade(config.job_state_root, timings=timings)
+    if jobs is None:
+        jobs = JobFacade(config.job_state_root, timings=timings)
     admission = AdmissionManager(
         config.state_dir,
         jobs,

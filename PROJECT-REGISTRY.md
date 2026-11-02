@@ -13,6 +13,7 @@ policy. It does not import full platform documentation or project contexts.
 | `qortal/shadow-archives-webportal` | Qortal | `/home/iffi/dev-workspace/projects/shadow-archives-webportal-QORTAL` | Yes | Pending Phase 2 import. Source reference: `qortal-dev-workspace` at `b8fd2f6fbfcff88c0ab9bc8fd116d5548679d2d2` | `/home/iffi/dev-workspace/docs/shadow-archives-webportal-QORTAL/` | `origin` | `iffinland/shadow-archives-webportal-QORTAL` | `agent/*` | `yes` |
 | `qortal/qortal-video-bridge` | Qortal | `/home/iffi/dev-workspace/projects/Qortal-Video-Bridge` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortal-Video-Bridge/` | `origin` | `iffinland/Qortal-Video-Bridge` | `agent/*` | `yes` |
 | `qortal/wordpress-to-qortal` | Qortal | `/home/iffi/dev-workspace/projects/wordpress-to-qortal` | No; inherits this control plane | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/wordpress-to-qortal/` | `origin` | `iffinland/wordpress-to-qortal` | `agent/*` | `yes` |
+| `qortal/iffi-vaba-mees` | Qortal | `/home/iffi/dev-workspace/projects/iffi-vaba-mees-QORTAL` | No; inherits this control plane | Pending Phase 2 import. Source reference: current checkout `main` at `64f55bf7b6f4a1a093f19413d3a985e61a9fad37` | `/home/iffi/dev-workspace/docs/iffi-vaba-mees-QORTAL/` | `origin` | `iffinland/iffi-vaba-mees-QORTAL` | `agent/*` | `yes` |
 | `qortium/blogs` | Qortium | `/home/iffi/dev-workspace/projects/Blogs` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Blogs/` | `origin` | `iffinland/Blogs` | `agent/*` | `yes` |
 | `qortium/my-private-room` | Qortium | `/home/iffi/dev-workspace/projects/my-private-room` | Yes | Project `AGENTS.md` and `docs/` in the checkout; historical router paths need refresh | `/home/iffi/dev-workspace/docs/my-private-room/` | `origin` | `iffinland/my-private-room` | `agent/*` | `yes` |
 | `qortium/qortium-united-community` | Qortium | `/home/iffi/dev-workspace/projects/Qortium-United-Community` | Yes | Pending Phase 2 import | `/home/iffi/dev-workspace/docs/Qortium-United-Community/` | `origin` | `iffinland/Qortium-United-Community` | `agent/*` | `yes` |
@@ -55,8 +56,11 @@ the old workstation paths. Verify the actual checkout before adding a row.
   source branches; the application checkout is not present in Phase 1.
 - `qortium/community-discussion-boards`
 - `qortium/discussion-boards`
-- `qortium/iffi-vaba-mees`
 - `qortium/video-center`
+
+The former deferred entry `qortium/iffi-vaba-mees` was corrected to the verified
+Qortal project `qortal/iffi-vaba-mees` above; the repository publishes a Qortal
+website, not a Qortium application.
 
 ## Registration rule
 

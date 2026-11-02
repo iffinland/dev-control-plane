@@ -117,6 +117,32 @@
         "skills/shared/workflow-v3-completion-contract/SKILL.md"
       ]
     },
+    "qortal/iffi-vaba-mees": {
+      "source": "central verified profile 2026-11-02; package.json exposes lint and build only (no automated test script); both commands were run successfully on main at 64f55bf7b6f4a1a093f19413d3a985e61a9fad37",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortal/README.md",
+        "docs/operations/DEV-WORKFLOW-V3.md"
+      ],
+      "skills": [
+        "skills/qortal/legacy-dapp-audit-repair/SKILL.md",
+        "skills/qortal/qortal-host-bridge-contract/SKILL.md",
+        "skills/shared/browser-thumbnail-generation/SKILL.md",
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
     "qortium/blogs": {
       "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
       "commands": [

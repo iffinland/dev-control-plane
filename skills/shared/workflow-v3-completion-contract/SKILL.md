@@ -39,6 +39,10 @@ resume.
 - [`tools/devjob/project_policy.py`](../../../tools/devjob/project_policy.py) and
   [`tools/test_project_delivery_policy.py`](../../../tools/test_project_delivery_policy.py):
   validated project-scoped remote and branch policy.
+- [`tools/devjob/branch_prepare.py`](../../../tools/devjob/branch_prepare.py) and
+  [`tools/test_branch_preparation.py`](../../../tools/test_branch_preparation.py):
+  pre-start checkout inspection, non-interactive remote probe, safe
+  `agent/*` branch creation and resume return.
 - [`docs/operations/DEV-WORKFLOW-V3.md`](../../../docs/operations/DEV-WORKFLOW-V3.md):
   operating procedure and schema.
 - [`examples/workflow-v3/contract.json`](../../../examples/workflow-v3/contract.json):
@@ -62,6 +66,20 @@ resume.
    matching non-protected `agent/*` branches. Push outside that pattern,
    protected branch, merge, deploy, QDN, wallet and destructive actions default
    to false and require their own explicit authorization.
+
+   **Prepare the branch before OpenCode starts.** The same `dev start` path used
+   by the CLI and Telegram resolves the policy, inspects branch/`HEAD`/worktrees/
+   dirty paths/remote, and either keeps a current matching `agent/*` branch or
+   creates one deterministic `agent/<project>/<job-id>` branch. It never reuses
+   an unrelated existing branch, resets, cleans, stashes, force-checks-out or
+   rewrites history. Dirty switching, detached HEAD, unpushed local commits, a
+   conflicting branch or another active job fails closed. It verifies remote
+   repository identity and non-interactive auth (`GIT_TERMINAL_PROMPT=0`, SSH
+   BatchMode) before any job exists; if GitHub delivery is unavailable the start
+   is refused instead of spending tokens. The contract baseline, automatic-push
+   authorization and remote-SHA check use the actual prepared branch, and
+   resume/restart first returns to the branch recorded by the job. A dry run
+   reports the planned branch without creating it.
 2. **Fill the automatic per-job evidence file truthfully.** A new default job
    (CLI or Telegram monitor, which delegates to the CLI) gets
    `~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md`. The
@@ -142,13 +160,16 @@ resume.
 ## Freshness and compatibility gate
 
 Before reusing this skill, read the current
-[`contract.py`](../../../tools/devjob/contract.py), the job schema in
+[`contract.py`](../../../tools/devjob/contract.py),
+[`branch_prepare.py`](../../../tools/devjob/branch_prepare.py), the job schema in
 [`runner.py`](../../../tools/devjob/runner.py) and the operating doc. Run
 `python3 tools/test_completion_contract.py`,
 `python3 tools/test_project_delivery_policy.py`,
+`python3 tools/test_branch_preparation.py`,
 `python3 tools/test_dev_cli.py` and
 `python3 tools/test_dev_monitor_mobile_ux.py`. If the schema, check names, remote-resolution
-rules or state mapping changed, update this skill and its index entry. The contract is a policy layer,
+rules, branch-selection rules or state mapping changed, update this skill and its
+index entry. The contract is a policy layer,
 not an OS sandbox: wrappers, interpreters and SSH can do more than a command
 pattern suggests.
 
@@ -171,6 +192,13 @@ pattern suggests.
 - Default-contract tests prove every new CLI job gets the mandatory checks, a
   weak explicit contract is rejected, custom constraints survive, a monitor
   preview receives the same default, and legacy jobs remain compatible.
+- Branch-preparation tests prove protected `main` becomes a job-scoped
+  `agent/*` branch, a clean matching development branch is reused, and a dirty
+  tree, detached HEAD, remote mismatch, failed non-interactive auth, unpushed
+  local commit, active job or held preparation lock refuses without mutation.
+  Resume returns to the recorded branch; a requested existing unrelated branch is
+  rejected. CLI integration proves protected-main delivery leaves `main`
+  unchanged and the remote SHA equals the prepared branch HEAD.
 - `dev start ... --dry-run` prints the mandatory contract; an explicit
   `--contract-file ... --dry-run` validates the merged plan.
 - A real authorized development-branch push is verified with an exact remote
@@ -237,7 +265,13 @@ production-worker evidence.
   `run`-mode non-zero exits or other commands that exit `10`.
 - Parsing dirty paths with a fixed `line[3:]` after a whole-output `strip()`,
   which truncates the first path (`skills/README.md` -> `kills/README.md`).
-- Using a protected branch without separate authorization.
+- Using a protected branch without separate authorization, or starting on
+  `main`/`master` instead of preparing the job's `agent/*` branch first.
+- Reusing an unrelated existing development branch, or silently moving dirty
+  work, unpushed commits or another active job's checkout onto a new branch.
+- Starting a job before verifying the remote repository and non-interactive
+  GitHub authentication, then discovering at completion that delivery is
+  impossible.
 - Hardcoding or reusing `dev-control-plane` for another project, or letting a
   missing/ambiguous policy fall back silently.
 - Granting automatic push to `main`, `feature/*` or another non-`agent/*` branch.
@@ -273,6 +307,10 @@ Maturity stays `candidate` until a real job completes through the mandatory
 default with an authorized push and verified remote SHA. It also gained a
 reusable acceptance-evidence classification so automated, scripted,
 real-transport/synthetic-backend, owner-attested and unexecuted results are not
-collapsed into one another. Re-check after any change to job schema, check IDs,
-override policy or state mapping; update the skills index and operating docs in
-the same change.
+collapsed into one another. It then gained safe automatic development-branch
+preparation: protected or unauthorized checkouts become deterministic
+job-scoped `agent/*` branches before OpenCode starts, remote identity and
+non-interactive authentication are proven first, and dirty/detached/unpushed/
+conflicting/active states fail closed without rewrite. Re-check after any change
+to job schema, check IDs, branch-selection rules, override policy or state
+mapping; update the skills index and operating docs in the same change.

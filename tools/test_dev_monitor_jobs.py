@@ -165,6 +165,14 @@ class JobFacadeTests(unittest.TestCase):
             "- Documentation update: none.\n",
             encoding="utf-8",
         )
+        remote = self.root / "contract-remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            check=True,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         subprocess.run(
             [
                 "git",
@@ -173,6 +181,18 @@ class JobFacadeTests(unittest.TestCase):
                 "remote",
                 "add",
                 "origin",
+                "https://github.com/demo/project.git",
+            ],
+            check=True,
+            env=env,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "config",
+                f"url.{remote}.insteadOf",
                 "https://github.com/demo/project.git",
             ],
             check=True,

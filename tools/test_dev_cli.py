@@ -1258,7 +1258,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("conflicts with the validated project remote", result.stderr)
         self.assertEqual(list_jobs(self.state), [])
 
-    def test_non_agent_branch_does_not_get_automatic_push(self) -> None:
+    def test_unauthorized_branch_is_replaced_by_agent_branch(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.repo), "checkout", "-b", "feature/not-agent"],
             check=True,
@@ -1266,14 +1266,164 @@ class CliTestCase(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-u", "origin", "feature/not-agent"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         job = self.start(mode="success", authorize_push=False)
         payload = self.wait_for_state(job["id"])
-        self.assertEqual(payload["state"], "BLOCKED", payload)
-        contract = payload["completion_contract"]
-        self.assertEqual(contract["state"], "PENDING", contract)
-        self.assertIn("branch_policy", contract["pending_checks"])
-        self.assertIn("remote_sha", contract["pending_checks"])
-        self.assertFalse(payload["completion_contract_spec"]["authorization"]["push"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertTrue(stored["branch"].startswith("agent/"), stored["branch"])
+        self.assertNotEqual(stored["branch"], "feature/not-agent")
+        self.assertEqual(
+            payload["completion_contract"]["branch"], stored["branch"]
+        )
+        self.assertTrue(payload["completion_contract_spec"]["authorization"]["push"])
+
+    def test_start_on_protected_main_creates_job_branch_and_verifies_remote_sha(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-u", "origin", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        main_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        job = self.start(mode="success")
+        payload = self.wait_for_state(job["id"])
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        self.assertTrue(stored["branch"].startswith("agent/"), stored["branch"])
+        self.assertNotEqual(stored["branch"], "main")
+        self.assertEqual(payload["completion_contract"]["branch"], stored["branch"])
+        self.assertEqual(
+            payload["completion_contract_spec"]["branch"], stored["branch"]
+        )
+        self.assertTrue(stored["prepared_branch"]["created"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=self.env,
+            ).stdout.strip(),
+            main_sha,
+        )
+        remote_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "ls-remote", "--heads", "origin", stored["branch"]],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.split()[0]
+        local_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        self.assertEqual(remote_sha, local_sha)
+
+    def test_dry_run_on_protected_main_plans_branch_without_creating_it(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-u", "origin", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        result = self.cli(
+            "start",
+            "--state-dir",
+            str(self.state),
+            "--title",
+            "protected-main-preview",
+            "--repo",
+            str(self.repo),
+            "--prompt",
+            "work",
+            "--criterion",
+            "true",
+            "--proc-root",
+            str(self.proc),
+            "--workspace",
+            str(self.workspace),
+            "--dry-run",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["branch"].startswith("agent/"), payload["branch"])
+        self.assertNotEqual(payload["branch"], "main")
+        self.assertTrue(payload["prepared_branch"]["created"])
+        current = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        self.assertEqual(current, "main")
+        branches = subprocess.run(
+            ["git", "-C", str(self.repo), "branch", "--list", payload["branch"]],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        self.assertEqual(branches, "")
+
+    def test_resume_restores_the_recorded_branch(self) -> None:
+        job = self.start(mode="resume", criterion="test -f impl.txt")
+        first = self.wait_for_state(job["id"])
+        self.assertEqual(first["state"], "FAILED", first)
+        recorded = load_job(job["id"], self.state)["branch"]
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "feature/drift"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        resume = self.cli("resume", "--state-dir", str(self.state), job["id"], "--json")
+        self.assertEqual(resume.returncode, 0, resume.stdout + resume.stderr)
+        second = self.wait_for_state(job["id"])
+        self.assertEqual(second["state"], "SUCCESS", second)
+        self.assertEqual(second["branch"], recorded)
+        current = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        self.assertEqual(current, recorded)
+        self.assertEqual(second["resume_count"], 1)
 
     def test_failed_push_fails_the_completion_contract(self) -> None:
         self.env["FAKE_OPENCODE_PUSH_REMOTE"] = "does-not-exist"

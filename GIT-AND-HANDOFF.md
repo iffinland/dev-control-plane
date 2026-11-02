@@ -17,7 +17,12 @@ delivery policy in [PROJECT-REGISTRY.md](PROJECT-REGISTRY.md), not from a
 repository-name default. The owner authorizes automatic push only for the
 configured, URL-matched remote and a non-protected `agent/*` development branch.
 A missing, ambiguous or mismatched policy is a start-time refusal; it is never
-silently replaced by `dev-control-plane` or another project's remote.
+silently replaced by `dev-control-plane` or another project's remote. Before
+OpenCode starts, Workflow v3 inspects the checkout and either keeps a matching
+`agent/*` branch or creates one deterministic job-scoped branch from a clean,
+synchronized commit. It refuses on dirty/detached/unpushed/conflicting state or
+unavailable GitHub authentication, and resume returns to the recorded branch.
+It never resets, cleans, stashes, force-checks-out or rewrites owner work.
 
 Durable exchange, once a GitHub remote and branch permissions are configured:
 1. Store `tasks/<project>/<task>/TASK.md`, `STATUS.json`, and the concise

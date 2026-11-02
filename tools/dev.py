@@ -29,7 +29,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from devjob import __version__, project_policy, runner  # noqa: E402
+from devjob import __version__, branch_prepare, project_policy, runner  # noqa: E402
 from devjob.store import (  # noqa: E402
     JobLocked,
     StoreError,
@@ -37,6 +37,7 @@ from devjob.store import (  # noqa: E402
     latest_job,
     list_jobs,
     load_job,
+    new_job_id,
     state_root,
     worker_is_alive,
 )
@@ -85,6 +86,7 @@ def _print_job_started(job: dict, as_json: bool) -> None:
     print(f"Job started: {job['id']}")
     print(f"State:       {job['state']}")
     print(f"Repo:        {job['repo']}")
+    print(f"Branch:      {job.get('branch') or '(detached)'}")
     print(f"Timeout:     {runner._format_seconds(job['timeout_seconds'])}")
     print(f"Log:         {job['log_path']}")
     print(f"Worker log:  {job['worker_log_path']}")
@@ -108,9 +110,6 @@ def command_start(args: argparse.Namespace) -> int:
 
     timeout = runner.parse_duration(args.timeout)
     repo = Path(args.repo).expanduser().resolve()
-    snapshot = runner.git_snapshot(repo)
-    actual_branch = snapshot.get("branch") or None
-    branch = args.branch or actual_branch
     # A new job must resolve exactly one validated project delivery policy.
     # Missing, ambiguous or mismatched remote configuration is refused before
     # any job state is created; there is no global remote fallback.
@@ -124,28 +123,39 @@ def command_start(args: argparse.Namespace) -> int:
             f"--remote {args.remote!r} conflicts with the validated project "
             f"remote {policy.remote!r} for {policy.project_id}"
         )
-    automatic_push = policy.automatic_push_allowed(actual_branch)
     contract_spec = None
     if args.contract_file:
         contract_spec = contract_module.load_contract(args.contract_file)
     authorization = {
-        "push": bool(args.authorize_push) or automatic_push,
+        "push": bool(args.authorize_push),
         "protected_branch": bool(args.authorize_protected_branch),
         "merge": bool(args.authorize_merge),
     }
-    prepared_spec, contract_source = contract_module.prepare_contract(
-        contract_spec,
-        branch=actual_branch or branch,
-        base_sha=snapshot.get("head"),
-        dirty_paths=contract_module.parse_dirty_paths(snapshot.get("status") or ""),
-        remote=policy.remote,
-        evidence_files=args.evidence_file or None,
-        allowed_paths=args.scope or None,
-        authorization=authorization,
-        delivery_policy=policy,
-        require_delivery_policy=True,
-    )
     if args.dry_run:
+        planned_job_id = new_job_id(args.title)
+        prepared_branch = branch_prepare.prepare(
+            repo,
+            policy,
+            job_id=planned_job_id,
+            requested_branch=args.branch,
+            allow_protected_branch=bool(args.authorize_protected_branch),
+            apply=False,
+        )
+        if policy.automatic_push_allowed(prepared_branch.branch):
+            authorization["push"] = True
+        snapshot = runner.git_snapshot(repo)
+        prepared_spec, contract_source = contract_module.prepare_contract(
+            contract_spec,
+            branch=prepared_branch.branch,
+            base_sha=snapshot.get("head"),
+            dirty_paths=contract_module.parse_dirty_paths(snapshot.get("status") or ""),
+            remote=policy.remote,
+            evidence_files=args.evidence_file or None,
+            allowed_paths=args.scope or None,
+            authorization=authorization,
+            delivery_policy=policy,
+            require_delivery_policy=True,
+        )
         payload = runner.preflight(proc_root=args.proc_root, workspace=args.workspace)
         print(
             json.dumps(
@@ -153,7 +163,9 @@ def command_start(args: argparse.Namespace) -> int:
                     "dry_run": True,
                     "title": args.title,
                     "repo": str(repo),
-                    "branch": branch,
+                    "planned_job_id": planned_job_id,
+                    "branch": prepared_branch.branch,
+                    "prepared_branch": prepared_branch.snapshot(),
                     "timeout_seconds": timeout,
                     "agent": args.agent,
                     "model": args.model,
@@ -172,7 +184,7 @@ def command_start(args: argparse.Namespace) -> int:
         title=args.title,
         prompt=prompt,
         repo=repo,
-        branch=branch,
+        branch=None,
         criteria=criteria,
         timeout_seconds=timeout,
         agent=args.agent,
@@ -181,13 +193,15 @@ def command_start(args: argparse.Namespace) -> int:
         proc_root=args.proc_root,
         notifications_enabled=not args.no_notify,
         contract_spec=contract_spec,
-        contract_source=contract_source,
+        contract_source=None,
         contract_evidence=args.evidence_file or None,
         contract_scope=args.scope or None,
         contract_authorization=authorization,
         contract_remote=policy.remote,
         contract_delivery_policy=policy,
         require_delivery_policy=True,
+        requested_branch=args.branch,
+        allow_protected_branch=bool(args.authorize_protected_branch),
     )
     _print_job_started(job, args.json)
     return 0 if job.get("state") == "RUNNING" else 20

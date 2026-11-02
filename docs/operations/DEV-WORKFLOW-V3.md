@@ -49,8 +49,10 @@ execution at a time.
 | Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
 | Completion contract | `tools/devjob/contract.py` | Machine-checked task-start evidence, scoped commit, authorization, push and remote SHA |
 | Project delivery policy | `tools/devjob/project_policy.py` | Validated per-project remote, GitHub repository, `agent/*` branch pattern and automatic-push authorization |
+| Branch preparation | `tools/devjob/branch_prepare.py` | Pre-start checkout inspection, non-interactive GitHub auth check, safe `agent/*` branch selection/creation and resume return |
 | Acceptance profiles | `tools/devjob/acceptance_profiles.py`, `acceptance-profiles.json` | Explicit project commands/context for the phone start flow; fail-closed discovery |
 | Contract tests | `tools/test_completion_contract.py` | Contract evidence, scope, protected-branch, merge, secret-path and remote-SHA regressions |
+| Branch tests | `tools/test_branch_preparation.py` | Protected main, clean development branch, dirty tree, detached HEAD, remote mismatch, auth failure, concurrency and resume regressions |
 | Policy tests | `tools/test_project_delivery_policy.py` | Multiple project remotes, missing/ambiguous/mismatched configuration, unauthorized branches and failed pushes |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
 | Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
@@ -298,6 +300,48 @@ ambiguous, non-GitHub or mismatched remote is refused before a job exists. There
 is no global `dev-control-plane` fallback: that remote is valid only for the
 control-plane row that explicitly configures it.
 
+### Automatic development branch preparation
+
+Before OpenCode starts, and before a job record is created, the shared
+`dev start` path (used by both the CLI and the Telegram monitor) inspects the
+actual repository: current branch, `HEAD`, linked worktrees, dirty paths, remote
+URL and the project-level instructions. It then:
+
+- keeps the current branch when it is already a clean `agent/*` branch matching
+  the project policy (the existing development-branch path);
+- otherwise creates one deterministic job-scoped branch,
+  `agent/<project>/<job-id>`, from the current commit when the checkout is on
+  `main`/`master`/`trunk`, another protected branch or an unauthorized branch;
+- accepts an explicitly requested `agent/*` branch only when it does not already
+  exist or is the current branch. It never reuses an unrelated existing branch;
+- checks the configured remote repository identity and performs a non-interactive
+  `git ls-remote` authentication/probe with `GIT_TERMINAL_PROMPT=0` and SSH
+  BatchMode for SSH remotes. Existing credential helpers and SSH keys remain in
+  use; no credential is copied, printed or added, and the remote URL is not
+  changed.
+
+Branch preparation fails closed, without resetting, cleaning, stashing,
+force-checking-out or rewriting anything, when:
+
+- the worktree has uncommitted changes and a branch switch/create would be
+  ambiguous (a resume on the already-recorded branch keeps unfinished work);
+- `HEAD` is detached;
+- the current branch is not synchronized with its remote (including unpushed
+  local commits such as a historical local `main` commit);
+- another RUNNING job is using the same repository or another startup holds the
+  repository preparation lock;
+- the remote repository identity mismatches the registry or non-interactive
+  authentication/transport fails.
+
+If GitHub delivery is unavailable, the start is refused with an actionable owner
+message instead of spending tokens on a job that cannot satisfy its mandatory
+completion contract. A dry run reports the branch that would be prepared but
+does not create it. Resume and restart first return to the branch recorded by
+the job, then reuse the recorded contract baseline and verify the remote SHA
+against that actual branch. `--authorize-protected-branch` remains an explicit
+owner opt-out from automatic branch replacement; it does not grant any other
+authorization.
+
 ```bash
 # The default contract is created automatically; --dry-run prints it.
 dev start ... --dry-run
@@ -371,7 +415,7 @@ and records the result in `job.json`, `dev status`, the monitor job status and
 | `capability_harvest` | The evidence records the reusable result or an explicit project-specific/no-harvest result. |
 | `documentation_updates` | The evidence records the documentation changed or explicitly that none was needed. |
 | `evidence_identity` | An auto-initialized evidence block names the current job ID; another job's or copied evidence fails. |
-| `branch` / `protected_branch` | The current branch matches the contract and is not a protected branch without explicit authorization. |
+| `branch` / `protected_branch` | The current branch matches the actually prepared contract branch and is not a protected branch without explicit authorization. |
 | `delivery_policy` / `branch_policy` | The recorded project policy still matches the actual remote URL and the current branch is inside its `agent/*` pattern. |
 | `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
 | `commit` / `scoped_paths` | At least one commit exists after `base_sha`, and every changed path is inside `allowed_paths`. |
@@ -721,6 +765,7 @@ configuration.
 
 ```bash
 python3 tools/test_opencode_guard.py
+python3 tools/test_branch_preparation.py
 python3 tools/test_dev_cli.py
 python3 tools/test_completion_contract.py
 python3 tools/test_project_delivery_policy.py
@@ -741,7 +786,12 @@ push authorization ends `BLOCKED` with a `PENDING` contract, that the default
 contract is mandatory, that a project's own remote is used instead of a global
 default, that pre-existing owner files are preserved, that a weak
 `--contract-file` is rejected, and that an explicit contract may customize while
-keeping mandatory checks. The policy tests additionally cover multiple project
+keeping mandatory checks. Branch-preparation tests cover protected `main`,
+clean `agent/*` reuse, dirty trees, detached HEAD, remote mismatch, failed
+non-interactive authentication, unpushed local commits, active repositories,
+the repository lock, requested-branch collision and resume; CLI integration also
+proves a protected-main start creates and delivers a job-scoped branch while
+leaving `main` unchanged. The policy tests additionally cover multiple project
 remotes, unregistered/missing/ambiguous/mismatched remotes, non-GitHub URLs,
 unauthorized branches, disabled automatic push and a failed push. They also include recovered and unresolved permission
 rejections, recovered same-operation command failures and unrelated successful

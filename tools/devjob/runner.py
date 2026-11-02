@@ -27,7 +27,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 import opencode_guard  # noqa: E402
 
-from . import contract, detect, evidence, notify  # noqa: E402
+from . import branch_prepare, contract, detect, evidence, notify, project_policy  # noqa: E402
 from .store import (  # noqa: E402
     JOB_STATES,
     JobLocked,
@@ -374,13 +374,15 @@ def _new_job(
     preflight_payload: dict,
     contract_spec: dict | None = None,
     contract_source: str | None = None,
+    job_id: str | None = None,
+    snapshot: dict | None = None,
 ) -> dict:
     from .store import new_job_id
 
     now = utc_now()
-    job_id = new_job_id(title)
+    job_id = job_id or new_job_id(title)
     directory = ensure_private_dir(job_dir(job_id))
-    snapshot = git_snapshot(repo)
+    snapshot = snapshot or git_snapshot(repo)
     spec = dict(contract_spec or {})
     if spec and not spec.get("base_sha"):
         # The job's own starting HEAD is the baseline it must advance from.
@@ -1282,6 +1284,9 @@ def create_job(
     contract_remote: str | None = contract.DEFAULT_REMOTE,
     contract_delivery_policy: object | None = None,
     require_delivery_policy: bool = True,
+    requested_branch: str | None = None,
+    allow_protected_branch: bool = False,
+    job_id: str | None = None,
 ) -> dict:
     repo_path = Path(repo).expanduser().resolve()
     if not repo_path.is_dir():
@@ -1289,58 +1294,91 @@ def create_job(
     if not prompt.strip():
         raise JobError("prompt cannot be empty")
     payload = preflight(proc_root=proc_root, workspace=workspace)
-    snapshot = git_snapshot(repo_path)
-    prepared_spec, prepared_source = contract.prepare_contract(
-        contract_spec,
-        branch=snapshot.get("branch") or branch,
-        base_sha=snapshot.get("head"),
-        dirty_paths=contract.parse_dirty_paths(snapshot.get("status") or ""),
-        remote=contract_remote,
-        evidence_files=contract_evidence,
-        allowed_paths=contract_scope,
-        authorization=contract_authorization,
-        delivery_policy=contract_delivery_policy,
-        require_delivery_policy=require_delivery_policy,
-    )
-    job = _new_job(
-        title=title,
-        prompt=prompt,
-        repo=repo_path,
-        branch=branch,
-        criteria=criteria,
-        timeout_seconds=timeout_seconds,
-        agent=agent,
-        model=model,
-        workspace=Path(workspace).expanduser(),
-        notifications_enabled=notifications_enabled,
-        preflight_payload=payload,
-        contract_spec=prepared_spec,
-        contract_source=contract_source or prepared_source,
-    )
-    job["proc_root"] = str(proc_root)
-    if prepared_source == "default" and not contract_evidence:
-        # Every new default job gets one job-specific evidence file outside the
-        # project working tree. The harness records only observed metadata; the
-        # executing agent must replace the UNRECORDED fields truthfully.
-        spec = job.get("completion_contract_spec") or {}
-        policy = spec.get("delivery_policy") or {}
-        evidence_file, created = evidence.initialize(
-            job_id=job["id"],
-            title=job["title"],
-            repo=str(repo_path),
-            branch=job.get("branch"),
-            base_sha=spec.get("base_sha") or (job.get("git") or {}).get("head"),
-            project_id=policy.get("project_id") if isinstance(policy, dict) else None,
-            contract_source=prepared_source,
-            initialized_at=job["created_at"],
+    if not isinstance(contract_delivery_policy, project_policy.DeliveryPolicy):
+        if require_delivery_policy:
+            raise JobError(
+                "a new Workflow v3 job requires a validated project delivery policy"
+            )
+        raise JobError(
+            "branch preparation requires a validated project delivery policy"
         )
-        spec["evidence_files"] = [str(evidence_file)]
-        job["completion_contract_spec"] = spec
-        job["evidence_file"] = str(evidence_file)
-        job["evidence_initialized"] = True
-        job["evidence_created"] = created
-        job["evidence_initialized_at"] = job["created_at"]
-    if payload.get("status") == "REFUSE" or payload.get("exit_code") == opencode_guard.EXIT_REFUSE:
+    from .store import new_job_id
+
+    job_id = job_id or new_job_id(title)
+    # ``branch`` remains a requested-branch hint for older callers. The actual
+    # job branch is always the safely prepared branch returned below.
+    requested = requested_branch if requested_branch is not None else branch
+
+    def make_job(
+        prepared_spec: dict,
+        prepared_source: str,
+        branch_value: str | None,
+        snapshot_value: dict,
+    ) -> dict:
+        job = _new_job(
+            title=title,
+            prompt=prompt,
+            repo=repo_path,
+            branch=branch_value,
+            criteria=criteria,
+            timeout_seconds=timeout_seconds,
+            agent=agent,
+            model=model,
+            workspace=Path(workspace).expanduser(),
+            notifications_enabled=notifications_enabled,
+            preflight_payload=payload,
+            contract_spec=prepared_spec,
+            contract_source=contract_source or prepared_source,
+            job_id=job_id,
+            snapshot=snapshot_value,
+        )
+        job["proc_root"] = str(proc_root)
+        if prepared_source == "default" and not contract_evidence:
+            # Every new default job gets one job-specific evidence file outside
+            # the project working tree. The harness records only observed
+            # metadata; the executing agent must replace the UNRECORDED fields.
+            spec = job.get("completion_contract_spec") or {}
+            policy = spec.get("delivery_policy") or {}
+            evidence_file, created = evidence.initialize(
+                job_id=job["id"],
+                title=job["title"],
+                repo=str(repo_path),
+                branch=job.get("branch"),
+                base_sha=spec.get("base_sha") or (job.get("git") or {}).get("head"),
+                project_id=policy.get("project_id") if isinstance(policy, dict) else None,
+                contract_source=prepared_source,
+                initialized_at=job["created_at"],
+            )
+            spec["evidence_files"] = [str(evidence_file)]
+            job["completion_contract_spec"] = spec
+            job["evidence_file"] = str(evidence_file)
+            job["evidence_initialized"] = True
+            job["evidence_created"] = created
+            job["evidence_initialized_at"] = job["created_at"]
+        return job
+
+    refused = payload.get("status") == "REFUSE" or payload.get("exit_code") == opencode_guard.EXIT_REFUSE
+    if refused:
+        # Do not move branches for a job the guard will not run.
+        snapshot = git_snapshot(repo_path)
+        prepared_spec, prepared_source = contract.prepare_contract(
+            contract_spec,
+            branch=requested or snapshot.get("branch") or branch,
+            base_sha=snapshot.get("head"),
+            dirty_paths=contract.parse_dirty_paths(snapshot.get("status") or ""),
+            remote=contract_remote,
+            evidence_files=contract_evidence,
+            allowed_paths=contract_scope,
+            authorization=contract_authorization,
+            delivery_policy=contract_delivery_policy,
+            require_delivery_policy=require_delivery_policy,
+        )
+        job = make_job(
+            prepared_spec,
+            prepared_source,
+            prepared_spec.get("branch") or snapshot.get("branch"),
+            snapshot,
+        )
         job["state"] = "BLOCKED"
         job["blocker"] = "guard preflight refused: " + "; ".join(payload.get("refusals") or ["unknown"])
         job["ended_at"] = utc_now()
@@ -1363,15 +1401,62 @@ def create_job(
         save_job(job)
         return job
 
-    save_job(job)
-    append_event(job, "created", f"repo={repo_path}")
-    if job.get("evidence_file"):
+    # Branch preparation, contract construction and job creation run under one
+    # repository lock so two CLI or Telegram starts cannot race the same checkout.
+    with branch_prepare.repo_lock(repo_path):
+        prepared_branch = branch_prepare.prepare(
+            repo_path,
+            contract_delivery_policy,
+            job_id=job_id,
+            requested_branch=requested,
+            allow_protected_branch=allow_protected_branch,
+            apply=True,
+            lock=False,
+        )
+        snapshot = git_snapshot(repo_path)
+        prepared_authorization = dict(contract_authorization or {})
+        if contract_delivery_policy.automatic_push_allowed(prepared_branch.branch):
+            # Automatic push follows the actual prepared branch, so starting on
+            # main no longer leaves the new job with a false PENDING delivery.
+            prepared_authorization["push"] = True
+        # The contract baseline is taken after the safe branch move and uses the
+        # actual prepared branch, including on future resume/restart paths.
+        prepared_spec, prepared_source = contract.prepare_contract(
+            contract_spec,
+            branch=prepared_branch.branch,
+            base_sha=snapshot.get("head"),
+            dirty_paths=contract.parse_dirty_paths(snapshot.get("status") or ""),
+            remote=contract_remote,
+            evidence_files=contract_evidence,
+            allowed_paths=contract_scope,
+            authorization=prepared_authorization,
+            delivery_policy=contract_delivery_policy,
+            require_delivery_policy=require_delivery_policy,
+        )
+        job = make_job(
+            prepared_spec,
+            prepared_source,
+            prepared_branch.branch,
+            snapshot,
+        )
+        job["prepared_branch"] = prepared_branch.snapshot()
+        save_job(job)
+        append_event(job, "created", f"repo={repo_path}")
         append_event(
             job,
-            "evidence_initialized",
-            f"path={job['evidence_file']} created={bool(job.get('evidence_created'))}",
+            "branch_prepared",
+            f"branch={prepared_branch.branch} created={prepared_branch.created} "
+            f"switched={prepared_branch.switched} reused={prepared_branch.reused}",
         )
-    spawn_worker(job)
+        if job.get("evidence_file"):
+            append_event(
+                job,
+                "evidence_initialized",
+                f"path={job['evidence_file']} created={bool(job.get('evidence_created'))}",
+            )
+        # Spawn while still holding the lock so a second starter observes this
+        # job as active rather than preparing the same branch concurrently.
+        spawn_worker(job)
     return load_job(job["id"])
 
 
@@ -1439,6 +1524,35 @@ def resume_job(
         job["blocker"] = "previous worker is gone; resuming"
         job["ended_at"] = utc_now()
         append_event(job, "reconciled_stale", job["blocker"])
+
+    spec = job.get("completion_contract_spec") or {}
+    policy_snapshot = spec.get("delivery_policy")
+    recorded_branch = str(spec.get("branch") or job.get("branch") or "").strip()
+    prepared_branch = None
+    if isinstance(policy_snapshot, dict) and recorded_branch:
+        try:
+            policy = branch_prepare.policy_from_contract(policy_snapshot, job.get("repo"))
+            prepared_branch = branch_prepare.prepare(
+                job.get("repo"),
+                policy,
+                job_id=job_id,
+                existing_branch=recorded_branch,
+                resume=True,
+                exclude_job_id=job_id,
+                apply=True,
+            )
+        except branch_prepare.BranchPreparationError as exc:
+            raise JobError(str(exc)) from exc
+        if prepared_branch.branch != recorded_branch:
+            raise JobError(
+                f"resume prepared branch {prepared_branch.branch!r} but the job "
+                f"recorded {recorded_branch!r}"
+            )
+        job["branch"] = prepared_branch.branch
+        spec["branch"] = prepared_branch.branch
+        job["completion_contract_spec"] = spec
+        job["prepared_branch"] = prepared_branch.snapshot()
+
     job["timeout_seconds"] = (
         parse_duration(timeout_seconds) if timeout_seconds is not None else int(job.get("timeout_seconds") or opencode_guard.MAX_TIMEOUT_SECONDS)
     )
@@ -1459,6 +1573,13 @@ def resume_job(
     job["blocker"] = None
     job["cancelled_at"] = None
     append_event(job, "resume_requested", f"resume_count={job['resume_count']}")
+    if prepared_branch is not None:
+        append_event(
+            job,
+            "branch_prepared",
+            f"branch={prepared_branch.branch} created=False "
+            f"switched={prepared_branch.switched} reused={prepared_branch.reused}",
+        )
     save_job(job)
     spawn_worker(job)
     return load_job(job_id)

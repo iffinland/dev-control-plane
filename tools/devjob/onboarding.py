@@ -656,20 +656,27 @@ def onboard(
         commands, manual = discover_commands(target)
         profiles_path = registry.parent / CENTRAL_PROFILE
         if apply:
-            _write_profile(
-                profiles_path,
-                project_id,
-                _profile_entry(inspection, commands, manual, identity.repository),
-            )
-            _append_registry_row(
-                registry,
-                project_id=project_id,
-                platform=inspection.platform,
-                repo_path=target,
-                has_agents=inspection.has_agents,
-                central_root=central_root,
-                github_repository=identity.repository,
-            )
+            try:
+                _write_profile(
+                    profiles_path,
+                    project_id,
+                    _profile_entry(inspection, commands, manual, identity.repository),
+                )
+                _append_registry_row(
+                    registry,
+                    project_id=project_id,
+                    platform=inspection.platform,
+                    repo_path=target,
+                    has_agents=inspection.has_agents,
+                    central_root=central_root,
+                    github_repository=identity.repository,
+                )
+            except OSError as exc:
+                raise OnboardError(
+                    "the checkout was cloned but registration could not be written "
+                    f"atomically ({exc.__class__.__name__}); repair the registry and "
+                    "retry, no partial row is intended"
+                ) from exc
         return OnboardedProject(
             project_id=project_id,
             platform=inspection.platform,

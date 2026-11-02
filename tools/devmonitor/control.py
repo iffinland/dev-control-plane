@@ -587,7 +587,7 @@ class ControlManager:
                 docs_root=onboarding.DOCS_ROOT,
                 state_root=self.config.job_state_root,
             )
-        except onboarding.OnboardError as exc:
+        except (onboarding.OnboardError, OSError) as exc:
             raise ControlError(str(exc)) from exc
 
         self.registry.load(force=True)

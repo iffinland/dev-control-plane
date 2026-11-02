@@ -496,9 +496,9 @@ Phases 0-2. Phase 3's additive cancel command is a separate authorized change.
 Start:
 
 ```text
-owner selects project -> wizard (title, prompt, criteria, timeout)
--> confirmation summary -> admission lock for project
--> existing `dev start --json --no-notify`
+owner selects project -> wizard (title, prompt, runtime + read-only configuration)
+-> explicit Continue -> confirmation summary -> owner Confirm
+-> admission lock for project -> existing `dev start --json --no-notify`
 -> RUNNING: send STARTED, register status message
 -> BLOCKED/refusal: show sanitized reason, no STARTED
 ```
@@ -697,9 +697,17 @@ The wizard collects:
 6. optional branch label;
 7. confirmation.
 
-The confirmation summary shows the exact repository, title, redacted prompt
-preview, exact acceptance commands, timeout, agent and model. The owner must press
-Confirm. The monitor then:
+The normal mobile flow uses one configuration step after the task description:
+runtime and read-only are independent settings. Selecting either keeps that
+step open and preserves both visible values; only the explicit Continue action
+builds the exact confirmation preview. Back returns to the same configuration
+(or to the description from that step) and invalidates any preview nonce, so a
+stale confirmation callback cannot start a job with settings the owner has
+since changed. Cancel and duplicate confirmations remain one-time.
+
+The confirmation summary shows the exact project, repository, title, redacted
+prompt preview, exact acceptance commands, timeout, read-only mode, agent and
+model. The owner must press Confirm. The monitor then:
 
 - acquires the per-project admission lock;
 - checks for an active job in the same project;

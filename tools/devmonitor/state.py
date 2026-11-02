@@ -569,6 +569,29 @@ class MonitorState:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def delete_confirmation(
+        self, nonce: str, user_id: int, chat_id: int, action: str | None = None
+    ) -> bool:
+        """Drop an unused confirmation when the owner returns to configuration.
+
+        A preview created before a Back action must not remain a live mutation
+        capability: its callback carries the old settings even though the owner
+        has since edited them. Used nonces are retained as evidence.
+        """
+
+        if not nonce:
+            return False
+        query = (
+            "DELETE FROM confirmations WHERE nonce = ? AND user_id = ? AND chat_id = ? "
+            "AND used_at IS NULL"
+        )
+        values: list[Any] = [nonce, int(user_id), int(chat_id)]
+        if action is not None:
+            query += " AND action = ?"
+            values.append(action)
+        cursor = self.connection.execute(query, tuple(values))
+        return cursor.rowcount == 1
+
     def confirmation_action(self, nonce: str, user_id: int, chat_id: int) -> str | None:
         """Return the action of an unused, unexpired confirmation nonce."""
 

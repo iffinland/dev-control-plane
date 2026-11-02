@@ -195,6 +195,9 @@ class OnboardingRouterTests(unittest.TestCase):
             self.assertTrue(wizard_data.startswith("w:"))
 
             self.router.handle(callback_update(self.next_id(), runtime))
+            self.assertIn("Selected runtime: 2h", self.api.edited[-1]["text"])
+            cont = find_button(self.api.edited[-1]["markup"], "Continue")
+            self.router.handle(callback_update(self.next_id(), cont))
             self.assertIn("Confirm new project", self.api.edited[-1]["text"])
             confirm = find_button(self.api.edited[-1]["markup"], "Confirm")
             self.assertTrue(confirm.startswith("x:"))
@@ -246,6 +249,8 @@ class OnboardingRouterTests(unittest.TestCase):
             self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
             runtime = find_button(self.api.edited[-1]["markup"], "2h")
             self.router.handle(callback_update(self.next_id(), runtime))
+            cont = find_button(self.api.edited[-1]["markup"], "Continue")
+            self.router.handle(callback_update(self.next_id(), cont))
             self.assertIn("read-only audit", self.api.edited[-1]["text"].lower())
             confirm = find_button(self.api.edited[-1]["markup"], "Confirm")
             self.router.handle(callback_update(self.next_id(), confirm))
@@ -261,6 +266,122 @@ class OnboardingRouterTests(unittest.TestCase):
         self.assertEqual(len(starts), 1)
         self.assertIn("--read-only", starts[0]["args"])
         self.assertNotIn("--authorize-push", starts[0]["args"])
+
+    def test_onboarding_configuration_keeps_runtime_and_read_only_independent(
+        self,
+    ) -> None:
+        with mock.patch.dict(os.environ, self._env(), clear=False), mock.patch.object(
+            control_module.onboarding, "DOCS_ROOT", self.docs
+        ):
+            self.router.handle(message_update(self.next_id(), "/newproject"))
+            self.router.handle(
+                message_update(self.next_id(), "https://github.com/owner/demo.git")
+            )
+            self.router.handle(message_update(self.next_id(), "Do the audit work"))
+
+            # Read-only first, then runtime: both settings stay on the screen.
+            self.router.handle(
+                callback_update(
+                    self.next_id(),
+                    find_button(self.api.sent[-1]["markup"], "Read-only audit"),
+                )
+            )
+            self.assertIn("Choose maximum runtime", self.api.edited[-1]["text"])
+            self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+            self.assertNotIn("Confirm new project", self.api.edited[-1]["text"])
+
+            for label in ("2h", "4h"):
+                self.router.handle(
+                    callback_update(
+                        self.next_id(),
+                        find_button(self.api.edited[-1]["markup"], label),
+                    )
+                )
+                self.assertIn("Choose maximum runtime", self.api.edited[-1]["text"])
+                self.assertIn(f"Selected runtime: {label}", self.api.edited[-1]["text"])
+                self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+                self.assertNotIn("Confirm new project", self.api.edited[-1]["text"])
+
+            # Repeated toggles remain on the configuration screen.
+            for expected in ("off", "on"):
+                self.router.handle(
+                    callback_update(
+                        self.next_id(),
+                        find_button(
+                            self.api.edited[-1]["markup"], "Read-only audit"
+                        ),
+                    )
+                )
+                self.assertIn("Choose maximum runtime", self.api.edited[-1]["text"])
+                self.assertIn("Selected runtime: 4h", self.api.edited[-1]["text"])
+                self.assertIn(
+                    f"Read-only audit: {expected}", self.api.edited[-1]["text"]
+                )
+                self.assertNotIn("Confirm new project", self.api.edited[-1]["text"])
+
+            config_markup = self.api.edited[-1]["markup"]
+            self.router.handle(
+                callback_update(
+                    self.next_id(), find_button(config_markup, "Continue")
+                )
+            )
+            preview = self.api.edited[-1]["text"]
+            self.assertIn("Confirm new project", preview)
+            self.assertIn("Project: owner/demo", preview)
+            self.assertIn("Title: Do the audit work", preview)
+            self.assertIn("Maximum runtime: 4h00m00s", preview)
+            self.assertIn("Read-only audit: on", preview)
+            old_confirm = find_button(self.api.edited[-1]["markup"], "Confirm")
+            back = find_button(self.api.edited[-1]["markup"], "Back")
+
+            # A stale setting callback cannot advance or mutate the preview.
+            self.router.handle(
+                callback_update(
+                    self.next_id(), find_button(config_markup, "1h")
+                )
+            )
+            self.assertIn("Request failed", self.api.edited[-1]["text"])
+            self.assertNotIn("Confirm new project", self.api.edited[-1]["text"])
+
+            self.router.handle(callback_update(self.next_id(), back))
+            self.assertIn("Choose maximum runtime", self.api.edited[-1]["text"])
+            self.assertIn("Selected runtime: 4h", self.api.edited[-1]["text"])
+            self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+            config_markup = self.api.edited[-1]["markup"]
+
+            # Back invalidated the old one-time confirmation.
+            self.router.handle(callback_update(self.next_id(), old_confirm))
+            self.assertIn("expired or already used", self.api.edited[-1]["text"])
+
+            self.router.handle(
+                callback_update(
+                    self.next_id(), find_button(config_markup, "Continue")
+                )
+            )
+            self.assertIn("Maximum runtime: 4h00m00s", self.api.edited[-1]["text"])
+            self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+            self.router.handle(
+                callback_update(
+                    self.next_id(),
+                    find_button(self.api.edited[-1]["markup"], "Confirm"),
+                )
+            )
+
+        registry = self.registry_file.read_text(encoding="utf-8")
+        self.assertIn("`qortium/demo`", registry)
+        invocations = [
+            json.loads(line)
+            for line in (self.state_root / "fake_invocations.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        starts = [item for item in invocations if item["args"][:1] == ["start"]]
+        self.assertEqual(len(starts), 1)
+        args = starts[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "14400s")
+        self.assertIn("--read-only", args)
+        self.assertNotIn("--authorize-push", args)
 
     def test_replayed_confirmation_does_not_start_twice(self) -> None:
         events: list[str] = []
@@ -311,6 +432,8 @@ class OnboardingRouterTests(unittest.TestCase):
             self.router.handle(message_update(self.next_id(), "Do the work"))
             runtime = find_button(self.api.sent[-1]["markup"], "1h")
             self.router.handle(callback_update(self.next_id(), runtime))
+            cont = find_button(self.api.edited[-1]["markup"], "Continue")
+            self.router.handle(callback_update(self.next_id(), cont))
             confirm = find_button(self.api.edited[-1]["markup"], "Confirm")
             self.router.handle(callback_update(self.next_id(), confirm))
         self.assertTrue(

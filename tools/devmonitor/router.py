@@ -387,16 +387,12 @@ class Router:
                         menus.back_to_main(),
                     )
                 else:
-                    self.state.delete_wizard(
-                        str(wizard["wizard_id"]),
+                    result = self.control.cancel_wizard(
+                        wizard,
                         int(decision.user_id or 0),
                         int(decision.chat_id or 0),
                     )
-                    self._send(
-                        chat_id,
-                        "Wizard cancelled. No job was started or resumed.",
-                        menus.back_to_main(),
-                    )
+                    self._send(chat_id, result.text, result.markup)
         elif command == "queue":
             if not self._require_control(decision, "Queueing an instruction"):
                 return

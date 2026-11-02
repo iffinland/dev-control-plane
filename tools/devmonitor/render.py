@@ -393,15 +393,26 @@ def start_description_text(project) -> str:
     )
 
 
-def start_runtime_text(title: str, *, read_only: bool = False) -> str:
+def _runtime_choice_label(timeout_seconds: int | None) -> str:
+    labels = {3600: "1h", 7200: "2h", 14400: "4h", 28800: "8h"}
+    return labels.get(timeout_seconds, "not selected yet")
+
+
+def start_runtime_text(
+    title: str, *, read_only: bool = False, timeout_seconds: int | None = None
+) -> str:
     return (
         "Choose maximum runtime\n\n"
         f"Task: {title}\n\n"
         "This is the wall-clock limit for each attempt, not a target. "
         "Choose 1h, 2h, 4h or 8h.\n\n"
+        f"Selected runtime: {_runtime_choice_label(timeout_seconds)}\n"
         f"Read-only audit: {'on' if read_only else 'off'}\n"
         "A read-only audit may inspect the repository but must not commit or "
         "push; the completion contract verifies that nothing changed.\n\n"
+        "Changing the runtime or read-only setting keeps this configuration "
+        "screen open. Press Continue only when both values are correct; nothing "
+        "is confirmed or started until Confirm.\n\n"
         "Advanced options are optional: custom acceptance commands, a custom "
         "timeout or a branch label."
     )
@@ -465,15 +476,21 @@ def onboard_description_text(identity) -> str:
     )
 
 
-def onboard_runtime_text(title: str, *, read_only: bool = False) -> str:
+def onboard_runtime_text(
+    title: str, *, read_only: bool = False, timeout_seconds: int | None = None
+) -> str:
     return (
         "Choose maximum runtime\n\n"
         f"Task: {title}\n\n"
         "This is the wall-clock limit for the first attempt. "
         "Choose 1h, 2h, 4h or 8h.\n\n"
+        f"Selected runtime: {_runtime_choice_label(timeout_seconds)}\n"
         f"Read-only audit: {'on' if read_only else 'off'}\n"
         "A read-only audit may inspect the repository but must not commit or "
         "push; the completion contract verifies that nothing changed.\n\n"
+        "Changing the runtime or read-only setting keeps this configuration "
+        "screen open. Press Continue only when both values are correct; nothing "
+        "is confirmed or started until Confirm.\n\n"
         "Acceptance commands are discovered conservatively from known manifests "
         "and are not executed during onboarding."
     )
@@ -486,10 +503,12 @@ def onboard_preview_text(
         [
             "Confirm new project",
             "",
+            f"Project: {identity.repository}",
             f"GitHub repository: {identity.repository}",
             f"Target checkout: {target}",
             f"Title: {title}",
             f"Maximum runtime: {format_seconds(timeout_seconds)}",
+            f"Read-only audit: {'on' if read_only else 'off'}",
             f"Mode: {'read-only audit (no commit or push)' if read_only else 'development delivery'}",
             "",
             "On Confirm the repository is cloned (if needed), inspected without "
@@ -548,6 +567,7 @@ def start_preview_text(request) -> str:
         f"Branch: {request.branch or '(current detected branch; push only if policy allows)'}",
         f"Maximum runtime: {format_seconds(request.timeout_seconds)}",
         f"Acceptance profile: {request.profile_source or 'explicit advanced criteria'}",
+        f"Read-only audit: {'on' if getattr(request, 'read_only', False) else 'off'}",
         f"Mode: {'read-only audit (no commit or push)' if getattr(request, 'read_only', False) else 'development delivery'}",
         f"Auto-loaded context files: {len(request.context_paths)}",
         "",

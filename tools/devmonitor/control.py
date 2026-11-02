@@ -491,6 +491,64 @@ class ControlManager:
             menus.start_project_menu(wizard_id, projects),
         )
 
+    def _runtime_selection(self, data: Mapping[str, Any]) -> int | None:
+        try:
+            value = int(data.get("timeout_seconds") or 0)
+        except (TypeError, ValueError):
+            return None
+        return value if value in RUNTIME_CHOICES else None
+
+    def _start_runtime_result(self, wizard_id: str, data: dict[str, Any]) -> ControlResult:
+        return ControlResult(
+            render.start_runtime_text(
+                _text(data.get("title")),
+                read_only=bool(data.get("read_only")),
+                timeout_seconds=self._runtime_selection(data),
+            ),
+            menus.start_runtime_menu(
+                wizard_id,
+                read_only=bool(data.get("read_only")),
+                timeout_seconds=self._runtime_selection(data),
+            ),
+        )
+
+    def _onboard_runtime_result(self, wizard_id: str, data: dict[str, Any]) -> ControlResult:
+        return ControlResult(
+            render.onboard_runtime_text(
+                _text(data.get("title")),
+                read_only=bool(data.get("read_only")),
+                timeout_seconds=self._runtime_selection(data),
+            ),
+            menus.onboard_runtime_menu(
+                wizard_id,
+                read_only=bool(data.get("read_only")),
+                timeout_seconds=self._runtime_selection(data),
+            ),
+        )
+
+    def _drop_preview_confirmation(
+        self, wizard: Mapping[str, Any], user_id: int, chat_id: int
+    ) -> dict[str, Any]:
+        """Consume the forward-only preview capability before going Back.
+
+        A preview nonce carries the exact settings that were shown. Returning
+        to configuration must invalidate it so an older confirmation callback
+        cannot start a job with values the owner has since changed.
+        """
+
+        data = dict(wizard.get("data") or {})
+        nonce = _text(data.pop("preview_nonce", ""))
+        if nonce:
+            action = "onboard_project" if wizard.get("kind") == "onboard" else "start_job"
+            self.state.delete_confirmation(nonce, user_id, chat_id, action)
+        return data
+
+    def cancel_wizard(
+        self, wizard: Mapping[str, Any], user_id: int, chat_id: int
+    ) -> ControlResult:
+        self._drop_preview_confirmation(wizard, user_id, chat_id)
+        return self._cancel(dict(wizard), user_id, chat_id)
+
     # ---- new project onboarding --------------------------------------------------
     def _projects_root(self) -> Path:
         roots = list(self.config.allowed_repo_roots)
@@ -551,14 +609,7 @@ class ControlManager:
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
-            return ControlResult(
-                render.onboard_runtime_text(
-                    data["title"], read_only=bool(data.get("read_only"))
-                ),
-                menus.onboard_runtime_menu(
-                    wizard_id, read_only=bool(data.get("read_only"))
-                ),
-            )
+            return self._onboard_runtime_result(wizard_id, data)
         raise ControlError("this wizard is waiting for a button, not text")
 
     def onboard_callback(
@@ -568,32 +619,61 @@ class ControlManager:
         user_id = int(decision.user_id or 0)
         chat_id = int(decision.chat_id or 0)
         if action == "cancel":
-            return self._cancel(wizard, user_id, chat_id)
+            return self.cancel_wizard(wizard, user_id, chat_id)
+        step = str(wizard.get("step"))
+        if action == "back":
+            if step == "confirm":
+                data = self._drop_preview_confirmation(wizard, user_id, chat_id)
+                self.state.update_wizard(
+                    wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+                )
+                return self._onboard_runtime_result(wizard_id, data)
+            if step == "runtime":
+                data = self._drop_preview_confirmation(wizard, user_id, chat_id)
+                url = _text(data.get("url"))
+                if not url:
+                    raise ControlError("the GitHub URL is missing from this wizard")
+                identity = onboarding.parse_github_identity(url)
+                self.state.update_wizard(
+                    wizard_id, user_id, chat_id, step="description", data=data, ttl_seconds=WIZARD_TTL
+                )
+                return ControlResult(
+                    render.onboard_description_text(identity),
+                    menus.wizard_cancel_menu(wizard_id),
+                )
+            raise ControlError("back is not available at this step")
         if action == "ro":
-            if str(wizard.get("step")) != "runtime":
+            if step != "runtime":
                 raise ControlError("read-only mode is not available at this step")
             data = dict(wizard["data"])
             data["read_only"] = not bool(data.get("read_only"))
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
-            return ControlResult(
-                render.onboard_runtime_text(
-                    data.get("title") or "", read_only=bool(data.get("read_only"))
-                ),
-                menus.onboard_runtime_menu(
-                    wizard_id, read_only=bool(data.get("read_only"))
-                ),
+            return self._onboard_runtime_result(wizard_id, data)
+        if action == "t":
+            if step != "runtime":
+                raise ControlError("runtime selection is not available at this step")
+            try:
+                timeout_seconds = int(parts[0]) if parts else 0
+            except (TypeError, ValueError) as exc:
+                raise ControlError("invalid runtime selection") from exc
+            if timeout_seconds not in RUNTIME_CHOICES:
+                raise ControlError("runtime must be one of 1h, 2h, 4h or 8h")
+            data = dict(wizard["data"])
+            data["timeout_seconds"] = timeout_seconds
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
-        if action != "t":
+            return self._onboard_runtime_result(wizard_id, data)
+        if action != "continue":
             raise ControlError("unknown new-project action")
-        try:
-            timeout_seconds = int(parts[0]) if parts else 0
-        except (TypeError, ValueError) as exc:
-            raise ControlError("invalid runtime selection") from exc
-        if timeout_seconds not in RUNTIME_CHOICES:
-            raise ControlError("runtime must be one of 1h, 2h, 4h or 8h")
+        if step != "runtime":
+            raise ControlError("continue is not available at this step")
         data = dict(wizard["data"])
+        timeout_seconds = self._runtime_selection(data)
+        if timeout_seconds is None:
+            raise ControlError("choose a runtime before continuing")
         url = _text(data.get("url"))
         if not url:
             raise ControlError("the GitHub URL is missing from this wizard")
@@ -602,6 +682,7 @@ class ControlManager:
         data["timeout_seconds"] = timeout_seconds
         data["wizard_id"] = wizard_id
         nonce = self.state.create_confirmation(user_id, chat_id, "onboard_project", data)
+        data["preview_nonce"] = nonce
         self.state.update_wizard(
             wizard_id, user_id, chat_id, step="confirm", data=data, ttl_seconds=WIZARD_TTL
         )
@@ -614,7 +695,11 @@ class ControlManager:
                 timeout_seconds,
                 read_only=bool(data.get("read_only")),
             ),
-            menus.control_confirmation_menu(nonce, "Register and start job"),
+            menus.control_confirmation_menu(
+                nonce,
+                "Register and start job",
+                back_callback=f"w:{wizard_id}:back",
+            ),
         )
 
     def perform_onboard(self, payload: dict[str, Any], decision) -> ControlResult:
@@ -808,8 +893,27 @@ class ControlManager:
         wizard_id = str(wizard["wizard_id"])
         chat_id = int(decision.chat_id or 0)
         user_id = int(decision.user_id or 0)
+        step = str(wizard.get("step"))
         if action == "cancel":
-            return self._cancel(wizard, user_id, chat_id)
+            return self.cancel_wizard(wizard, user_id, chat_id)
+        if action == "back":
+            if step == "preview":
+                data = self._drop_preview_confirmation(wizard, user_id, chat_id)
+                self.state.update_wizard(
+                    wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+                )
+                return self._start_runtime_result(wizard_id, data)
+            if step == "runtime":
+                data = self._drop_preview_confirmation(wizard, user_id, chat_id)
+                project = self._selected_project(data)
+                self.state.update_wizard(
+                    wizard_id, user_id, chat_id, step="prompt", data=data, ttl_seconds=WIZARD_TTL
+                )
+                return ControlResult(
+                    render.start_description_text(project),
+                    menus.wizard_cancel_menu(wizard_id),
+                )
+            raise ControlError("back is not available at this step")
         if action == "p":
             if len(parts) < 1:
                 raise ControlError("missing project selection")
@@ -841,7 +945,7 @@ class ControlManager:
                 menus.wizard_cancel_menu(wizard_id),
             )
         if action == "t":
-            if str(wizard.get("step")) not in {"runtime", "prompt"}:
+            if step != "runtime":
                 raise ControlError("runtime selection is not available at this step")
             try:
                 timeout_seconds = int(parts[0]) if parts else 0
@@ -851,33 +955,31 @@ class ControlManager:
                 raise ControlError("runtime must be one of 1h, 2h, 4h or 8h")
             data = dict(wizard["data"])
             data["timeout_seconds"] = timeout_seconds
-            request = self._normal_start_request(data)
-            self.state.update_wizard(
-                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
-            )
-            return self._start_preview(wizard_id, request, user_id, chat_id)
-        if action == "ro":
-            if str(wizard.get("step")) not in {"runtime", "preview", "prompt"}:
-                raise ControlError("read-only mode is not available at this step")
-            data = dict(wizard["data"])
-            data["read_only"] = not bool(data.get("read_only"))
-            if str(wizard.get("step")) == "preview":
-                request = self._start_request(data)
-                self.state.update_wizard(
-                    wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
-                )
-                return self._start_preview(wizard_id, request, user_id, chat_id)
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
-            return ControlResult(
-                render.start_runtime_text(
-                    data.get("title") or "", read_only=bool(data.get("read_only"))
-                ),
-                menus.start_runtime_menu(wizard_id, read_only=bool(data.get("read_only"))),
+            return self._start_runtime_result(wizard_id, data)
+        if action == "ro":
+            if step != "runtime":
+                raise ControlError("read-only mode is not available at this step")
+            data = dict(wizard["data"])
+            data["read_only"] = not bool(data.get("read_only"))
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return self._start_runtime_result(wizard_id, data)
+        if action == "continue":
+            if step != "runtime":
+                raise ControlError("continue is not available at this step")
+            data = dict(wizard["data"])
+            if self._runtime_selection(data) is None:
+                raise ControlError("choose a runtime before continuing")
+            request = self._normal_start_request(data)
+            return self._start_preview(
+                wizard_id, request, user_id, chat_id, data=data
             )
         if action == "a":
-            if str(wizard.get("step")) not in {"runtime", "preview", "prompt"}:
+            if step != "runtime":
                 raise ControlError("advanced options are not available at this step")
             data = dict(wizard["data"])
             self.state.update_wizard(
@@ -910,14 +1012,7 @@ class ControlManager:
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
-            return ControlResult(
-                render.start_runtime_text(
-                    data["title"], read_only=bool(data.get("read_only"))
-                ),
-                menus.start_runtime_menu(
-                    wizard_id, read_only=bool(data.get("read_only"))
-                ),
-            )
+            return self._start_runtime_result(wizard_id, data)
         if step == "criteria":
             commands, manuals = parse_criteria(text)
             data["command_criteria"] = [list(item) for item in commands]
@@ -946,10 +1041,9 @@ class ControlManager:
                     text, limit=MAX_BRANCH, field="branch label"
                 )
             request = self._start_request(data)
-            self.state.update_wizard(
-                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+            return self._start_preview(
+                wizard_id, request, user_id, chat_id, data=data
             )
-            return self._start_preview(wizard_id, request, user_id, chat_id)
         raise ControlError("this wizard is waiting for a button, not text")
 
     def _start_request(self, data: dict[str, Any]) -> StartRequest:
@@ -1033,14 +1127,27 @@ class ControlManager:
         )
 
     def _start_preview(
-        self, wizard_id: str, request: StartRequest, user_id: int, chat_id: int
+        self,
+        wizard_id: str,
+        request: StartRequest,
+        user_id: int,
+        chat_id: int,
+        *,
+        data: dict[str, Any] | None = None,
     ) -> ControlResult:
         nonce = self.state.create_confirmation(
             user_id, chat_id, "start_job", request.payload(wizard_id)
         )
+        if data is not None:
+            data["preview_nonce"] = nonce
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+            )
         return ControlResult(
             render.start_preview_text(request),
-            menus.control_confirmation_menu(nonce, "Create job"),
+            menus.control_confirmation_menu(
+                nonce, "Create job", back_callback=f"w:{wizard_id}:back"
+            ),
             project_id=request.project_id,
         )
 
@@ -1139,7 +1246,7 @@ class ControlManager:
         user_id = int(decision.user_id or 0)
         chat_id = int(decision.chat_id or 0)
         if action == "cancel":
-            return self._cancel(wizard, user_id, chat_id)
+            return self.cancel_wizard(wizard, user_id, chat_id)
         data = dict(wizard["data"])
         job_id = _text(data.get("job_id"))
         if action == "i":

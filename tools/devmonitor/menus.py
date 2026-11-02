@@ -190,45 +190,55 @@ def start_project_menu(wizard_id: str, projects: Sequence[object]) -> dict:
     return keyboard(rows)
 
 
-def start_runtime_menu(wizard_id: str, *, read_only: bool = False) -> dict:
+def _runtime_choices(wizard_id: str, timeout_seconds: int | None) -> list[list[dict]]:
+    labels = ((3600, "1h"), (7200, "2h"), (14400, "4h"), (28800, "8h"))
+    buttons = [
+        button(
+            f"{label} selected" if timeout_seconds == seconds else label,
+            f"w:{wizard_id}:t:{seconds}",
+        )
+        for seconds, label in labels
+    ]
+    return [buttons[0:2], buttons[2:4]]
+
+
+def start_runtime_menu(
+    wizard_id: str, *, read_only: bool = False, timeout_seconds: int | None = None
+) -> dict:
     rows = [
-        [
-            button("1h", f"w:{wizard_id}:t:3600"),
-            button("2h", f"w:{wizard_id}:t:7200"),
-        ],
-        [
-            button("4h", f"w:{wizard_id}:t:14400"),
-            button("8h", f"w:{wizard_id}:t:28800"),
-        ],
+        *_runtime_choices(wizard_id, timeout_seconds),
         [
             button(
                 f"Read-only audit: {'on' if read_only else 'off'}",
                 f"w:{wizard_id}:ro",
             )
         ],
+        [button("Continue", f"w:{wizard_id}:continue")],
         [button("Advanced options", f"w:{wizard_id}:a")],
-        [button("Cancel", f"w:{wizard_id}:cancel")],
+        [
+            button("Back", f"w:{wizard_id}:back"),
+            button("Cancel", f"w:{wizard_id}:cancel"),
+        ],
     ]
     return keyboard(rows)
 
 
-def onboard_runtime_menu(wizard_id: str, *, read_only: bool = False) -> dict:
+def onboard_runtime_menu(
+    wizard_id: str, *, read_only: bool = False, timeout_seconds: int | None = None
+) -> dict:
     rows = [
-        [
-            button("1h", f"w:{wizard_id}:t:3600"),
-            button("2h", f"w:{wizard_id}:t:7200"),
-        ],
-        [
-            button("4h", f"w:{wizard_id}:t:14400"),
-            button("8h", f"w:{wizard_id}:t:28800"),
-        ],
+        *_runtime_choices(wizard_id, timeout_seconds),
         [
             button(
                 f"Read-only audit: {'on' if read_only else 'off'}",
                 f"w:{wizard_id}:ro",
             )
         ],
-        [button("Cancel", f"w:{wizard_id}:cancel")],
+        [button("Continue", f"w:{wizard_id}:continue")],
+        [
+            button("Back", f"w:{wizard_id}:back"),
+            button("Cancel", f"w:{wizard_id}:cancel"),
+        ],
     ]
     return keyboard(rows)
 
@@ -239,13 +249,15 @@ def wizard_cancel_menu(wizard_id: str) -> dict:
     )
 
 
-def control_confirmation_menu(nonce: str, action_label: str) -> dict:
-    return keyboard(
-        [
-            [button(f"Confirm: {action_label}", f"x:{nonce}:y")],
-            [button("Cancel", f"x:{nonce}:n")],
-        ]
-    )
+def control_confirmation_menu(
+    nonce: str, action_label: str, *, back_callback: str | None = None
+) -> dict:
+    rows = [[button(f"Confirm: {action_label}", f"x:{nonce}:y")]]
+    if back_callback:
+        rows.append([button("Back", back_callback), button("Cancel", f"x:{nonce}:n")])
+    else:
+        rows.append([button("Cancel", f"x:{nonce}:n")])
+    return keyboard(rows)
 
 
 def resume_preview_menu(

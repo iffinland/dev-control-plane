@@ -132,6 +132,10 @@ class MobileBase(unittest.TestCase):
     def click(self, callback_data: str) -> None:
         self.router.handle(callback_update(self.next_id(), callback_data))
 
+    def choose_runtime(self, label: str = "2h") -> None:
+        self.click(find_button(self.api.sent[-1]["markup"], label))
+        self.click(find_button(self.api.edited[-1]["markup"], "Continue"))
+
     def invocations(self) -> list[dict]:
         path = self.state_root / "fake_invocations.jsonl"
         if not path.is_file():
@@ -174,7 +178,7 @@ class MobileStartFlowTests(MobileBase):
         self.assertIn("Choose maximum runtime", runtime_text)
         for label in ("1h", "2h", "4h", "8h"):
             self.assertTrue(find_button(self.api.sent[-1]["markup"], label))
-        self.click(find_button(self.api.sent[-1]["markup"], "2h"))
+        self.choose_runtime("2h")
         preview = self.api.edited[-1]["text"]
         self.assertIn("Acceptance profile: test verified profile", preview)
         self.assertIn("Auto-loaded context files:", preview)
@@ -210,7 +214,7 @@ class MobileStartFlowTests(MobileBase):
         )
         self.select_project()
         self.send(DESCRIPTION)
-        self.click(find_button(self.api.sent[-1]["markup"], "1h"))
+        self.choose_runtime("1h")
         preview = self.api.edited[-1]["text"]
         self.assertIn("project profile .workflow/acceptance.json", preview)
         self.click(find_button(self.api.edited[-1]["markup"], "Confirm: Create job"))
@@ -224,7 +228,7 @@ class MobileStartFlowTests(MobileBase):
         self.profile_path.unlink()
         self.select_project()
         self.send(DESCRIPTION)
-        self.click(find_button(self.api.sent[-1]["markup"], "2h"))
+        self.choose_runtime("2h")
         self.assertIn("no verified acceptance profile", self.api.edited[-1]["text"])
         self.assertEqual(self.invocations(), [])
 
@@ -248,7 +252,7 @@ class MobileStartFlowTests(MobileBase):
         )
         self.select_project()
         self.send(DESCRIPTION)
-        self.click(find_button(self.api.sent[-1]["markup"], "2h"))
+        self.choose_runtime("2h")
         self.assertIn("Request failed", self.api.edited[-1]["text"])
         self.assertIn("does not exist", self.api.edited[-1]["text"])
         self.assertEqual(self.invocations(), [])

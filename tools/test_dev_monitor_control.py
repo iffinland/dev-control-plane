@@ -165,9 +165,12 @@ class ControlBase(unittest.TestCase):
     def send_description(self, value: str = PROMPT) -> None:
         self.send_text(value)
 
-    def choose_runtime(self, label: str = "2h") -> None:
+    def choose_runtime(self, label: str = "2h", *, continue_to_preview: bool = True) -> None:
         callback = find_button(self.api.sent[-1]["markup"], label)
         self.router.handle(callback_update(self.next_id(), callback))
+        if continue_to_preview:
+            cont = find_button(self.api.edited[-1]["markup"], "Continue")
+            self.router.handle(callback_update(self.next_id(), cont))
 
     def advance_to_preview(self) -> str:
         self.begin_start()
@@ -265,6 +268,8 @@ class StartWizardTests(ControlBase):
         self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
         runtime = find_button(self.api.edited[-1]["markup"], "1h")
         self.router.handle(callback_update(self.next_id(), runtime))
+        cont = find_button(self.api.edited[-1]["markup"], "Continue")
+        self.router.handle(callback_update(self.next_id(), cont))
         preview = self.api.edited[-1]["text"]
         self.assertIn("read-only audit", preview.lower())
         confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
@@ -301,6 +306,8 @@ class StartWizardTests(ControlBase):
         self.assertIn("Read-only audit: off", self.api.edited[-1]["text"])
         runtime = find_button(self.api.edited[-1]["markup"], "2h")
         self.router.handle(callback_update(self.next_id(), runtime))
+        cont = find_button(self.api.edited[-1]["markup"], "Continue")
+        self.router.handle(callback_update(self.next_id(), cont))
         confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
         self.confirm(confirm)
         args = self.invocations()[0]["args"]
@@ -449,6 +456,230 @@ class StartWizardTests(ControlBase):
         self.confirm(confirm)
         self.assertIn("global execution guard is busy", self.api.edited[-1]["text"])
         self.assertEqual(self.invocations(), [])
+
+
+class StartConfigurationRegressionTests(ControlBase):
+    """Runtime and read-only are independent settings on one configuration step."""
+
+    def open_configuration(self, description: str = PROMPT) -> None:
+        self.begin_start()
+        self.send_description(description)
+
+    def assert_on_configuration(
+        self,
+        markup,
+        text: str,
+        *,
+        runtime: str | None,
+        read_only: bool,
+    ) -> None:
+        self.assertIn("Choose maximum runtime", text)
+        if runtime is not None:
+            self.assertIn(f"Selected runtime: {runtime}", text)
+        self.assertIn(f"Read-only audit: {'on' if read_only else 'off'}", text)
+        self.assertNotIn("Confirm job start", text)
+        find_button(markup, "Continue")
+        find_button(markup, "Read-only audit")
+        find_button(markup, "Back")
+        find_button(markup, "Cancel")
+
+    def test_every_runtime_option_stays_on_configuration_then_reaches_exact_confirmation(
+        self,
+    ) -> None:
+        choices = (
+            ("1h", "Maximum runtime: 1h00m00s"),
+            ("2h", "Maximum runtime: 2h00m00s"),
+            ("4h", "Maximum runtime: 4h00m00s"),
+            ("8h", "Maximum runtime: 8h00m00s"),
+        )
+        self.open_configuration()
+        config_markup = self.api.sent[-1]["markup"]
+        read_only = False
+        for index, (label, preview_runtime) in enumerate(choices):
+            self.confirm(find_button(config_markup, label))
+            self.assert_on_configuration(
+                self.api.edited[-1]["markup"],
+                self.api.edited[-1]["text"],
+                runtime=label,
+                read_only=read_only,
+            )
+
+            # The read-only toggle is independent of the runtime selection.
+            self.confirm(find_button(self.api.edited[-1]["markup"], "Read-only audit"))
+            read_only = not read_only
+            self.assert_on_configuration(
+                self.api.edited[-1]["markup"],
+                self.api.edited[-1]["text"],
+                runtime=label,
+                read_only=read_only,
+            )
+
+            self.confirm(find_button(self.api.edited[-1]["markup"], "Continue"))
+            preview = self.api.edited[-1]["text"]
+            self.assertIn("Confirm job start", preview)
+            self.assertIn("Project: demo/project", preview)
+            self.assertIn(f"Title: {PROMPT}", preview)
+            self.assertIn(preview_runtime, preview)
+            self.assertIn(
+                f"Read-only audit: {'on' if read_only else 'off'}", preview
+            )
+            old_confirm = find_button(
+                self.api.edited[-1]["markup"], "Confirm: Create job"
+            )
+
+            # Back restores the same configuration and invalidates the preview.
+            self.confirm(find_button(self.api.edited[-1]["markup"], "Back"))
+            self.assert_on_configuration(
+                self.api.edited[-1]["markup"],
+                self.api.edited[-1]["text"],
+                runtime=label,
+                read_only=read_only,
+            )
+            config_markup = self.api.edited[-1]["markup"]
+            self.confirm(old_confirm)
+            self.assertIn("expired or already used", self.api.edited[-1]["text"])
+            self.assertEqual(self.invocations(), [])
+
+        # The last confirmed preview starts exactly the settings still visible.
+        self.confirm(find_button(config_markup, "Continue"))
+        final_preview = self.api.edited[-1]["text"]
+        self.assertIn("Maximum runtime: 8h00m00s", final_preview)
+        self.assertIn(
+            f"Read-only audit: {'on' if read_only else 'off'}", final_preview
+        )
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Confirm: Create job"))
+        records = self.invocations()
+        self.assertEqual(len(records), 1)
+        args = records[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "28800s")
+        if read_only:
+            self.assertIn("--read-only", args)
+        else:
+            self.assertNotIn("--read-only", args)
+
+    def test_runtime_then_repeated_read_only_toggles_preserve_both_and_start_exact_mode(
+        self,
+    ) -> None:
+        self.open_configuration()
+        self.confirm(find_button(self.api.sent[-1]["markup"], "2h"))
+        read_only = False
+        for _ in range(5):
+            self.confirm(find_button(self.api.edited[-1]["markup"], "Read-only audit"))
+            read_only = not read_only
+            self.assert_on_configuration(
+                self.api.edited[-1]["markup"],
+                self.api.edited[-1]["text"],
+                runtime="2h",
+                read_only=read_only,
+            )
+
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Continue"))
+        preview = self.api.edited[-1]["text"]
+        self.assertIn("Maximum runtime: 2h00m00s", preview)
+        self.assertIn(f"Read-only audit: {'on' if read_only else 'off'}", preview)
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Confirm: Create job"))
+        args = self.invocations()[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "7200s")
+        self.assertIn("--read-only", args)
+
+    def test_read_only_then_runtime_preserves_both_and_starts_exact_mode(self) -> None:
+        self.open_configuration()
+        self.confirm(find_button(self.api.sent[-1]["markup"], "Read-only audit"))
+        self.assert_on_configuration(
+            self.api.edited[-1]["markup"],
+            self.api.edited[-1]["text"],
+            runtime=None,
+            read_only=True,
+        )
+        self.confirm(find_button(self.api.edited[-1]["markup"], "4h"))
+        self.assert_on_configuration(
+            self.api.edited[-1]["markup"],
+            self.api.edited[-1]["text"],
+            runtime="4h",
+            read_only=True,
+        )
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Continue"))
+        preview = self.api.edited[-1]["text"]
+        self.assertIn("Maximum runtime: 4h00m00s", preview)
+        self.assertIn("Read-only audit: on", preview)
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Confirm: Create job"))
+        args = self.invocations()[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "14400s")
+        self.assertIn("--read-only", args)
+
+    def test_back_from_configuration_returns_to_description_and_preserves_settings(
+        self,
+    ) -> None:
+        self.open_configuration()
+        self.confirm(find_button(self.api.sent[-1]["markup"], "2h"))
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Read-only audit"))
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Back"))
+        self.assertIn("What should be changed or fixed?", self.api.edited[-1]["text"])
+
+        self.send_description("Updated task description")
+        self.assert_on_configuration(
+            self.api.sent[-1]["markup"],
+            self.api.sent[-1]["text"],
+            runtime="2h",
+            read_only=True,
+        )
+        self.confirm(find_button(self.api.sent[-1]["markup"], "Continue"))
+        preview = self.api.edited[-1]["text"]
+        self.assertIn("Title: Updated task description", preview)
+        self.assertIn("Maximum runtime: 2h00m00s", preview)
+        self.assertIn("Read-only audit: on", preview)
+
+    def test_stale_runtime_and_read_only_callbacks_cannot_advance_or_mutate_preview(
+        self,
+    ) -> None:
+        self.open_configuration()
+        config_markup = self.api.sent[-1]["markup"]
+        self.confirm(find_button(config_markup, "2h"))
+        config_markup = self.api.edited[-1]["markup"]
+        self.confirm(find_button(config_markup, "Continue"))
+        self.assertIn("Confirm job start", self.api.edited[-1]["text"])
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+
+        for stale in ("4h", "Read-only audit"):
+            self.confirm(find_button(config_markup, stale))
+            self.assertIn("Request failed", self.api.edited[-1]["text"])
+            self.assertNotIn("Create job", json.dumps(self.api.edited[-1]["markup"]))
+            self.assertEqual(self.invocations(), [])
+
+        # The still-current preview keeps the original 2h/off settings.
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "7200s")
+        self.assertNotIn("--read-only", args)
+
+    def test_cancel_invalidates_the_preview_confirmation(self) -> None:
+        self.open_configuration()
+        self.confirm(find_button(self.api.sent[-1]["markup"], "1h"))
+        self.confirm(find_button(self.api.edited[-1]["markup"], "Continue"))
+        old_confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+        self.send_text("/cancel")
+        self.assertIn("Wizard cancelled", self.api.sent[-1]["text"])
+        self.confirm(old_confirm)
+        self.assertIn("expired or already used", self.api.edited[-1]["text"])
+        self.assertEqual(self.invocations(), [])
+
+    def test_duplicate_continue_and_confirm_submissions_create_one_job(self) -> None:
+        self.open_configuration()
+        self.confirm(find_button(self.api.sent[-1]["markup"], "2h"))
+        cont = find_button(self.api.edited[-1]["markup"], "Continue")
+        self.confirm(cont)
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+        self.confirm(cont)
+        self.assertIn("Request failed", self.api.edited[-1]["text"])
+        rows = self.state.connection.execute(
+            "SELECT COUNT(*) AS count FROM confirmations WHERE action = 'start_job'"
+        ).fetchone()
+        self.assertEqual(int(rows["count"]), 1)
+        self.assertEqual(self.invocations(), [])
+        self.confirm(confirm)
+        self.confirm(confirm)
+        self.assertEqual(len(self.invocations()), 1)
+        self.assertIn("expired or already used", self.api.edited[-1]["text"])
 
 
 class ResumeTests(ControlBase):

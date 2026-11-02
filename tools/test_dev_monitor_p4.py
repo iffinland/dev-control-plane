@@ -169,6 +169,8 @@ class P4Base(unittest.TestCase):
         self.send_text(PROMPT)
         runtime = find_button(self.api.sent[-1]["markup"], "2h")
         self.router.handle(callback_update(self.next_id(), runtime))
+        cont = find_button(self.api.edited[-1]["markup"], "Continue")
+        self.router.handle(callback_update(self.next_id(), cont))
         return find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
 
     def invocations(self) -> list[dict]:

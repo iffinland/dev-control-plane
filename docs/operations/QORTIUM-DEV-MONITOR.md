@@ -31,10 +31,13 @@ Read-only mode (the default):
 Control mode (explicit owner configuration only):
 
 - Registered-project selection for job start with three normal inputs: project,
-  task description and maximum runtime (1h, 2h, 4h or 8h). The title is derived
-  automatically. Acceptance criteria, context files and skills are loaded from
-  the project's verified acceptance profile; no phone-typed criteria, branch,
-  skill, agent or model inputs are required.
+  task description and maximum runtime (1h, 2h, 4h or 8h). Runtime and the
+  read-only toggle are independent settings on one configuration screen:
+  changing either keeps that screen open, both values remain visible, and only
+  an explicit Continue advances to the confirmation preview. The title is
+  derived automatically. Acceptance criteria, context files and skills are
+  loaded from the project's verified acceptance profile; no phone-typed
+  criteria, branch, skill, agent or model inputs are required.
 - **New project** from a GitHub URL: the monitor validates the repository
   identity, refuses duplicate or unsafe targets, clones safely, inspects
   manifests and instructions without executing them, registers the project and

@@ -100,6 +100,14 @@ class AdmissionManager:
         return "repo:" + _sha256(str(repo_real))
 
     def project_key_for_job(self, job: dict, projects: Iterable[ValidatedProject] | None = None) -> str:
+        # A job records the project it was admitted for. That survives an
+        # isolated linked worktree, whose path intentionally differs from the
+        # registered owner checkout.
+        recorded = str(job.get("project_id") or "")
+        if recorded:
+            for project in projects if projects is not None else self.projects():
+                if project.project_id == recorded:
+                    return recorded
         return self.project_key_for_repo(job.get("repo") or "", projects)
 
     # ---- active job and guard scan ----------------------------------------------

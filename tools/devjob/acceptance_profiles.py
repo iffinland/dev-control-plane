@@ -201,8 +201,17 @@ def _project_profile(
     if not path.is_file():
         return None
     data = _read_json(path)
-    commands = _commands(data.get("commands"), field_name="commands")
+    raw_commands = data.get("commands")
+    commands = (
+        _commands(raw_commands, field_name="commands")
+        if raw_commands not in (None, [])
+        else ()
+    )
     manual = _strings(data.get("manual"), field_name="manual")
+    if not commands and not manual:
+        raise ProfileError(
+            "commands must be a non-empty list or a manual criterion must be present"
+        )
     docs = _resolve_listed(
         _strings(data.get("docs"), field_name="docs"),
         root=repo,
@@ -242,8 +251,17 @@ def _central_profile(
         return None
     if not isinstance(entry, dict):
         raise ProfileError(f"acceptance profile for {project_id} must be an object")
-    commands = _commands(entry.get("commands"), field_name="commands")
+    raw_commands = entry.get("commands")
+    commands = (
+        _commands(raw_commands, field_name="commands")
+        if raw_commands not in (None, [])
+        else ()
+    )
     manual = _strings(entry.get("manual"), field_name="manual")
+    if not commands and not manual:
+        raise ProfileError(
+            f"acceptance profile for {project_id} needs a command or manual criterion"
+        )
     # Central context paths are relative to the control-plane checkout.
     docs = _resolve_listed(
         _strings(entry.get("docs"), field_name="docs"),

@@ -41,8 +41,17 @@ resume.
   validated project-scoped remote and branch policy.
 - [`tools/devjob/branch_prepare.py`](../../../tools/devjob/branch_prepare.py) and
   [`tools/test_branch_preparation.py`](../../../tools/test_branch_preparation.py):
-  pre-start checkout inspection, non-interactive remote probe, safe
-  `agent/*` branch creation and resume return.
+  pre-start checkout inspection, isolated linked worktrees for dirty owner
+  checkouts, safe `agent/*` branch creation and resume return.
+- [`tools/devjob/git_remote.py`](../../../tools/devjob/git_remote.py) and
+  [`tools/test_git_remote.py`](../../../tools/test_git_remote.py): one canonical
+  non-interactive environment for admission and completion, bounded transient
+  retry, and failure classification without leaking the URL or Git stderr.
+- [`tools/devjob/onboarding.py`](../../../tools/devjob/onboarding.py),
+  [`tools/test_onboarding.py`](../../../tools/test_onboarding.py) and
+  [`tools/test_dev_monitor_onboarding.py`](../../../tools/test_dev_monitor_onboarding.py):
+  safe GitHub clone, duplicate detection, manifest-only acceptance discovery,
+  registry/profile registration and Telegram one-time confirmation.
 - [`docs/operations/DEV-WORKFLOW-V3.md`](../../../docs/operations/DEV-WORKFLOW-V3.md):
   operating procedure and schema.
 - [`examples/workflow-v3/contract.json`](../../../examples/workflow-v3/contract.json):
@@ -79,7 +88,14 @@ resume.
    is refused instead of spending tokens. The contract baseline, automatic-push
    authorization and remote-SHA check use the actual prepared branch, and
    resume/restart first returns to the branch recorded by the job. A dry run
-   reports the planned branch without creating it.
+   reports the planned branch without creating it. When the owner checkout is
+   dirty and a switch/create would be required, create the branch in an isolated
+   linked worktree (`<projects>/.worktrees/<repo>/<job-id>`) at the same published
+   commit. Never switch, reset, clean, stash or commit the owner checkout. Jobs
+   in the owner checkout and its worktrees share one repository identity for
+   admission and locking. An explicit `--read-only` (Telegram read-only audit
+   toggle) still prepares an isolated `agent/*` worktree but verifies that no
+   commit, push or merge occurred; never infer read-only from task wording.
 2. **Fill the automatic per-job evidence file truthfully.** A new default job
    (CLI or Telegram monitor, which delegates to the CLI) gets
    `~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md`. The
@@ -172,6 +188,19 @@ rules, branch-selection rules or state mapping changed, update this skill and it
 index entry. The contract is a policy layer,
 not an OS sandbox: wrappers, interpreters and SSH can do more than a command
 pattern suggests.
+
+## Telegram project onboarding
+
+The control surface may accept a GitHub URL plus a task description and runtime.
+On one-time confirmation it validates `github.com owner/name`, refuses duplicate
+registrations and unsafe targets, stages `git clone` in a temporary sibling
+(no submodules, no repository scripts executed), inspects manifests/instructions,
+derives conservative acceptance commands from known manifest entries only,
+writes one registry row and central profile under a state-directory lock, then
+starts the first job through the normal CLI contract. A manual-only profile is
+valid when no safe command is discovered; an empty profile with no manual
+criterion is not. If the first start is refused, the registration remains and
+the result says explicitly that no job was started.
 
 ## Validation
 

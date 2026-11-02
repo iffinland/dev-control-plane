@@ -243,24 +243,30 @@ def parse_registry(path: str | Path) -> list[RawProject]:
 
 
 def normalise_github_repository(value: str | None) -> str | None:
-    """Return ``owner/name`` (case-folded) or ``None`` for a non-GitHub value."""
+    """Return ``owner/name`` (case-folded) or ``None`` for a non-GitHub value.
+
+    Accepts the URL forms Git actually stores in a remote: HTTPS (including an
+    explicit ``:443`` port), scp-like SSH, ``ssh://``/``git+ssh://`` (including
+    an explicit port) and a bare ``owner/name``. Credentials in the URL are not
+    echoed or used; only the repository identity is returned.
+    """
 
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
-    if text.startswith("git@github.com:"):
-        text = text[len("git@github.com:") :]
-    elif text.startswith("ssh://git@github.com/"):
-        text = text[len("ssh://git@github.com/") :]
-    elif text.startswith("git+ssh://git@github.com/"):
-        text = text[len("git+ssh://git@github.com/") :]
+    if text.startswith(("git@github.com:", "github.com:")):
+        text = text.split(":", 1)[1]
     else:
-        match = re.match(r"^https?://github\.com/(.+)$", text, re.IGNORECASE)
+        match = re.match(
+            r"^(?:git\+ssh|ssh|https?)://(?:[^/@\s]+@)?github\.com(?::\d+)?/(.+)$",
+            text,
+            re.IGNORECASE,
+        )
         if match:
             text = match.group(1)
-        elif text.startswith(("http://", "https://", "ssh://", "git://")):
+        elif re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", text):
             return None
         elif ":" in text and "github.com" in text.lower():
             text = text.split(":", 1)[1]

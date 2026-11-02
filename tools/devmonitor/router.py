@@ -41,6 +41,7 @@ SAFE_COMMAND_LABELS = frozenset(
         "docs",
         "start_job",
         "newjob",
+        "newproject",
         "resume",
         "cancel",
         "queue",
@@ -243,6 +244,8 @@ class Router:
                     try:
                         if wizard["kind"] == "start":
                             result = self.control.start_text(wizard, text, decision)
+                        elif wizard["kind"] == "onboard":
+                            result = self.control.onboard_text(wizard, text, decision)
                         elif wizard["kind"] == "queue":
                             result = self.control.queue_text(wizard, text, decision)
                         else:
@@ -342,6 +345,15 @@ class Router:
                 return
             result = self.control.begin_start(
                 int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+            self._send(chat_id, result.text, result.markup)
+        elif command == "newproject":
+            if not self._require_control(decision, "Registering a new project"):
+                return
+            result = self.control.begin_onboard(
+                int(decision.user_id or 0),
+                int(decision.chat_id or 0),
+                " ".join(args).strip() if args else None,
             )
             self._send(chat_id, result.text, result.markup)
         elif command == "resume":
@@ -489,7 +501,15 @@ class Router:
         elif head == "h":
             self._edit(callback, decision, render.help_text(self.config), menus.back_to_main())
         elif head == "p":
-            self._show_projects(chat_id, decision, callback=callback)
+            if len(parts) > 1 and parts[1] == "new":
+                if not self._require_control(decision, "Registering a new project"):
+                    return
+                result = self.control.begin_onboard(
+                    int(decision.user_id or 0), int(decision.chat_id or 0)
+                )
+                self._edit(callback, decision, result.text, result.markup)
+            else:
+                self._show_projects(chat_id, decision, callback=callback)
         elif head == "d":
             self._show_document_roots(chat_id, decision, callback=callback)
         elif head == "jl":
@@ -534,6 +554,8 @@ class Router:
         action = parts[2] if len(parts) > 2 else ""
         if wizard["kind"] == "start":
             result = self.control.start_callback(wizard, action, parts[3:], decision)
+        elif wizard["kind"] == "onboard":
+            result = self.control.onboard_callback(wizard, action, parts[3:], decision)
         else:
             result = self.control.resume_callback(wizard, action, parts[3:], decision)
         self._edit(callback, decision, result.text, result.markup)
@@ -645,11 +667,12 @@ class Router:
                 callback, decision, "Confirmation expired or already used.", menus.back_to_main()
             )
             return
-        if action in {"start_job", "resume_job", "cancel_job"}:
+        if action in {"start_job", "resume_job", "cancel_job", "onboard_project"}:
             labels = {
                 "start_job": "Starting a job",
                 "resume_job": "Resuming a job",
                 "cancel_job": "Cancelling a job",
+                "onboard_project": "Registering a new project",
             }
             if not self._require_control(decision, labels[action]):
                 return
@@ -678,6 +701,8 @@ class Router:
                 result = self.control.perform_start(payload, decision)
             elif action == "resume_job":
                 result = self.control.perform_resume(payload, decision)
+            elif action == "onboard_project":
+                result = self.control.perform_onboard(payload, decision)
             else:
                 result = self.control.perform_cancel(payload, decision)
             self._audit(
@@ -1043,8 +1068,13 @@ class Router:
             for project in projects
             if project.repo_real is not None
         }
+        known = {project.project_id for project in projects}
         labels: dict[str, str] = {}
         for job in jobs:
+            recorded = str(job.get("project_id") or "")
+            if recorded and recorded in known:
+                labels[str(job.get("id") or "")] = recorded
+                continue
             repo = str(job.get("repo") or "")
             try:
                 real = str(Path(repo).expanduser().resolve())

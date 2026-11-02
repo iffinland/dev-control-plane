@@ -217,6 +217,55 @@ class StartWizardTests(ControlBase):
         self.assertTrue(any("STARTED" in item["text"] for item in self.api.sent))
         self.assertTrue(any("Job started" in item["text"] for item in self.api.edited))
 
+    def test_obvious_project_mismatch_is_refused_before_start(self) -> None:
+        second = init_project_repo(
+            self.projects / "Second",
+            remote="upstream",
+            remote_url="https://github.com/demo/second.git",
+        )
+        self.registry_file.write_text(
+            "# Project registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | Canonical context | Central report root | Git remote | GitHub repository | Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
+            "`origin` | `demo/project` | `agent/*` | `yes` |\n"
+            f"| `demo/second` | Qortal | `{second}` | Yes | Pending | `{self.docs}/` | "
+            "`upstream` | `demo/second` | `agent/*` | `yes` |\n",
+            encoding="utf-8",
+        )
+        write_acceptance_profile(self.registry_file, "demo/second")
+        self.registry = Registry(self.registry_file, (self.projects,))
+        self.control.registry = self.registry
+        self.router.registry = self.registry
+        for description in (
+            "Fix https://github.com/demo/second/pull/1",
+            f"Fix the login flow in {second}",
+        ):
+            with self.subTest(description=description):
+                self.begin_start()
+                self.send_text(description)
+                self.choose_runtime("2h")
+                text = self.api.edited[-1]["text"]
+                self.assertIn("demo/second", text)
+                self.assertNotIn("Confirm job start", text)
+                self.assertEqual(self.invocations(), [])
+
+    def test_read_only_audit_toggle_is_passed_explicitly(self) -> None:
+        self.begin_start()
+        self.send_description("Audit the repository without changing it")
+        toggle = find_button(self.api.sent[-1]["markup"], "Read-only audit")
+        self.router.handle(callback_update(self.next_id(), toggle))
+        self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+        runtime = find_button(self.api.edited[-1]["markup"], "1h")
+        self.router.handle(callback_update(self.next_id(), runtime))
+        preview = self.api.edited[-1]["text"]
+        self.assertIn("read-only audit", preview.lower())
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertIn("--read-only", args)
+        self.assertNotIn("--authorize-push", args)
+
     def test_start_uses_cli_default_contract_without_weakening_overrides(self) -> None:
         confirm = self.advance_to_preview()
         self.confirm(confirm)

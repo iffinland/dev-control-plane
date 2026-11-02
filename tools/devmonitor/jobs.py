@@ -434,6 +434,7 @@ class JobFacade:
         branch: str | None = None,
         project_id: str | None = None,
         registry_path: str | Path | None = None,
+        read_only: bool = False,
     ) -> list[str]:
         if not command_criteria and not manual_criteria:
             raise JobError("at least one acceptance criterion is required")
@@ -452,6 +453,8 @@ class JobFacade:
             args.extend(["--registry", str(registry_path)])
         if branch:
             args.extend(["--branch", branch])
+        if read_only:
+            args.append("--read-only")
         for label, command in command_criteria:
             args.extend(["--criterion", f"{label}::{command}"])
         for manual in manual_criteria:
@@ -484,6 +487,7 @@ class JobFacade:
         branch: str | None = None,
         project_id: str | None = None,
         registry_path: str | Path | None = None,
+        read_only: bool = False,
     ) -> dict:
         if not prompt.strip():
             raise JobError("prompt is required")
@@ -498,6 +502,7 @@ class JobFacade:
             branch=branch,
             project_id=project_id,
             registry_path=registry_path,
+            read_only=read_only,
         )
         # The monitor deliberately does not pass --contract-file or
         # --authorize-push: every new job receives the CLI's mandatory default
@@ -518,6 +523,7 @@ class JobFacade:
         branch: str | None = None,
         project_id: str | None = None,
         registry_path: str | Path | None = None,
+        read_only: bool = False,
     ) -> dict:
         """Return the CLI ``--dry-run`` plan, including the mandatory contract."""
 
@@ -534,6 +540,7 @@ class JobFacade:
             branch=branch,
             project_id=project_id,
             registry_path=registry_path,
+            read_only=read_only,
         )
         args.insert(-1, "--dry-run")
         # A dry-run may legitimately exit 20 when the execution guard refuses

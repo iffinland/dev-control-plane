@@ -1286,6 +1286,7 @@ def create_job(
     require_delivery_policy: bool = True,
     requested_branch: str | None = None,
     allow_protected_branch: bool = False,
+    read_only: bool = False,
     job_id: str | None = None,
 ) -> dict:
     repo_path = Path(repo).expanduser().resolve()
@@ -1314,11 +1315,13 @@ def create_job(
         prepared_source: str,
         branch_value: str | None,
         snapshot_value: dict,
+        repo_value: Path | None = None,
     ) -> dict:
+        effective = repo_value or repo_path
         job = _new_job(
             title=title,
             prompt=prompt,
-            repo=repo_path,
+            repo=effective,
             branch=branch_value,
             criteria=criteria,
             timeout_seconds=timeout_seconds,
@@ -1333,6 +1336,9 @@ def create_job(
             snapshot=snapshot_value,
         )
         job["proc_root"] = str(proc_root)
+        job["project_id"] = str(contract_delivery_policy.project_id)
+        job["source_repo"] = str(repo_path)
+        job["read_only"] = bool(prepared_spec.get("read_only"))
         if prepared_source == "default" and not contract_evidence:
             # Every new default job gets one job-specific evidence file outside
             # the project working tree. The harness records only observed
@@ -1342,7 +1348,7 @@ def create_job(
             evidence_file, created = evidence.initialize(
                 job_id=job["id"],
                 title=job["title"],
-                repo=str(repo_path),
+                repo=str(effective),
                 branch=job.get("branch"),
                 base_sha=spec.get("base_sha") or (job.get("git") or {}).get("head"),
                 project_id=policy.get("project_id") if isinstance(policy, dict) else None,
@@ -1372,12 +1378,14 @@ def create_job(
             authorization=contract_authorization,
             delivery_policy=contract_delivery_policy,
             require_delivery_policy=require_delivery_policy,
+            read_only=read_only,
         )
         job = make_job(
             prepared_spec,
             prepared_source,
             prepared_spec.get("branch") or snapshot.get("branch"),
             snapshot,
+            repo_path,
         )
         job["state"] = "BLOCKED"
         job["blocker"] = "guard preflight refused: " + "; ".join(payload.get("refusals") or ["unknown"])
@@ -1413,7 +1421,12 @@ def create_job(
             apply=True,
             lock=False,
         )
-        snapshot = git_snapshot(repo_path)
+        effective_repo = (
+            Path(prepared_branch.worktree).expanduser().resolve()
+            if prepared_branch.worktree
+            else repo_path
+        )
+        snapshot = git_snapshot(effective_repo)
         prepared_authorization = dict(contract_authorization or {})
         if contract_delivery_policy.automatic_push_allowed(prepared_branch.branch):
             # Automatic push follows the actual prepared branch, so starting on
@@ -1432,16 +1445,19 @@ def create_job(
             authorization=prepared_authorization,
             delivery_policy=contract_delivery_policy,
             require_delivery_policy=require_delivery_policy,
+            read_only=read_only,
         )
         job = make_job(
             prepared_spec,
             prepared_source,
             prepared_branch.branch,
             snapshot,
+            effective_repo,
         )
         job["prepared_branch"] = prepared_branch.snapshot()
+        job["worktree"] = prepared_branch.worktree
         save_job(job)
-        append_event(job, "created", f"repo={repo_path}")
+        append_event(job, "created", f"repo={effective_repo}")
         append_event(
             job,
             "branch_prepared",
@@ -1744,6 +1760,9 @@ def status_payload(job: dict) -> dict:
         "title": job.get("title"),
         "state": job.get("state"),
         "repo": job.get("repo"),
+        "source_repo": job.get("source_repo"),
+        "worktree": job.get("worktree"),
+        "project_id": job.get("project_id"),
         "branch": job.get("branch"),
         "started_at": started,
         "ended_at": job.get("ended_at"),
@@ -1759,6 +1778,7 @@ def status_payload(job: dict) -> dict:
         "completion_contract": job.get("completion_contract"),
         "completion_contract_source": job.get("completion_contract_source"),
         "completion_contract_required": bool(job.get("completion_contract_required")),
+        "read_only": bool(job.get("read_only")),
         "completion_contract_spec": job.get("completion_contract_spec"),
         "evidence_file": job.get("evidence_file"),
         "evidence_initialized": bool(job.get("evidence_initialized")),

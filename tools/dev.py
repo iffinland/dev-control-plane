@@ -126,10 +126,15 @@ def command_start(args: argparse.Namespace) -> int:
     contract_spec = None
     if args.contract_file:
         contract_spec = contract_module.load_contract(args.contract_file)
+    if args.read_only and args.authorize_push:
+        raise runner.JobError(
+            "--read-only cannot be combined with --authorize-push; a read-only "
+            "job never commits or pushes"
+        )
     authorization = {
-        "push": bool(args.authorize_push),
+        "push": bool(args.authorize_push) and not args.read_only,
         "protected_branch": bool(args.authorize_protected_branch),
-        "merge": bool(args.authorize_merge),
+        "merge": bool(args.authorize_merge) and not args.read_only,
     }
     if args.dry_run:
         planned_job_id = new_job_id(args.title)
@@ -155,6 +160,7 @@ def command_start(args: argparse.Namespace) -> int:
             authorization=authorization,
             delivery_policy=policy,
             require_delivery_policy=True,
+            read_only=bool(args.read_only),
         )
         payload = runner.preflight(proc_root=args.proc_root, workspace=args.workspace)
         print(
@@ -163,6 +169,7 @@ def command_start(args: argparse.Namespace) -> int:
                     "dry_run": True,
                     "title": args.title,
                     "repo": str(repo),
+                    "effective_repo": prepared_branch.worktree or str(repo),
                     "planned_job_id": planned_job_id,
                     "branch": prepared_branch.branch,
                     "prepared_branch": prepared_branch.snapshot(),
@@ -202,6 +209,7 @@ def command_start(args: argparse.Namespace) -> int:
         require_delivery_policy=True,
         requested_branch=args.branch,
         allow_protected_branch=bool(args.authorize_protected_branch),
+        read_only=bool(args.read_only),
     )
     _print_job_started(job, args.json)
     return 0 if job.get("state") == "RUNNING" else 20
@@ -440,6 +448,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "optional remote assertion; it must match the validated project "
             "delivery policy and never supplies a global fallback"
+        ),
+    )
+    start.add_argument(
+        "--read-only",
+        action="store_true",
+        help=(
+            "audit-only job: prepare an isolated agent/* branch and verify that no "
+            "repository change, commit or push was made"
         ),
     )
     start.add_argument(

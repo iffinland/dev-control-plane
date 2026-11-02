@@ -26,7 +26,7 @@ from .projects import Registry, RegistryError, ValidatedProject, project_by_id
 from .redact import sanitize_control
 from .state import MonitorState
 
-from devjob import acceptance_profiles
+from devjob import acceptance_profiles, onboarding
 
 MAX_TITLE = 120
 MAX_PROMPT = 20000
@@ -41,6 +41,10 @@ MAX_TIMEOUT = 8 * 3600
 WIZARD_TTL = 3600
 RUNTIME_CHOICES = (3600, 7200, 14400, 28800)
 SKIP_VALUES = frozenset({"", "-", "skip", "/skip", "auto", "none", "default"})
+GITHUB_REFERENCE_RE = re.compile(
+    r"(?:https?://github\.com/|git@github\.com:)([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)"
+)
+ABSOLUTE_PROJECT_PATH_RE = re.compile(r"(/(?:[^\s`'\"]+/)*projects/[^\s`'\"]+)")
 FOLLOW_UP_HEADER = (
     "The owner queued the following follow-up instructions through the authorized "
     "Telegram control surface. Continue the existing authorized task, preserve the "
@@ -124,6 +128,7 @@ class StartRequest:
     model: str
     profile_source: str = ""
     context_paths: tuple[str, ...] = ()
+    read_only: bool = False
 
     def payload(self, wizard_id: str) -> dict[str, Any]:
         return {
@@ -140,6 +145,7 @@ class StartRequest:
             "model": self.model,
             "profile_source": self.profile_source,
             "context_paths": list(self.context_paths),
+            "read_only": bool(self.read_only),
         }
 
 
@@ -462,6 +468,195 @@ class ControlManager:
             menus.start_project_menu(wizard_id, projects),
         )
 
+    # ---- new project onboarding --------------------------------------------------
+    def _projects_root(self) -> Path:
+        roots = list(self.config.allowed_repo_roots)
+        for root in roots:
+            if root.name == "projects":
+                return root.expanduser().resolve()
+        if roots:
+            return roots[0].expanduser().resolve()
+        return onboarding.PROJECTS_ROOT
+
+    def begin_onboard(
+        self, user_id: int, chat_id: int, url: str | None = None
+    ) -> ControlResult:
+        data: dict[str, Any] = {"url": None}
+        step = "url"
+        text = render.onboard_url_text()
+        if url is not None and str(url).strip():
+            identity = onboarding.parse_github_identity(str(url))
+            data["url"] = str(url).strip()
+            data["repository"] = identity.repository
+            step = "description"
+            text = render.onboard_description_text(identity)
+        wizard_id = self.state.create_wizard(
+            user_id, chat_id, "onboard", step, data, ttl_seconds=WIZARD_TTL
+        )
+        return ControlResult(text, menus.wizard_cancel_menu(wizard_id))
+
+    def onboard_text(self, wizard: dict[str, Any], text: str, decision) -> ControlResult:
+        wizard_id = str(wizard["wizard_id"])
+        user_id = int(decision.user_id or 0)
+        chat_id = int(decision.chat_id or 0)
+        data = dict(wizard["data"])
+        step = str(wizard["step"])
+        if step == "url":
+            identity = onboarding.parse_github_identity(
+                validate_text(text, limit=500, field="GitHub repository URL")
+            )
+            data["url"] = text.strip()
+            data["repository"] = identity.repository
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="description", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.onboard_description_text(identity),
+                menus.wizard_cancel_menu(wizard_id),
+            )
+        if step == "description":
+            description = validate_text(
+                text,
+                limit=MAX_PROMPT,
+                field="task description",
+                allow_newlines=True,
+            )
+            data["description"] = description
+            data["title"] = derive_title(description)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.onboard_runtime_text(data["title"]),
+                menus.onboard_runtime_menu(wizard_id),
+            )
+        raise ControlError("this wizard is waiting for a button, not text")
+
+    def onboard_callback(
+        self, wizard: dict[str, Any], action: str, parts: Sequence[str], decision
+    ) -> ControlResult:
+        wizard_id = str(wizard["wizard_id"])
+        user_id = int(decision.user_id or 0)
+        chat_id = int(decision.chat_id or 0)
+        if action == "cancel":
+            return self._cancel(wizard, user_id, chat_id)
+        if action != "t":
+            raise ControlError("unknown new-project action")
+        try:
+            timeout_seconds = int(parts[0]) if parts else 0
+        except (TypeError, ValueError) as exc:
+            raise ControlError("invalid runtime selection") from exc
+        if timeout_seconds not in RUNTIME_CHOICES:
+            raise ControlError("runtime must be one of 1h, 2h, 4h or 8h")
+        data = dict(wizard["data"])
+        url = _text(data.get("url"))
+        if not url:
+            raise ControlError("the GitHub URL is missing from this wizard")
+        identity = onboarding.parse_github_identity(url)
+        title = validate_text(data.get("title"), limit=MAX_TITLE, field="title")
+        data["timeout_seconds"] = timeout_seconds
+        data["wizard_id"] = wizard_id
+        nonce = self.state.create_confirmation(user_id, chat_id, "onboard_project", data)
+        self.state.update_wizard(
+            wizard_id, user_id, chat_id, step="confirm", data=data, ttl_seconds=WIZARD_TTL
+        )
+        target = self._projects_root() / identity.name
+        return ControlResult(
+            render.onboard_preview_text(identity, target, title, timeout_seconds),
+            menus.control_confirmation_menu(nonce, "Register and start job"),
+        )
+
+    def perform_onboard(self, payload: dict[str, Any], decision) -> ControlResult:
+        wizard_id = _text(payload.get("wizard_id"))
+        url = validate_text(payload.get("url"), limit=500, field="GitHub repository URL")
+        identity = onboarding.parse_github_identity(url)
+        timeout_seconds = int(payload.get("timeout_seconds") or 0)
+        if not MIN_TIMEOUT <= timeout_seconds <= MAX_TIMEOUT:
+            raise ControlError("timeout is outside the supported range")
+        description = validate_text(
+            payload.get("description"),
+            limit=MAX_PROMPT,
+            field="task description",
+            allow_newlines=True,
+        )
+        try:
+            onboarded = onboarding.onboard(
+                url=url,
+                registry_path=self.registry.path,
+                projects_root=self._projects_root(),
+                docs_root=onboarding.DOCS_ROOT,
+                state_root=self.config.job_state_root,
+            )
+        except onboarding.OnboardError as exc:
+            raise ControlError(str(exc)) from exc
+
+        self.registry.load(force=True)
+        project = project_by_id(self._projects(), onboarded.project_id)
+        if project is None or not project.job_eligible or project.repo_real is None:
+            return ControlResult(
+                render.onboard_result_text(
+                    onboarded,
+                    None,
+                    "the new registration is not yet job-eligible; open Projects and retry",
+                ),
+                menus.back_to_main(),
+                project_id=onboarded.project_id,
+            )
+
+        data: dict[str, Any] = {
+            "project_id": project.project_id,
+            "repo": str(project.repo_real),
+            "description": description,
+            "timeout_seconds": timeout_seconds,
+            "branch": None,
+        }
+        request = self._normal_start_request(data)
+        if wizard_id:
+            self.state.delete_wizard(
+                wizard_id, int(decision.user_id or 0), int(decision.chat_id or 0)
+            )
+        key = request.project_id
+        try:
+            with self.admission.reserve(key):
+                self.admission.check_project(key)
+                if not self.state.hit_rate_limit(
+                    "starts:global", self.config.max_starts_per_hour, 3600
+                ):
+                    raise ControlError(
+                        "start rate limit reached; the project is registered but no job was started"
+                    )
+                job = self.jobs.start_job(
+                    repo=request.repo,
+                    title=request.title,
+                    prompt=request.prompt,
+                    command_criteria=request.command_criteria,
+                    manual_criteria=request.manual_criteria,
+                    timeout_seconds=request.timeout_seconds,
+                    agent=request.agent,
+                    model=request.model,
+                    branch=request.branch,
+                    project_id=request.project_id,
+                    registry_path=self.registry.path,
+                    read_only=request.read_only,
+                )
+        except (AdmissionError, ControlError, JobError) as exc:
+            return ControlResult(
+                render.onboard_result_text(onboarded, None, str(exc)),
+                menus.back_to_main(),
+                project_id=request.project_id,
+            )
+        job_id = str(job.get("id"))
+        state = str(job.get("state") or "UNKNOWN")
+        if state == "RUNNING" and self.notifier is not None:
+            self.notifier.notify_started(job, project_id=request.project_id)
+        return ControlResult(
+            render.onboard_result_text(onboarded, job),
+            self._job_menu(job_id, decision),
+            job_id=job_id,
+            project_id=request.project_id,
+            notification="STARTED" if state == "RUNNING" else None,
+        )
+
     def _profile_and_context(
         self, project: ValidatedProject
     ) -> tuple[acceptance_profiles.AcceptanceProfile, tuple[acceptance_profiles.ContextItem, ...]]:
@@ -486,6 +681,50 @@ class ControlManager:
             raise ControlError("the selected project is no longer job-eligible")
         return project
 
+    def detect_project_mismatch(self, project: ValidatedProject, text: str) -> str | None:
+        """Refuse an obvious explicit reference to a different registered project.
+
+        This is deliberately conservative: only explicit GitHub repository URLs
+        and absolute project paths are compared. A vague mention of another app
+        name is not treated as proof of a mismatch.
+        """
+
+        from devjob import project_policy
+
+        references = {
+            project_policy.normalise_github_repository(match)
+            for match in GITHUB_REFERENCE_RE.findall(text or "")
+        }
+        references.discard(None)
+        paths = ABSOLUTE_PROJECT_PATH_RE.findall(text or "")
+        for other in self._projects():
+            if other.project_id == project.project_id:
+                continue
+            repository = project_policy.normalise_github_repository(
+                other.project.delivery.github_repository
+            )
+            if repository and repository in references:
+                return (
+                    f"the task explicitly names {repository}, which is registered as "
+                    f"{other.project_id}, not {project.project_id}. Select the correct "
+                    "project or remove the unrelated repository reference."
+                )
+            if other.repo_real is not None:
+                for raw in paths:
+                    try:
+                        candidate = Path(raw).expanduser().resolve()
+                    except (OSError, ValueError):
+                        continue
+                    try:
+                        candidate.relative_to(other.repo_real)
+                    except ValueError:
+                        continue
+                    return (
+                        f"the task references {other.project_id} at {other.repo_real}, "
+                        f"not the selected {project.project_id}. Select the correct project."
+                    )
+        return None
+
     def _normal_start_request(self, data: dict[str, Any]) -> StartRequest:
         project = self._selected_project(data)
         profile, context = self._profile_and_context(project)
@@ -495,6 +734,9 @@ class ControlManager:
             field="task description",
             allow_newlines=True,
         )
+        mismatch = self.detect_project_mismatch(project, description)
+        if mismatch:
+            raise ControlError(mismatch)
         data["title"] = derive_title(description)
         data["prompt"] = compose_task_prompt(description, profile, context)
         data["command_criteria"] = [list(item) for item in profile.command_criteria]
@@ -502,6 +744,7 @@ class ControlManager:
         data["profile_source"] = profile.source
         data["context_paths"] = [str(item.path) for item in context]
         data["branch"] = None
+        data["read_only"] = bool(data.get("read_only"))
         return self._start_request(data)
 
     def start_callback(
@@ -558,6 +801,26 @@ class ControlManager:
                 wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
             )
             return self._start_preview(wizard_id, request, user_id, chat_id)
+        if action == "ro":
+            if str(wizard.get("step")) not in {"runtime", "preview", "prompt"}:
+                raise ControlError("read-only mode is not available at this step")
+            data = dict(wizard["data"])
+            data["read_only"] = not bool(data.get("read_only"))
+            if str(wizard.get("step")) == "preview":
+                request = self._start_request(data)
+                self.state.update_wizard(
+                    wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+                )
+                return self._start_preview(wizard_id, request, user_id, chat_id)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_runtime_text(
+                    data.get("title") or "", read_only=bool(data.get("read_only"))
+                ),
+                menus.start_runtime_menu(wizard_id, read_only=bool(data.get("read_only"))),
+            )
         if action == "a":
             if str(wizard.get("step")) not in {"runtime", "preview", "prompt"}:
                 raise ControlError("advanced options are not available at this step")
@@ -691,6 +954,7 @@ class ControlManager:
             validate_text(item, limit=4096, field="context path")
             for item in context_paths
         )
+        read_only = bool(data.get("read_only"))
         return StartRequest(
             project_id=project.project_id,
             repo=str(project.repo_real),
@@ -704,6 +968,7 @@ class ControlManager:
             model=model,
             profile_source=profile_source,
             context_paths=context,
+            read_only=read_only,
         )
 
     def _start_preview(
@@ -733,6 +998,7 @@ class ControlManager:
             "model": payload.get("model"),
             "profile_source": payload.get("profile_source"),
             "context_paths": payload.get("context_paths"),
+            "read_only": payload.get("read_only"),
         }
         request = self._start_request(data)
         key = request.project_id
@@ -757,6 +1023,7 @@ class ControlManager:
                     branch=request.branch,
                     project_id=request.project_id,
                     registry_path=self.registry.path,
+                    read_only=request.read_only,
                 )
         except (ProjectBusy, GlobalGuardBusy, AdmissionLockTimeout) as exc:
             raise ControlError(str(exc)) from exc

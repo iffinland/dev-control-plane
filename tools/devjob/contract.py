@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import evidence as evidence_module
-from . import project_policy
+from . import git_remote, project_policy
 from .store import job_dir
 
 PROTECTED_BRANCH_NAMES = set(project_policy.PROTECTED_BRANCHES)
@@ -155,6 +155,8 @@ def validate_spec(spec: dict) -> None:
     authorization = spec.get("authorization")
     if authorization is not None and not isinstance(authorization, dict):
         raise ContractError("authorization must be an object")
+    if spec.get("read_only") is not None and not isinstance(spec.get("read_only"), bool):
+        raise ContractError("read_only must be a boolean")
     for key, value in (authorization or {}).items():
         if not isinstance(key, str) or not isinstance(value, bool):
             raise ContractError("authorization entries must be boolean flags")
@@ -256,6 +258,7 @@ def build_default_contract(
     allowed_paths: Iterable[str] | None = None,
     authorization: dict | None = None,
     delivery_policy: object | None = None,
+    read_only: bool = False,
 ) -> dict:
     """Build the mandatory contract applied to a new Workflow v3 job."""
 
@@ -283,6 +286,9 @@ def build_default_contract(
         "authorization": auth,
         "dirty_paths_parser": DIRTY_PATHS_PARSER_VERSION,
     }
+    if read_only:
+        contract["read_only"] = True
+        contract["authorization"]["push"] = False
     if snapshot is not None:
         contract["delivery_policy"] = snapshot
     return contract
@@ -300,6 +306,7 @@ def prepare_contract(
     authorization: dict | None = None,
     delivery_policy: object | None = None,
     require_delivery_policy: bool = False,
+    read_only: bool = False,
 ) -> tuple[dict, str]:
     """Normalize a default or explicit contract without weakening it.
 
@@ -325,6 +332,7 @@ def prepare_contract(
                 allowed_paths=allowed_paths,
                 authorization=authorization,
                 delivery_policy=snapshot,
+                read_only=read_only,
             ),
             "default",
         )
@@ -383,6 +391,12 @@ def prepare_contract(
     for key in MANDATORY_REQUIREMENTS:
         require[key] = True
     prepared["require"] = require
+    if read_only:
+        prepared["read_only"] = True
+    if prepared.get("read_only"):
+        declared_read_only = True
+    else:
+        declared_read_only = False
     auth = {key: False for key in AUTHORIZATION_KEYS}
     for key, value in (prepared.get("authorization") or {}).items():
         if key in auth:
@@ -392,6 +406,13 @@ def prepare_contract(
             # CLI flags may grant an action explicitly; they never revoke a
             # grant that the owner put in the contract file.
             auth[key] = True
+    if declared_read_only:
+        if auth.get("push") or auth.get("merge"):
+            raise ContractError(
+                "a read-only job cannot authorize a push or a merge"
+            )
+        auth["push"] = False
+        auth["merge"] = False
     prepared["authorization"] = auth
     return prepared, "file"
 
@@ -929,7 +950,32 @@ def _commit_checks(repo: Path, spec: dict) -> list[dict]:
         commit_count = int(count or "0")
     except ValueError:
         commit_count = 0
-    if commit_count < 1:
+    read_only = bool(spec.get("read_only"))
+    if read_only:
+        if commit_count:
+            checks.append(
+                {
+                    "id": "commit",
+                    "label": "read-only job committed nothing",
+                    "status": "failed",
+                    "severity": "failed",
+                    "detail": (
+                        f"{commit_count} commit(s) exist after base {base[:12]}; "
+                        "a read-only job must not change the repository"
+                    ),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "id": "commit",
+                    "label": "read-only job committed nothing",
+                    "status": "verified",
+                    "severity": "info",
+                    "detail": "no commit exists after the recorded base SHA",
+                }
+            )
+    elif commit_count < 1:
         checks.append(
             {
                 "id": "commit",
@@ -1095,6 +1141,14 @@ def _worktree_check(repo: Path, spec: dict) -> dict:
 
 
 def _push_check(repo: Path, spec: dict, branch: str, authorization: dict) -> dict:
+    if spec.get("read_only"):
+        return {
+            "id": "remote_sha",
+            "label": "read-only job",
+            "status": "verified",
+            "severity": "info",
+            "detail": "read-only mode: no push or remote SHA is required",
+        }
     remote = str(spec.get("remote") or "")
     policy = spec.get("delivery_policy")
     if isinstance(policy, dict):
@@ -1162,17 +1216,16 @@ def _push_check(repo: Path, spec: dict, branch: str, authorization: dict) -> dic
             "severity": "failed",
             "detail": f"git remote {remote!r} is not configured",
         }
-    result = _run_git(repo, "ls-remote", "--heads", remote, branch, timeout=45)
-    if result.returncode != 0:
+    try:
+        remote_sha = git_remote.probe_remote_branch(repo, remote, branch) or ""
+    except git_remote.RemoteProbeError as exc:
         return {
             "id": "remote_sha",
             "label": "authorized development-branch push",
             "status": "failed",
             "severity": "failed",
-            "detail": f"could not read remote {remote} branch {branch}",
+            "detail": f"could not read remote {remote} branch {branch}: {exc.kind} failure",
         }
-    fields = (result.stdout or "").split()
-    remote_sha = fields[0] if fields else ""
     local_sha = _git_text(repo, "rev-parse", "HEAD")
     if not remote_sha:
         return {

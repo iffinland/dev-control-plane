@@ -49,10 +49,15 @@ execution at a time.
 | Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
 | Completion contract | `tools/devjob/contract.py` | Machine-checked task-start evidence, scoped commit, authorization, push and remote SHA |
 | Project delivery policy | `tools/devjob/project_policy.py` | Validated per-project remote, GitHub repository, `agent/*` branch pattern and automatic-push authorization |
-| Branch preparation | `tools/devjob/branch_prepare.py` | Pre-start checkout inspection, non-interactive GitHub auth check, safe `agent/*` branch selection/creation and resume return |
+| Branch preparation | `tools/devjob/branch_prepare.py` | Pre-start checkout inspection, isolated linked worktrees for dirty owner checkouts, safe `agent/*` branch selection/creation and resume return |
+| Git remote probe | `tools/devjob/git_remote.py` | Shared non-interactive Git environment, remote identity, bounded transport retry and safe failure classification for admission and completion |
+| Project onboarding | `tools/devjob/onboarding.py` | GitHub URL validation, safe clone, architecture/instruction inspection, registry and acceptance-profile registration |
 | Acceptance profiles | `tools/devjob/acceptance_profiles.py`, `acceptance-profiles.json` | Explicit project commands/context for the phone start flow; fail-closed discovery |
 | Contract tests | `tools/test_completion_contract.py` | Contract evidence, scope, protected-branch, merge, secret-path and remote-SHA regressions |
-| Branch tests | `tools/test_branch_preparation.py` | Protected main, clean development branch, dirty tree, detached HEAD, remote mismatch, auth failure, concurrency and resume regressions |
+| Monitor onboarding tests | `tools/test_dev_monitor_onboarding.py` | Telegram New project wizard, one-time confirmation, replay safety and refusal without touching existing files |
+| Branch tests | `tools/test_branch_preparation.py` | Protected main, clean development branch, dirty owner checkout isolation, detached HEAD, remote mismatch, auth failure, concurrency and resume regressions |
+| Remote tests | `tools/test_git_remote.py` | Real admission/completion paths through a fake SSH transport: valid key succeeds, broken auth fails safely, transient transport retries once |
+| Onboarding tests | `tools/test_onboarding.py` | URL validation, safe clone, duplicate detection, no script execution, acceptance discovery, path/credential refusals |
 | Policy tests | `tools/test_project_delivery_policy.py` | Multiple project remotes, missing/ambiguous/mismatched configuration, unauthorized branches and failed pushes |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
 | Permission validator | `tools/validate_agent_permissions.py` | OpenCode last-match policy checks, command matrix and limitation report |
@@ -160,6 +165,10 @@ dev start ... --authorize-merge
 # Validate without starting a job (prints the mandatory default contract)
 dev start ... --dry-run
 
+# Explicit read-only audit: an isolated agent/* worktree is prepared, but the
+# contract verifies that nothing was committed or pushed.
+dev start ... --read-only --no-notify --criterion "manual:owner reviews the audit"
+
 # Disable Telegram for one job
 dev start ... --no-notify
 ```
@@ -188,13 +197,40 @@ A profile is explicit JSON with `commands` (string or
 optional `docs`/`skills` context paths. Paths must stay inside their root.
 Missing, malformed, empty or unsafe profiles fail closed before any `dev start`
 invocation; the monitor never invents a test command from repository contents.
+A profile with no safely discovered command may supply only a manual criterion;
+a profile with neither a command nor a manual criterion is rejected.
 The profile only supplies acceptance commands and discovery context. Every new
 job still receives the mandatory default completion contract, the project
 delivery policy and the same push/branch protections.
 
 The normal phone flow is project -> task description -> runtime (1h, 2h, 4h or
 8h) -> confirmation. Advanced options remain available for explicit criteria, a
-custom timeout or a branch label.
+custom timeout, a branch label or an explicit **read-only audit** toggle. A
+read-only audit prepares the same isolated `agent/*` worktree but the contract
+verifies that no commit, push or merge occurred; it is never inferred from the
+task wording.
+
+### New project from a GitHub URL
+
+Control mode also exposes **New project** (`/newproject [GitHub URL]`). The
+owner supplies a GitHub URL, a first-task description and a runtime. On the
+one-time confirmation the monitor:
+
+1. accepts only a `github.com owner/name` HTTPS or SSH identity and refuses
+   embedded credentials, local paths and `file://` URLs;
+2. detects an existing registration or checkout and never overwrites it;
+3. stages a `git clone` in a temporary sibling and moves it into place only on
+   success (no submodules, no repository scripts executed);
+4. inspects manifests and instruction files, detects the likely platform and
+   derives conservative acceptance commands from known manifest entries only;
+5. writes one registry row (matching GitHub remote, `agent/*`, automatic push)
+   and one central acceptance profile, under a state-directory lock;
+6. reloads the registry and starts the first job immediately, using the normal
+   mandatory contract and branch preparation.
+
+If onboarding succeeds but the first start is refused (for example the global
+guard is busy), the project remains registered and the message reports that the
+job was not started.
 
 ## Result summary versus functional proof
 
@@ -318,13 +354,21 @@ URL and the project-level instructions. It then:
   `git ls-remote` authentication/probe with `GIT_TERMINAL_PROMPT=0` and SSH
   BatchMode for SSH remotes. Existing credential helpers and SSH keys remain in
   use; no credential is copied, printed or added, and the remote URL is not
-  changed.
+  changed. A clearly transient transport error is retried once; authentication,
+  transport and timeout failures are classified without echoing the URL or Git
+  stderr. The completion contract uses the same canonical probe, so admission
+  and post-run remote-SHA verification cannot disagree about the environment.
+- when the owner checkout has uncommitted changes and a branch switch/create
+  would be required, creates the job branch in an isolated linked worktree under
+  `<projects>/.worktrees/<repo>/<job-id>` at the same published commit. The owner
+  checkout, its branch and every modification stay untouched. Clean checkouts
+  continue to switch in place. Resume returns to the recorded branch and worktree.
 
 Branch preparation fails closed, without resetting, cleaning, stashing,
 force-checking-out or rewriting anything, when:
 
-- the worktree has uncommitted changes and a branch switch/create would be
-  ambiguous (a resume on the already-recorded branch keeps unfinished work);
+- an isolated worktree cannot be created safely (for example its path already
+  exists); the owner checkout is still never reset, cleaned or stashed;
 - `HEAD` is detached;
 - the current branch is not synchronized with its remote (including unpushed
   local commits such as a historical local `main` commit);
@@ -418,6 +462,7 @@ and records the result in `job.json`, `dev status`, the monitor job status and
 | `branch` / `protected_branch` | The current branch matches the actually prepared contract branch and is not a protected branch without explicit authorization. |
 | `delivery_policy` / `branch_policy` | The recorded project policy still matches the actual remote URL and the current branch is inside its `agent/*` pattern. |
 | `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
+| `read_only` | Only when explicitly requested: no commit after the base SHA, no push and no merge. A read-only job that commits fails the contract. |
 | `commit` / `scoped_paths` | At least one commit exists after `base_sha`, and every changed path is inside `allowed_paths`. |
 | `no_merge_commits` | No merge commit exists unless `authorization.merge` is true. |
 | `sensitive_paths` / `diff_secrets` | No `.env`, key/keystore/wallet/seed path or recognized secret pattern is committed. Unmatched values are never printed. |
@@ -766,6 +811,9 @@ configuration.
 ```bash
 python3 tools/test_opencode_guard.py
 python3 tools/test_branch_preparation.py
+python3 tools/test_git_remote.py
+python3 tools/test_onboarding.py
+python3 tools/test_dev_monitor_onboarding.py
 python3 tools/test_dev_cli.py
 python3 tools/test_completion_contract.py
 python3 tools/test_project_delivery_policy.py
@@ -837,4 +885,9 @@ or touch Qortium.
   recovered warnings;
 - Telegram delivery depends on the owner's network and bot configuration;
 - OpenCode upgrades can change agent/permission or output semantics;
-- resume depends on OpenCode session history remaining in its SQLite store.
+- resume depends on OpenCode session history remaining in its SQLite store;
+- isolated worktrees are deliberately retained for resume and are not removed
+  automatically; an owner may remove a finished job's clean worktree explicitly;
+- onboarding accepts only GitHub repositories and never executes a project's own
+  test command during discovery; the first execution happens as a normal
+  acceptance/agent step after the job starts.

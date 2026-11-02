@@ -143,6 +143,36 @@ def checks_by_id(result: dict) -> dict:
 
 
 class CompletionContractTests(unittest.TestCase):
+    def test_read_only_contract_verifies_only_when_nothing_was_committed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            spec = {"base_sha": base, "read_only": True, "authorization": {}}
+            checks = {item["id"]: item for item in contract._commit_checks(repo.root, spec)}
+            self.assertEqual(checks["commit"]["status"], "verified")
+            push = contract._push_check(repo.root, spec, "agent/test/job", {})
+            self.assertEqual(push["status"], "verified")
+            self.assertIn("no push", push["detail"])
+            repo.write("unexpected.txt", "changed\n")
+            repo.commit("read-only job must not commit")
+            checks = {item["id"]: item for item in contract._commit_checks(repo.root, spec)}
+            self.assertEqual(checks["commit"]["status"], "failed")
+            self.assertIn("must not change", checks["commit"]["detail"])
+
+    def test_read_only_cannot_authorize_push(self) -> None:
+        spec = {
+            "version": 1,
+            "base_sha": "0" * 40,
+            "read_only": True,
+            "authorization": {"push": True},
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.prepare_contract(
+                spec,
+                branch="agent/test/job",
+                base_sha="0" * 40,
+                read_only=True,
+            )
+
     def test_verified_contract_with_authorized_push(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo, base = make_repo(Path(directory))

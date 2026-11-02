@@ -30,11 +30,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from . import contract, project_policy, store
+from . import contract, git_remote, project_policy, store
 
 DEFAULT_LOCK_TIMEOUT = 10.0
-REMOTE_TIMEOUT_SECONDS = 60
+REMOTE_TIMEOUT_SECONDS = git_remote.DEFAULT_TIMEOUT_SECONDS
 TARGET_BRANCH_LIMIT = 200
+WORKTREE_ENV = "DEV_CONTROL_PLANE_WORKTREES"
 SAFE_BRANCH_PART_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -70,6 +71,13 @@ class PreparedBranch:
     remote: str
     remote_sha: str | None
     apply: bool = True
+    worktree: str | None = None
+
+    @property
+    def effective_repo(self) -> str | None:
+        """The working tree the job must use (isolated worktree or source)."""
+
+        return self.worktree
 
     def snapshot(self) -> dict:
         return {
@@ -82,22 +90,14 @@ class PreparedBranch:
             "remote": self.remote,
             "remote_sha": self.remote_sha,
             "apply": self.apply,
+            "worktree": self.worktree,
         }
 
 
 def _git_env(repo: Path, remote_url: str) -> dict[str, str]:
-    env = os.environ.copy()
-    # Never prompt on a terminal or GUI. Existing credential helpers, SSH agent
-    # keys and host-key verification remain in use; no remote URL is changed.
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GCM_INTERACTIVE"] = "Never"
-    if remote_url.startswith("ssh://") or re.match(r"^[^/@]+@[^/:]+:", remote_url):
-        ssh_command = env.get("GIT_SSH_COMMAND")
-        if not ssh_command:
-            configured = _git_text(repo, "config", "--get", "core.sshCommand")
-            if not configured:
-                env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
-    return env
+    """Backward-compatible wrapper around the canonical remote environment."""
+
+    return git_remote.noninteractive_env(remote_url, repo=repo)
 
 
 def _git(
@@ -149,6 +149,43 @@ def _worktree_branches(repo: Path) -> tuple[tuple[Path, str], ...]:
             entries.append((path, branch))
             path = None
     return tuple(entries)
+
+
+def repository_identity(repo: str | Path) -> Path:
+    """Return the shared Git directory so linked worktrees identify as one repo.
+
+    Two checkouts of the same repository must share admission and preparation
+    locks; otherwise a job in the owner checkout and a job in an isolated
+    worktree could mutate the same refs at the same time.
+    """
+
+    path = Path(repo).expanduser().resolve()
+    result = _git(path, "rev-parse", "--git-common-dir")
+    if result.returncode == 0 and (result.stdout or "").strip():
+        common = Path((result.stdout or "").strip())
+        if not common.is_absolute():
+            common = (path / common).resolve()
+        try:
+            return common.resolve(strict=True)
+        except OSError:
+            return common.resolve()
+    return path
+
+
+def worktree_base(repo: str | Path) -> Path:
+    """Return the isolated-worktree root for one repository."""
+
+    configured = os.environ.get(WORKTREE_ENV)
+    path = Path(repo).expanduser().resolve()
+    if configured:
+        return Path(configured).expanduser().resolve() / path.name
+    return path.parent / ".worktrees" / path.name
+
+
+def worktree_path(repo: str | Path, job_id: str) -> Path:
+    path = Path(repo).expanduser().resolve()
+    safe_job = SAFE_BRANCH_PART_RE.sub("-", str(job_id or "job")).strip("-.") or "job"
+    return worktree_base(path) / safe_job
 
 
 def inspect(repo: str | Path) -> RepoState:
@@ -275,47 +312,21 @@ def probe_remote(repo: Path, policy: project_policy.DeliveryPolicy) -> RemoteSta
         raise BranchPreparationError(
             "the project delivery policy has no valid GitHub repository"
         )
-    url = _git_text(repo, "config", "--get", f"remote.{remote}.url")
-    if not url:
-        raise BranchPreparationError(f"git remote {remote!r} is not configured")
-    actual = project_policy.normalise_remote_url(url)
-    if actual is None:
-        raise BranchPreparationError(
-            f"remote {remote!r} does not point at a GitHub repository"
+    try:
+        probe = git_remote.probe_remote(
+            repo,
+            remote,
+            expected_repository=expected,
+            timeout=REMOTE_TIMEOUT_SECONDS,
         )
-    if actual != expected:
-        raise BranchPreparationError(
-            f"remote {remote!r} points at {actual}, expected {expected}; "
-            "the project remote was not changed"
-        )
-
-    env = _git_env(repo, url)
-    result = _git(
-        repo,
-        "ls-remote",
-        "--heads",
-        remote,
-        env=env,
-        timeout=REMOTE_TIMEOUT_SECONDS,
-    )
-    if result.returncode != 0:
-        # Never echo the raw URL or Git stderr: both can contain credentials.
-        raise BranchPreparationError(
-            "GitHub delivery is unavailable: non-interactive authentication or "
-            f"transport for remote {remote!r} failed. Configure valid HTTPS "
-            "credentials or an existing SSH key/agent, then retry. The job was "
-            "not started and no branch was changed."
-        )
-    heads: dict[str, str] = {}
-    for line in (result.stdout or "").splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[1].startswith("refs/heads/"):
-            heads[fields[1][len("refs/heads/") :]] = fields[0]
+    except git_remote.RemoteProbeError as exc:
+        # Messages are pre-sanitized: neither the URL nor Git stderr is echoed.
+        raise BranchPreparationError(str(exc)) from exc
     return RemoteState(
-        remote=remote,
-        remote_url=url,
-        github_repository=expected,
-        heads=heads,
+        remote=probe.remote,
+        remote_url=probe.remote_url,
+        github_repository=probe.github_repository,
+        heads=probe.heads,
     )
 
 
@@ -361,17 +372,21 @@ def policy_from_contract(
 
 
 def _active_job(repo: Path, exclude_job_id: str | None) -> dict | None:
-    target = repo.resolve()
+    target = repository_identity(repo)
     for job in store.list_jobs():
         if str(job.get("state")) != "RUNNING":
             continue
         if exclude_job_id and str(job.get("id")) == exclude_job_id:
             continue
         try:
-            job_repo = Path(str(job.get("repo") or "")).expanduser().resolve()
-        except OSError:
+            job_repo = Path(str(job.get("repo") or "")).expanduser()
+        except (OSError, RuntimeError):
             continue
-        if job_repo != target:
+        try:
+            job_identity = repository_identity(job_repo)
+        except (OSError, RuntimeError):
+            continue
+        if job_identity != target:
             continue
         if store.worker_is_alive(job):
             return job
@@ -380,8 +395,8 @@ def _active_job(repo: Path, exclude_job_id: str | None) -> dict | None:
 
 def _repo_key(repo: Path) -> str:
     try:
-        text = str(repo.resolve())
-    except OSError:
+        text = str(repository_identity(repo))
+    except (OSError, RuntimeError):
         text = str(repo.absolute())
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
@@ -467,6 +482,43 @@ def prepare(
         allow_protected_branch=allow_protected_branch,
         apply=apply,
     )
+
+
+def _create_isolated_worktree(repo: Path, path: Path, branch: str, base_sha: str) -> None:
+    """Create a clean linked worktree without touching the owner checkout."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+    except OSError as exc:
+        raise BranchPreparationError(
+            f"could not create the isolated worktree directory: {exc.__class__.__name__}; "
+            "the owner checkout was not changed"
+        ) from exc
+    result = _git(repo, "worktree", "add", "-b", branch, str(path), base_sha, timeout=60)
+    if result.returncode != 0:
+        # Do not leave a half-created worktree behind. Removing an empty
+        # directory does not touch owner work.
+        try:
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+        except OSError:
+            pass
+        raise BranchPreparationError(
+            f"could not create an isolated worktree for branch {branch!r}; "
+            "the owner checkout was left unchanged and no reset or stash was attempted"
+        )
+    check = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
+    if check.returncode != 0 or (check.stdout or "").strip() != branch:
+        raise BranchPreparationError(
+            f"isolated worktree did not check out branch {branch!r}"
+        )
+    dirty = _git(path, "status", "--porcelain=v1", "-z", "--no-renames")
+    if dirty.returncode == 0 and (dirty.stdout or ""):
+        raise BranchPreparationError(
+            "the isolated worktree is unexpectedly dirty; no owner work was "
+            "modified, but the job was not started"
+        )
 
 
 def _prepare_locked(
@@ -627,19 +679,35 @@ def _prepare_locked(
             "the checkout is on a detached HEAD; create or check out a named "
             "synchronized branch before starting a job"
         )
-    if state.dirty_paths:
-        preview = ", ".join(state.dirty_paths[:5])
-        if len(state.dirty_paths) > 5:
-            preview += ", ..."
-        raise BranchPreparationError(
-            "the working tree has uncommitted changes ("
-            f"{preview}), so creating or switching development branches is "
-            "ambiguous. Commit, move or clean up only your own changes before "
-            "starting the job; nothing was reset, stashed or discarded."
-        )
     problem = _synchronization_problem(repo, state, remote)
     if problem:
         raise BranchPreparationError(problem)
+    if state.dirty_paths:
+        # The owner checkout has uncommitted work. Never switch it, reset it,
+        # stash it or commit it. Create the job branch in an isolated linked
+        # worktree at the same published commit instead; the owner checkout
+        # keeps every modification exactly as it was.
+        isolated = worktree_path(repo, job_id)
+        if isolated.exists():
+            raise BranchPreparationError(
+                f"the isolated worktree path already exists: {isolated}; "
+                "remove or rename it before retrying. The owner checkout was "
+                "not changed."
+            )
+        if apply:
+            _create_isolated_worktree(repo, isolated, target, state.head)
+        return PreparedBranch(
+            branch=target,
+            base_sha=state.head,
+            original_branch=state.branch,
+            created=True,
+            switched=False,
+            reused=False,
+            remote=remote.remote,
+            remote_sha=remote.heads.get(target),
+            apply=apply,
+            worktree=str(isolated),
+        )
     if state.branch == target:
         # Defensive: the target was already the checked-out branch. Keep it only
         # if it matches policy, which was checked above.

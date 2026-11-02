@@ -79,6 +79,7 @@ CONTRACT_EVIDENCE = """# Task
 FAKE_OPENCODE = r'''#!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -96,6 +97,16 @@ def find_arg(name):
         if value == name:
             return args[index + 1]
     return None
+
+
+if os.environ.get("FAKE_OPENCODE_REPO_MODE") == "job":
+    title = find_arg("--title") or ""
+    match = re.search(r"\[job ([^\]]+)\]", title)
+    if match:
+        job_state = os.environ.get("DEV_CONTROL_PLANE_STATE", state)
+        job_path = os.path.join(job_state, "jobs", match.group(1), "job.json")
+        with open(job_path, encoding="utf-8") as handle:
+            repo = json.load(handle)["repo"]
 
 
 def fill_evidence():
@@ -191,6 +202,10 @@ if mode == "steps":
     sys.exit(0)
 if mode == "incomplete":
     print("The implementation is incomplete")
+    sys.exit(0)
+if mode == "readonly":
+    fill_evidence()
+    print("read-only audit complete; no repository change was made")
     sys.exit(0)
 if mode == "noise":
     deliver()
@@ -1433,6 +1448,153 @@ class CliTestCase(unittest.TestCase):
         contract = payload["completion_contract"]
         self.assertEqual(contract["state"], "FAILED", contract)
         self.assertIn("remote_sha", contract["failed_checks"])
+
+    def test_dirty_protected_main_runs_in_isolated_worktree(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-u", "origin", "main"],
+            check=True,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        main_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        ).stdout.strip()
+        owner = self.repo / "owner-notes.txt"
+        owner.write_text("owner work\n", encoding="utf-8")
+        self.env["FAKE_OPENCODE_REPO_MODE"] = "job"
+        try:
+            job = self.start(mode="success")
+            payload = self.wait_for_state(job["id"])
+        finally:
+            self.env.pop("FAKE_OPENCODE_REPO_MODE", None)
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        stored = load_job(job["id"], self.state)
+        worktree = Path(stored["repo"])
+        self.assertNotEqual(worktree, self.repo)
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(stored["source_repo"], str(self.repo))
+        self.assertEqual(stored["worktree"], str(worktree))
+        self.assertTrue(stored["branch"].startswith("agent/"))
+        # Owner checkout preserved exactly.
+        self.assertEqual(owner.read_text(encoding="utf-8"), "owner work\n")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            "main",
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            main_sha,
+        )
+        # The job's commit and push happened in the isolated worktree.
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            stored["branch"],
+        )
+        remote_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "ls-remote", "--heads", "origin", stored["branch"]],
+            capture_output=True, text=True, check=True, env=self.env,
+        ).stdout.split()[0]
+        local_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, env=self.env,
+        ).stdout.strip()
+        self.assertEqual(remote_sha, local_sha)
+        self.assertFalse((self.repo / "delivery.txt").exists())
+
+    def test_read_only_job_on_dirty_main_changes_nothing_and_verifies(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-b", "main"],
+            check=True, env=self.env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-u", "origin", "main"],
+            check=True, env=self.env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        main_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+            capture_output=True, text=True, check=True, env=self.env,
+        ).stdout.strip()
+        owner = self.repo / "owner-notes.txt"
+        owner.write_text("owner work\n", encoding="utf-8")
+        self.env["FAKE_OPENCODE_REPO_MODE"] = "job"
+        try:
+            job = self.start(
+                mode="readonly", authorize_push=False, extra_args=["--read-only"]
+            )
+            payload = self.wait_for_state(job["id"])
+        finally:
+            self.env.pop("FAKE_OPENCODE_REPO_MODE", None)
+        self.assertEqual(payload["state"], "SUCCESS", payload)
+        self.assertTrue(payload["read_only"])
+        checks = {item["id"]: item for item in payload["completion_contract"]["checks"]}
+        self.assertEqual(checks["commit"]["status"], "verified")
+        self.assertEqual(checks["remote_sha"]["status"], "verified")
+        self.assertFalse(payload["completion_contract_spec"]["authorization"]["push"])
+        stored = load_job(job["id"], self.state)
+        worktree = Path(stored["repo"])
+        self.assertNotEqual(worktree, self.repo)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            "",
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "rev-list", "--count",
+                 f"{stored['completion_contract_spec']['base_sha']}..HEAD"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            "0",
+        )
+        self.assertEqual(owner.read_text(encoding="utf-8"), "owner work\n")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-parse", "refs/heads/main"],
+                capture_output=True, text=True, check=True, env=self.env,
+            ).stdout.strip(),
+            main_sha,
+        )
+        remote = subprocess.run(
+            ["git", "-C", str(self.repo), "ls-remote", "--heads", "origin", stored["branch"]],
+            capture_output=True, text=True, check=True, env=self.env,
+        ).stdout.strip()
+        self.assertEqual(remote, "")
+
+    def test_read_only_conflicts_with_explicit_push(self) -> None:
+        result = self.cli(
+            "start", "--state-dir", str(self.state), "--title", "readonly-conflict",
+            "--repo", str(self.repo), "--prompt", "audit", "--criterion", "true",
+            "--read-only", "--authorize-push", "--proc-root", str(self.proc),
+            "--workspace", str(self.workspace), "--no-notify", "--json",
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot be combined", result.stderr)
+        self.assertEqual(list_jobs(self.state), [])
 
     def test_default_contract_ignores_preexisting_owner_dirty_files(self) -> None:
         owner = self.repo / "owner-notes.txt"

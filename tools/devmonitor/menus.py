@@ -47,7 +47,7 @@ def main_menu(*, control: bool = False) -> dict:
         [button("Documents", "d"), button("Help", "h")],
     ]
     if control:
-        rows.insert(0, [button("Start job", "w:new")])
+        rows.insert(0, [button("Start job", "w:new"), button("New project", "p:new")])
     return keyboard(rows)
 
 
@@ -131,6 +131,7 @@ def projects_menu(*, control: bool = False) -> dict:
     rows = []
     if control:
         rows.append([button("Start job", "w:new")])
+        rows.append([button("New project", "p:new")])
     rows.append([button("Documents", "d"), button("Main menu", "m")])
     return keyboard(rows)
 
@@ -189,7 +190,7 @@ def start_project_menu(wizard_id: str, projects: Sequence[object]) -> dict:
     return keyboard(rows)
 
 
-def start_runtime_menu(wizard_id: str) -> dict:
+def start_runtime_menu(wizard_id: str, *, read_only: bool = False) -> dict:
     rows = [
         [
             button("1h", f"w:{wizard_id}:t:3600"),
@@ -199,7 +200,28 @@ def start_runtime_menu(wizard_id: str) -> dict:
             button("4h", f"w:{wizard_id}:t:14400"),
             button("8h", f"w:{wizard_id}:t:28800"),
         ],
+        [
+            button(
+                f"Read-only audit: {'on' if read_only else 'off'}",
+                f"w:{wizard_id}:ro",
+            )
+        ],
         [button("Advanced options", f"w:{wizard_id}:a")],
+        [button("Cancel", f"w:{wizard_id}:cancel")],
+    ]
+    return keyboard(rows)
+
+
+def onboard_runtime_menu(wizard_id: str) -> dict:
+    rows = [
+        [
+            button("1h", f"w:{wizard_id}:t:3600"),
+            button("2h", f"w:{wizard_id}:t:7200"),
+        ],
+        [
+            button("4h", f"w:{wizard_id}:t:14400"),
+            button("8h", f"w:{wizard_id}:t:28800"),
+        ],
         [button("Cancel", f"w:{wizard_id}:cancel")],
     ]
     return keyboard(rows)

@@ -93,6 +93,7 @@ def help_text(config) -> str:
         lines.extend(
             [
                 "/start_job - start a registered-project job wizard",
+                "/newproject [GitHub URL] - clone, inspect and register a new GitHub project",
                 "/resume [job] - open the resume wizard",
                 "/cancel [job] - cancel the active wizard, or cancel a RUNNING job",
                 "/queue [job] - queue an instruction for the next resume",
@@ -392,12 +393,15 @@ def start_description_text(project) -> str:
     )
 
 
-def start_runtime_text(title: str) -> str:
+def start_runtime_text(title: str, *, read_only: bool = False) -> str:
     return (
         "Choose maximum runtime\n\n"
         f"Task: {title}\n\n"
         "This is the wall-clock limit for each attempt, not a target. "
         "Choose 1h, 2h, 4h or 8h.\n\n"
+        f"Read-only audit: {'on' if read_only else 'off'}\n"
+        "A read-only audit may inspect the repository but must not commit or "
+        "push; the completion contract verifies that nothing changed.\n\n"
         "Advanced options are optional: custom acceptance commands, a custom "
         "timeout or a branch label."
     )
@@ -437,6 +441,85 @@ def start_branch_text() -> str:
     )
 
 
+def onboard_url_text() -> str:
+    return (
+        "New project from GitHub\n\n"
+        "Send the GitHub repository URL, for example:\n"
+        "  https://github.com/owner/repo\n"
+        "  git@github.com:owner/repo.git\n\n"
+        "Only github.com is accepted. The URL must not contain credentials. "
+        "An existing checkout is never overwritten and no repository script is "
+        "executed during onboarding.\n\n"
+        "Send /cancel to stop without cloning or registering anything."
+    )
+
+
+def onboard_description_text(identity) -> str:
+    return (
+        "New project from GitHub\n\n"
+        f"Repository: {identity.repository}\n\n"
+        "Describe the first task. A readable job title is derived automatically. "
+        "The project is cloned and registered first, then this task starts "
+        "immediately in the prepared development branch.\n\n"
+        "Send /cancel to stop; nothing has been cloned or registered yet."
+    )
+
+
+def onboard_runtime_text(title: str) -> str:
+    return (
+        "Choose maximum runtime\n\n"
+        f"Task: {title}\n\n"
+        "This is the wall-clock limit for the first attempt. "
+        "Choose 1h, 2h, 4h or 8h.\n\n"
+        "Acceptance commands are discovered conservatively from known manifests "
+        "and are not executed during onboarding."
+    )
+
+
+def onboard_preview_text(identity, target, title: str, timeout_seconds: int) -> str:
+    return "\n".join(
+        [
+            "Confirm new project",
+            "",
+            f"GitHub repository: {identity.repository}",
+            f"Target checkout: {target}",
+            f"Title: {title}",
+            f"Maximum runtime: {format_seconds(timeout_seconds)}",
+            "",
+            "On Confirm the repository is cloned (if needed), inspected without "
+            "running its scripts, registered in the project registry with an "
+            "agent/* delivery policy, given a verified acceptance profile, and the "
+            "first job starts immediately. No repository script is executed before "
+            "the normal acceptance commands.",
+        ]
+    )
+
+
+def onboard_result_text(project, job: dict | None, error: str | None = None) -> str:
+    lines = [
+        "Project onboarding",
+        "",
+        f"Project: {project.project_id} [{project.platform}]",
+        f"GitHub: {project.github_repository}",
+        f"Checkout: {project.repo_path}",
+        f"Branch: {project.branch or '-'}",
+        f"Cloned: {'yes' if project.cloned else 'no'}",
+        f"Acceptance: {len(project.commands)} command(s), {len(project.manual)} manual",
+        f"Made available to Telegram: yes",
+    ]
+    if error:
+        lines.extend(["", f"First job not started: {error}"])
+    elif job is not None:
+        lines.extend(
+            [
+                "",
+                f"First job: {job.get('id')} ({job.get('state')})",
+                f"Branch: {job.get('branch') or '-'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _criteria_lines(request) -> list[str]:
     lines: list[str] = []
     for label, command in request.command_criteria:
@@ -459,6 +542,7 @@ def start_preview_text(request) -> str:
         f"Branch: {request.branch or '(current detected branch; push only if policy allows)'}",
         f"Maximum runtime: {format_seconds(request.timeout_seconds)}",
         f"Acceptance profile: {request.profile_source or 'explicit advanced criteria'}",
+        f"Mode: {'read-only audit (no commit or push)' if getattr(request, 'read_only', False) else 'development delivery'}",
         f"Auto-loaded context files: {len(request.context_paths)}",
         "",
         "Acceptance criteria (authoritative):",

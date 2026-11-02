@@ -174,22 +174,53 @@ class BranchPreparationTests(unittest.TestCase):
         self.assertEqual(repo.branch(), "agent/demo/current")
         self.assertEqual(repo.head(), head)
 
-    def test_dirty_protected_main_fails_closed_without_mutation(self) -> None:
+    def test_dirty_protected_main_is_isolated_without_mutation(self) -> None:
         repo = self.make_repo(branch="main")
         self.push(repo, "main")
         main_sha = repo.head("refs/heads/main")
-        repo.write("owner-notes.txt", "unowned changes\n")
-        with self.assertRaises(branch_prepare.BranchPreparationError) as context:
-            branch_prepare.prepare(
-                repo.root,
-                self.policy(repo),
-                job_id="20261102T000000Z-demo-job-bbbbbbbb",
-            )
-        self.assertIn("uncommitted changes", str(context.exception))
+        owner_file = repo.write("owner-notes.txt", "unowned changes\n")
+        prepared = branch_prepare.prepare(
+            repo.root,
+            self.policy(repo),
+            job_id="20261102T000000Z-demo-job-bbbbbbbb",
+        )
+        # The owner checkout is untouched: same branch, same commit, same file.
         self.assertEqual(repo.branch(), "main")
         self.assertEqual(repo.head("refs/heads/main"), main_sha)
+        self.assertEqual(owner_file.read_text(encoding="utf-8"), "unowned changes\n")
+        self.assertEqual(
+            repo.git("status", "--porcelain").stdout.strip(), "?? owner-notes.txt"
+        )
+        # The job runs in a clean linked worktree on the prepared branch.
+        self.assertTrue(prepared.created)
+        self.assertTrue(prepared.branch.startswith("agent/"))
+        self.assertIsNotNone(prepared.worktree)
+        worktree = Path(prepared.worktree or "")
+        self.assertTrue(worktree.is_dir())
+        self.assertNotEqual(worktree, repo.root)
+        self.assertEqual(
+            repo.git("-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
+            prepared.branch,
+        )
+        self.assertEqual(
+            repo.git("-C", str(worktree), "status", "--porcelain").stdout.strip(), ""
+        )
+
+    def test_dirty_dry_run_plans_isolation_without_creating_anything(self) -> None:
+        repo = self.make_repo(branch="main")
+        self.push(repo, "main")
+        repo.write("owner-notes.txt", "unowned changes\n")
+        prepared = branch_prepare.prepare(
+            repo.root,
+            self.policy(repo),
+            job_id="20261102T000000Z-demo-job-dryrun00",
+            apply=False,
+        )
+        self.assertTrue(prepared.branch.startswith("agent/"))
+        self.assertIsNotNone(prepared.worktree)
+        self.assertFalse(Path(prepared.worktree or "").exists())
+        self.assertEqual(repo.branch(), "main")
         self.assertTrue((repo.root / "owner-notes.txt").is_file())
-        self.assertEqual(repo.git("branch", "--list", "agent/*").stdout.strip(), "")
 
     def test_detached_head_fails_closed(self) -> None:
         repo = self.make_repo(branch="main")

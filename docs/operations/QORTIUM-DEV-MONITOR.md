@@ -35,9 +35,16 @@ Control mode (explicit owner configuration only):
   automatically. Acceptance criteria, context files and skills are loaded from
   the project's verified acceptance profile; no phone-typed criteria, branch,
   skill, agent or model inputs are required.
-- Optional advanced start options remain available for explicit acceptance
-  commands, a custom timeout or a branch label. They are separate from the
-  normal flow and never replace the profile silently.
+- **New project** from a GitHub URL: the monitor validates the repository
+  identity, refuses duplicate or unsafe targets, clones safely, inspects
+  manifests and instructions without executing them, registers the project and
+  a conservative acceptance profile, then immediately starts the first job. No
+  second wizard is required. Existing checkouts are never overwritten.
+- Optional advanced or explicit start options remain available for acceptance
+  commands, a custom timeout, a branch label, or a **read-only audit** toggle.
+  A read-only audit uses the same isolated worktree but requires no commit,
+  push or remote SHA; a commit in that mode fails the mandatory contract. The
+  mode is explicit and never inferred from task wording.
 - Exact confirmation preview and one-time confirmation.
 - Fixed-shape `dev start` invocation with `--no-notify --json` and the prompt on
   standard input. The monitor never passes `--contract-file` or an authorization
@@ -386,6 +393,7 @@ Running jobs remain independent of the monitor lifecycle.
 | --- | --- |
 | `/start`, `/menu` | Main menu (Start job is shown only in control mode) |
 | `/start_job`, `/newjob` | Start wizard for a registered project with an available repository and a valid delivery policy |
+| `/newproject [GitHub URL]` | Clone, inspect and register a new GitHub project, then start its first job (control mode) |
 | `/jobs` | Active jobs first, then recent terminal jobs |
 | `/job <reference>` | Open a job by server-side reference |
 | `/status [job]` | Compact status view; latest job when omitted |
@@ -463,6 +471,12 @@ The monitor and direct `dev start` calls resolve the same policy from
 non-GitHub or mismatched remote is refused; the monitor never selects
 `dev-control-plane` for a different project and never weakens the mandatory push
 check. Automatic push covers only matching non-protected `agent/*` branches.
+Admission and completion share one non-interactive remote probe with a single
+bounded transport retry, so a transient network failure is not reported as a
+credential failure and a valid SSH setup is not rejected because the monitor's
+environment differs from an interactive shell. Obvious task/project mismatches
+(an explicit different GitHub repository URL or another registered project path)
+are refused before any job is created.
 
 Job status includes the completion-contract state and any failed or pending
 check. A green build, a passing test suite or an OpenCode exit `0` is never

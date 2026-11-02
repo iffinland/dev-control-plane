@@ -73,6 +73,7 @@ SECTION_PREFIXES = (
 )
 DIFF_START_PREFIXES = ("diff --git ", "Index: ", "@@ ")
 DIFF_CONTENT_PREFIXES = ("+", "-", " ", "\\ No newline")
+SEPARATOR_LINE_RE = re.compile(r"^\s*(?:-{2,}|={2,}|\*{2,}|_{2,}|\+{2,})\s*$")
 WHITESPACE_WARNING_RE = re.compile(
     r"^(.+?):\d+: (?:trailing whitespace\.|space before tab in indent\.|new blank line at EOF\.)$",
     re.IGNORECASE,
@@ -422,6 +423,62 @@ def _output_signal(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _has_meaningful_failure_output(text: str) -> bool:
+    """True when output contains at least one non-separator, non-blank line."""
+
+    for raw in str(text or "").splitlines():
+        line = _strip_ansi(raw).strip()
+        if not line or SEPARATOR_LINE_RE.match(line):
+            continue
+        return True
+    return False
+
+
+def _failure_excerpt(
+    body: str, command: str, tool: str, exit_code: int | None = None
+) -> str:
+    """Return a useful failure excerpt, never a bare ``---`` separator."""
+
+    for raw in str(body or "").splitlines():
+        line = _strip_ansi(raw).strip()
+        if not line or SEPARATOR_LINE_RE.match(line):
+            continue
+        return line
+    text = str(command or "").strip()
+    if text.startswith("✗ "):
+        text = text[2:].strip()
+    if text.lower().endswith(" failed"):
+        text = text[:-7].rstrip()
+    if text:
+        return text
+    if exit_code is not None:
+        return f"{tool} exited {exit_code}"
+    return f"{tool} tool failed"
+
+
+def _is_auxiliary_only_command(command: str) -> bool:
+    """True when a failed shell line contains only diagnostic/auxiliary work.
+
+    A path-probing command such as ``ls missing; echo ---; ls other`` exits
+    non-zero when the paths do not exist. That is not a project build or test
+    failure, and when it produced no meaningful output it must not fail a job.
+    A command with any substantive segment (test runner, build, python, curl,
+    grep, sed, cat and so on) still keeps its failure.
+    """
+
+    text = str(command or "").strip()
+    if text.startswith("✗ "):
+        text = text[2:].strip()
+    if text.lower().endswith(" failed"):
+        text = text[:-7].strip()
+    if not text:
+        return False
+    segments = _shell_segments(text)
+    if not segments:
+        return False
+    return all(_segment_signature(segment) is None for segment in segments)
+
+
 def _classify_failure_block(lines: list[str], tool: str) -> tuple[str, str] | None:
     body = "\n".join(lines[1:]).strip()
     if body:
@@ -429,7 +486,13 @@ def _classify_failure_block(lines: list[str], tool: str) -> tuple[str, str] | No
         if found:
             return found
     if tool in EXECUTION_TOOLS:
-        return "failed_command", lines[0] if lines else ""
+        command = lines[0] if lines else ""
+        if (
+            _is_auxiliary_only_command(command)
+            and not _has_meaningful_failure_output(body)
+        ):
+            return None
+        return "failed_command", _failure_excerpt(body, command, tool)
     # A failed web/read/edit tool that is not a permission or dependency error
     # is not a command/build/test failure. Keep it out of the final state.
     return None
@@ -977,7 +1040,19 @@ def _event_tool_issue(part: dict) -> tuple[str, str] | None:
         if found:
             return found
         if tool in EXECUTION_TOOLS:
-            return "failed_command", body.splitlines()[0] if body else f"{tool} exited {exit_code}"
+            command = _tool_command(part)
+            if (
+                _is_auxiliary_only_command(command)
+                and not _has_meaningful_failure_output(body)
+            ):
+                # A non-zero exit from a pure path probe with separator-only
+                # output (for example ``ls missing; echo ---; ls other``) is
+                # not a build/test failure. The acceptance criteria remain the
+                # authoritative check for required commands.
+                return None
+            return "failed_command", _failure_excerpt(
+                body, command, tool, exit_code
+            )
     return None
 
 

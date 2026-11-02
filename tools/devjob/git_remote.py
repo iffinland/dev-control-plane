@@ -32,24 +32,35 @@ DEFAULT_ATTEMPTS = 2
 RETRY_DELAY_SECONDS = 0.5
 
 _SSH_URL_RE = re.compile(r"^(?:ssh://|[^/@\s]+@[^/:\s]+:)")
+# A transport reset can make Git append the generic "Could not read from remote
+# repository" wording. That phrase is deliberately *not* an authentication
+# marker on its own: checking it first turned a transient reset into a false
+# "GitHub authentication failed" admission refusal with no retry.
 _TRANSIENT_RE = re.compile(
     r"connection (?:timed out|reset|refused|closed)"
     r"|could not resolve host"
     r"|network is unreachable"
     r"|temporary failure in name resolution"
     r"|operation timed out"
+    r"|timed out after"
     r"|early eof"
     r"|the remote end hung up"
+    r"|kex_exchange_identification"
     r"|rpc failed"
     r"|ssl (?:connection|read) .*failed",
+    re.IGNORECASE,
+)
+_TIMEOUT_RE = re.compile(r"\btimed out after\b", re.IGNORECASE)
+_HOST_KEY_RE = re.compile(
+    r"host key verification failed"
+    r"|no (?:matching )?host key is known"
+    r"|remote host identification has changed",
     re.IGNORECASE,
 )
 _AUTH_RE = re.compile(
     r"permission denied"
     r"|publickey"
     r"|authentication failed"
-    r"|could not read from remote repository"
-    r"|host key verification failed"
     r"|access denied"
     r"|invalid username or password"
     r"|terminal prompts disabled"
@@ -125,7 +136,16 @@ def run_git(
             check=False,
             env=dict(env) if env is not None else None,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        # Preserve the conventional timeout return code so classification and
+        # the owner-facing message do not describe a timeout as transport.
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            "",
+            f"git {' '.join(args)} timed out after {timeout} seconds",
+        )
+    except OSError as exc:
         return subprocess.CompletedProcess(command, 1, "", str(exc))
 
 
@@ -137,15 +157,24 @@ def _remote_url(repo: Path, remote: str) -> str:
 
 
 def classify_failure(stderr: str, returncode: int | None = None) -> str:
-    """Classify a failed Git remote operation without exposing its output."""
+    """Classify a failed Git remote operation without exposing its output.
+
+    Concrete transport/timeout evidence wins over the generic "could not read
+    from remote repository" suffix, because Git adds that suffix after a reset
+    or timeout as well as after a genuine authentication failure. Only an
+    explicit authentication marker (``Permission denied (publickey)``,
+    ``Authentication failed`` and similar) is classified as ``auth``.
+    """
 
     text = str(stderr or "")
-    if _AUTH_RE.search(text):
-        return "auth"
+    if returncode == 124 or _TIMEOUT_RE.search(text):
+        return "timeout"
     if _TRANSIENT_RE.search(text):
         return "transport"
-    if returncode == 124:
-        return "timeout"
+    if _HOST_KEY_RE.search(text):
+        return "host_key"
+    if _AUTH_RE.search(text):
+        return "auth"
     return "transport"
 
 
@@ -156,6 +185,14 @@ def _failure_message(kind: str, remote: str) -> str:
             f"remote {remote!r} failed. Configure valid HTTPS credentials or an "
             "existing SSH key/agent, then retry. The job was not started and no "
             "branch was changed."
+        )
+    if kind == "host_key":
+        return (
+            f"GitHub delivery is unavailable: the SSH host key for remote "
+            f"{remote!r} could not be verified against the owner's known_hosts. "
+            "Verify the host key through an interactive SSH session, then retry. "
+            "Host-key verification was not disabled. The job was not started and "
+            "no branch was changed."
         )
     if kind == "timeout":
         return (

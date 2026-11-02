@@ -212,7 +212,7 @@ def start_runtime_menu(wizard_id: str, *, read_only: bool = False) -> dict:
     return keyboard(rows)
 
 
-def onboard_runtime_menu(wizard_id: str) -> dict:
+def onboard_runtime_menu(wizard_id: str, *, read_only: bool = False) -> dict:
     rows = [
         [
             button("1h", f"w:{wizard_id}:t:3600"),
@@ -221,6 +221,12 @@ def onboard_runtime_menu(wizard_id: str) -> dict:
         [
             button("4h", f"w:{wizard_id}:t:14400"),
             button("8h", f"w:{wizard_id}:t:28800"),
+        ],
+        [
+            button(
+                f"Read-only audit: {'on' if read_only else 'off'}",
+                f"w:{wizard_id}:ro",
+            )
         ],
         [button("Cancel", f"w:{wizard_id}:cancel")],
     ]

@@ -207,8 +207,10 @@ The normal phone flow is project -> task description -> runtime (1h, 2h, 4h or
 8h) -> confirmation. Advanced options remain available for explicit criteria, a
 custom timeout, a branch label or an explicit **read-only audit** toggle. A
 read-only audit prepares the same isolated `agent/*` worktree but the contract
-verifies that no commit, push or merge occurred; it is never inferred from the
-task wording.
+verifies that no commit, push or merge occurred. The Telegram wizard
+pre-selects read-only mode when the task explicitly asks for a read-only audit
+and explicitly forbids source modification; the owner can always override the
+toggle, and the CLI never infers the mode from task text.
 
 ### New project from a GitHub URL
 
@@ -355,9 +357,12 @@ URL and the project-level instructions. It then:
   BatchMode for SSH remotes. Existing credential helpers and SSH keys remain in
   use; no credential is copied, printed or added, and the remote URL is not
   changed. A clearly transient transport error is retried once; authentication,
-  transport and timeout failures are classified without echoing the URL or Git
-  stderr. The completion contract uses the same canonical probe, so admission
-  and post-run remote-SHA verification cannot disagree about the environment.
+  transport, host-key and timeout failures are classified without echoing the URL
+  or Git stderr. Concrete transport evidence takes precedence over Git's generic
+  "Could not read from remote repository" suffix, which is appended after a reset
+  as well as after a real authentication failure. The completion contract uses
+  the same canonical probe, so admission and post-run remote-SHA verification
+  cannot disagree about the environment.
 - when the owner checkout has uncommitted changes and a branch switch/create
   would be required, creates the job branch in an isolated linked worktree under
   `<projects>/.worktrees/<repo>/<job-id>` at the same published commit. The owner
@@ -462,7 +467,7 @@ and records the result in `job.json`, `dev status`, the monitor job status and
 | `branch` / `protected_branch` | The current branch matches the actually prepared contract branch and is not a protected branch without explicit authorization. |
 | `delivery_policy` / `branch_policy` | The recorded project policy still matches the actual remote URL and the current branch is inside its `agent/*` pattern. |
 | `clean_tree` | The job's changes are committed; declared pre-existing owner paths may stay dirty. |
-| `read_only` | Only when explicitly requested: no commit after the base SHA, no push and no merge. A read-only job that commits fails the contract. |
+| `read_only` | Only when requested (CLI flag, Telegram toggle or the wizard's conservative pre-selection for an explicit read-only audit): delivery is not required, but the evaluator still verifies that no commit after the base SHA and no push occurred. A read-only job that commits fails the contract. |
 | `commit` / `scoped_paths` | At least one commit exists after `base_sha`, and every changed path is inside `allowed_paths`. |
 | `no_merge_commits` | No merge commit exists unless `authorization.merge` is true. |
 | `sensitive_paths` / `diff_secrets` | No `.env`, key/keystore/wallet/seed path or recognized secret pattern is committed. Unmatched values are never printed. |

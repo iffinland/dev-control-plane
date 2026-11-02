@@ -47,6 +47,9 @@ resume.
   [`tools/test_git_remote.py`](../../../tools/test_git_remote.py): one canonical
   non-interactive environment for admission and completion, bounded transient
   retry, and failure classification without leaking the URL or Git stderr.
+  Transport/reset evidence takes precedence over Git's generic "Could not read
+  from remote repository" suffix so a network reset is never reported as an
+  authentication failure; host-key and timeout failures have separate messages.
 - [`tools/devjob/onboarding.py`](../../../tools/devjob/onboarding.py),
   [`tools/test_onboarding.py`](../../../tools/test_onboarding.py) and
   [`tools/test_dev_monitor_onboarding.py`](../../../tools/test_dev_monitor_onboarding.py):
@@ -94,8 +97,12 @@ resume.
    commit. Never switch, reset, clean, stash or commit the owner checkout. Jobs
    in the owner checkout and its worktrees share one repository identity for
    admission and locking. An explicit `--read-only` (Telegram read-only audit
-   toggle) still prepares an isolated `agent/*` worktree but verifies that no
-   commit, push or merge occurred; never infer read-only from task wording.
+   toggle) still prepares an isolated `agent/*` worktree but does not require a
+   commit or push; the evaluator always verifies that no commit, push or merge
+   occurred. The Telegram wizard may pre-select read-only mode when the task
+   explicitly asks for a read-only audit and explicitly forbids source
+   modification; the owner can override it. The CLI never infers read-only from
+   task wording, and normal development jobs still require verified delivery.
 2. **Fill the automatic per-job evidence file truthfully.** A new default job
    (CLI or Telegram monitor, which delegates to the CLI) gets
    `~/.local/state/dev-control-plane/jobs/<job-id>/evidence/TASK.md`. The

@@ -37,12 +37,31 @@ fail_once = os.environ.get("FAKE_SSH_FAIL_ONCE")
 if mode == "auth":
     print("git@github.com: Permission denied (publickey).", file=sys.stderr)
     sys.exit(255)
+if mode == "hostkey":
+    print("Host key verification failed.", file=sys.stderr)
+    sys.exit(255)
 if mode == "transient":
     print("ssh: connect to host github.com port 22: Connection timed out", file=sys.stderr)
     sys.exit(255)
-if mode == "transient-once" and fail_once and not os.path.exists(fail_once):
-    open(fail_once, "w", encoding="utf-8").write("failed once\n")
-    print("ssh: connect to host github.com port 22: Connection timed out", file=sys.stderr)
+if mode == "transient-reset":
+    print(
+        "Connection reset by 192.0.2.4 port 22\\n"
+        "fatal: Could not read from remote repository.\\n\\n"
+        "Please make sure you have the correct access rights\\n"
+        "and the repository exists.",
+        file=sys.stderr,
+    )
+    sys.exit(255)
+if mode in {"transient-once", "transient-reset-once"} and fail_once and not os.path.exists(fail_once):
+    open(fail_once, "w", encoding="utf-8").write("failed once\\n")
+    if mode == "transient-reset-once":
+        print(
+            "Connection reset by 192.0.2.4 port 22\\n"
+            "fatal: Could not read from remote repository.",
+            file=sys.stderr,
+        )
+    else:
+        print("ssh: connect to host github.com port 22: Connection timed out", file=sys.stderr)
     sys.exit(255)
 match = re.match(r"(git-upload-pack|git-receive-pack) '([^']+)'", command)
 if not match:
@@ -151,6 +170,79 @@ class GitRemoteProbeTests(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
         self.assertEqual(probe.heads.get("main"), self.repo.head())
+
+    def test_connection_reset_with_generic_git_wording_is_not_auth(self) -> None:
+        """A reset must not be reported as an authentication failure.
+
+        Git appends ``fatal: Could not read from remote repository`` to both an
+        authentication failure and a network reset. The historical Telegram
+        admission failure showed the auth wording even though the same SSH key
+        worked interactively.
+        """
+
+        self.repo.env["FAKE_SSH_MODE"] = "transient-reset"
+        with mock.patch.dict(os.environ, self.repo.env, clear=False):
+            with self.assertRaises(git_remote.RemoteProbeError) as context:
+                git_remote.probe_remote(
+                    self.repo.work,
+                    "origin",
+                    expected_repository="owner/repo",
+                    sleep=lambda _seconds: None,
+                )
+        self.assertEqual(context.exception.kind, "transport")
+        self.assertIn("transport", str(context.exception))
+        self.assertNotIn("authentication", str(context.exception))
+
+    def test_connection_reset_is_retried_through_real_admission_probe(self) -> None:
+        self.repo.env["FAKE_SSH_MODE"] = "transient-reset-once"
+        self.repo.env["FAKE_SSH_FAIL_ONCE"] = str(Path(self.temp.name) / "reset-once")
+        with mock.patch.dict(os.environ, self.repo.env, clear=False):
+            prepared = branch_prepare.prepare(
+                self.repo.work,
+                project_policy.resolve(
+                    self.repo.work,
+                    registry_path=self._registry_for_admission(),
+                ),
+                job_id="20261102T000000Z-reset-probe",
+                lock=False,
+            )
+        self.assertTrue(prepared.created)
+        self.assertTrue(prepared.branch.startswith("agent/"))
+
+    def _registry_for_admission(self) -> Path:
+        registry = Path(self.temp.name) / "PROJECT-REGISTRY.md"
+        registry.write_text(
+            "# Registry\n\n## Registered projects\n\n"
+            "| ID | Platform | Verified local path | Project-level `AGENTS.md` | "
+            "Canonical context | Central report root | Git remote | GitHub repository | "
+            "Development branch pattern | Automatic push |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| `owner/repo` | Generic | `{self.repo.work}` | No | - | - | "
+            "`origin` | `owner/repo` | `agent/*` | `yes` |\n",
+            encoding="utf-8",
+        )
+        return registry
+
+    def test_host_key_failure_is_not_reported_as_authentication(self) -> None:
+        self.repo.env["FAKE_SSH_MODE"] = "hostkey"
+        with mock.patch.dict(os.environ, self.repo.env, clear=False):
+            with self.assertRaises(git_remote.RemoteProbeError) as context:
+                git_remote.probe_remote(
+                    self.repo.work,
+                    "origin",
+                    expected_repository="owner/repo",
+                    sleep=lambda _seconds: None,
+                )
+        self.assertEqual(context.exception.kind, "host_key")
+        self.assertIn("host key", str(context.exception).lower())
+        self.assertIn("not disabled", str(context.exception))
+
+    def test_git_timeout_uses_timeout_kind(self) -> None:
+        completed = subprocess.CompletedProcess(["git"], 124, "", "git ls-remote timed out after 60 seconds")
+        with mock.patch("devjob.git_remote.subprocess.run", return_value=completed):
+            result = git_remote.run_git(self.repo.work, "ls-remote", "--heads", "origin")
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(git_remote.classify_failure(result.stderr, result.returncode), "timeout")
 
     def test_completion_remote_sha_uses_the_same_environment(self) -> None:
         self.repo.git(self.repo.work, "checkout", "-b", "agent/owner/job")

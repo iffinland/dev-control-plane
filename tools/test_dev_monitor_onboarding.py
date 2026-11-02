@@ -232,6 +232,36 @@ class OnboardingRouterTests(unittest.TestCase):
         self.assertIn("--criterion", args)
         self.assertIn("Fix the login flow", starts[0]["stdin"])
 
+    def test_onboarding_read_only_toggle_is_passed_to_the_first_job(self) -> None:
+        with mock.patch.dict(os.environ, self._env(), clear=False), mock.patch.object(
+            control_module.onboarding, "DOCS_ROOT", self.docs
+        ):
+            self.router.handle(message_update(self.next_id(), "/newproject"))
+            self.router.handle(
+                message_update(self.next_id(), "https://github.com/owner/demo.git")
+            )
+            self.router.handle(message_update(self.next_id(), "Do the audit work"))
+            toggle = find_button(self.api.sent[-1]["markup"], "Read-only audit")
+            self.router.handle(callback_update(self.next_id(), toggle))
+            self.assertIn("Read-only audit: on", self.api.edited[-1]["text"])
+            runtime = find_button(self.api.edited[-1]["markup"], "2h")
+            self.router.handle(callback_update(self.next_id(), runtime))
+            self.assertIn("read-only audit", self.api.edited[-1]["text"].lower())
+            confirm = find_button(self.api.edited[-1]["markup"], "Confirm")
+            self.router.handle(callback_update(self.next_id(), confirm))
+
+        invocations = [
+            json.loads(line)
+            for line in (self.state_root / "fake_invocations.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        starts = [item for item in invocations if item["args"][:1] == ["start"]]
+        self.assertEqual(len(starts), 1)
+        self.assertIn("--read-only", starts[0]["args"])
+        self.assertNotIn("--authorize-push", starts[0]["args"])
+
     def test_replayed_confirmation_does_not_start_twice(self) -> None:
         events: list[str] = []
         payload = {

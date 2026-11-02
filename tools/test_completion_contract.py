@@ -173,6 +173,72 @@ class CompletionContractTests(unittest.TestCase):
                 read_only=True,
             )
 
+    def test_default_read_only_contract_does_not_require_delivery(self) -> None:
+        spec = contract.build_default_contract(
+            branch="agent/test/job",
+            base_sha="a" * 40,
+            read_only=True,
+        )
+        self.assertTrue(spec["read_only"])
+        self.assertFalse(spec["require"]["commit"])
+        self.assertFalse(spec["require"]["push"])
+        for key in contract.MANDATORY_REQUIREMENTS:
+            if key not in {"commit", "push"}:
+                self.assertTrue(spec["require"][key], key)
+        self.assertFalse(spec["authorization"]["push"])
+
+    def test_explicit_read_only_contract_may_omit_delivery_requirements(self) -> None:
+        explicit = {
+            "version": 1,
+            "evidence_files": ["TASK.md"],
+            "read_only": True,
+            "require": {"commit": False, "push": False},
+        }
+        prepared, source = contract.prepare_contract(
+            explicit,
+            branch="agent/test/job",
+            base_sha="a" * 40,
+        )
+        self.assertEqual(source, "file")
+        self.assertTrue(prepared["read_only"])
+        self.assertFalse(prepared["require"]["commit"])
+        self.assertFalse(prepared["require"]["push"])
+        self.assertTrue(prepared["require"]["clean_tree"])
+        self.assertFalse(prepared["authorization"]["push"])
+
+    def test_normal_contract_still_rejects_disabled_delivery(self) -> None:
+        for key in ("commit", "push"):
+            with self.subTest(key=key):
+                with self.assertRaises(contract.ContractError):
+                    contract.prepare_contract(
+                        {
+                            "version": 1,
+                            "evidence_files": ["TASK.md"],
+                            "require": {key: False},
+                        },
+                        branch="agent/test/job",
+                        base_sha="a" * 40,
+                    )
+
+    def test_read_only_requirements_are_always_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, base = make_repo(Path(directory))
+            spec = contract.build_default_contract(
+                branch="agent/test/job",
+                base_sha=base,
+                read_only=True,
+            )
+            # Even though delivery is not required, the read-only checks run and
+            # prove that nothing was committed.
+            commit_checks = {item["id"]: item for item in contract._commit_checks(repo.root, spec)}
+            self.assertEqual(commit_checks["commit"]["status"], "verified")
+            push = contract._push_check(repo.root, spec, "agent/test/job", spec["authorization"])
+            self.assertEqual(push["status"], "verified")
+            repo.write("unexpected.txt", "changed\n")
+            repo.commit("read-only job must not commit")
+            commit_checks = {item["id"]: item for item in contract._commit_checks(repo.root, spec)}
+            self.assertEqual(commit_checks["commit"]["status"], "failed")
+
     def test_verified_contract_with_authorized_push(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo, base = make_repo(Path(directory))

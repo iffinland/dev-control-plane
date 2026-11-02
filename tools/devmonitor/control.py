@@ -51,6 +51,29 @@ FOLLOW_UP_HEADER = (
     "working tree and all completed work, do not expand scope beyond the original "
     "task and these instructions, and finish with verifiable evidence."
 )
+READ_ONLY_AUDIT_RE = re.compile(r"\bread[\s-]?only\b.{0,60}\baudit\b|\baudit\b.{0,60}\bread[\s-]?only\b", re.IGNORECASE | re.DOTALL)
+NO_MODIFICATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|must\s+not|mustn't|without|no)\b.{0,40}"
+    r"\b(?:modif(?:y|ying|ication)|chang(?:e|ing)|edit(?:ing)?|alter(?:ing)?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def detect_read_only_request(text: str) -> bool:
+    """Conservatively pre-select read-only mode for an explicit audit request.
+
+    This only supplies the Telegram wizard default. The owner can still toggle
+    it off, and the CLI never infers read-only from task text. Requiring both an
+    explicit ``read-only audit`` phrase and an explicit no-modification
+    directive avoids turning ordinary "fix the read-only mode" work into an
+    audit, while matching the historical NodeFM prompt that was unintentionally
+    started as a delivery job.
+    """
+
+    body = sanitize_control(str(text or ""))
+    return bool(
+        READ_ONLY_AUDIT_RE.search(body) and NO_MODIFICATION_RE.search(body)
+    )
 
 
 class ControlError(RuntimeError):
@@ -523,12 +546,18 @@ class ControlManager:
             )
             data["description"] = description
             data["title"] = derive_title(description)
+            if "read_only" not in data:
+                data["read_only"] = detect_read_only_request(description)
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
             return ControlResult(
-                render.onboard_runtime_text(data["title"]),
-                menus.onboard_runtime_menu(wizard_id),
+                render.onboard_runtime_text(
+                    data["title"], read_only=bool(data.get("read_only"))
+                ),
+                menus.onboard_runtime_menu(
+                    wizard_id, read_only=bool(data.get("read_only"))
+                ),
             )
         raise ControlError("this wizard is waiting for a button, not text")
 
@@ -540,6 +569,22 @@ class ControlManager:
         chat_id = int(decision.chat_id or 0)
         if action == "cancel":
             return self._cancel(wizard, user_id, chat_id)
+        if action == "ro":
+            if str(wizard.get("step")) != "runtime":
+                raise ControlError("read-only mode is not available at this step")
+            data = dict(wizard["data"])
+            data["read_only"] = not bool(data.get("read_only"))
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.onboard_runtime_text(
+                    data.get("title") or "", read_only=bool(data.get("read_only"))
+                ),
+                menus.onboard_runtime_menu(
+                    wizard_id, read_only=bool(data.get("read_only"))
+                ),
+            )
         if action != "t":
             raise ControlError("unknown new-project action")
         try:
@@ -562,7 +607,13 @@ class ControlManager:
         )
         target = self._projects_root() / identity.name
         return ControlResult(
-            render.onboard_preview_text(identity, target, title, timeout_seconds),
+            render.onboard_preview_text(
+                identity,
+                target,
+                title,
+                timeout_seconds,
+                read_only=bool(data.get("read_only")),
+            ),
             menus.control_confirmation_menu(nonce, "Register and start job"),
         )
 
@@ -610,6 +661,8 @@ class ControlManager:
             "timeout_seconds": timeout_seconds,
             "branch": None,
         }
+        if payload.get("read_only") is not None:
+            data["read_only"] = bool(payload.get("read_only"))
         request = self._normal_start_request(data)
         if wizard_id:
             self.state.delete_wizard(
@@ -744,6 +797,8 @@ class ControlManager:
         data["profile_source"] = profile.source
         data["context_paths"] = [str(item.path) for item in context]
         data["branch"] = None
+        if "read_only" not in data:
+            data["read_only"] = detect_read_only_request(description)
         data["read_only"] = bool(data.get("read_only"))
         return self._start_request(data)
 
@@ -850,12 +905,18 @@ class ControlManager:
             )
             data["description"] = description
             data["title"] = derive_title(description)
+            if "read_only" not in data:
+                data["read_only"] = detect_read_only_request(description)
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
             return ControlResult(
-                render.start_runtime_text(data["title"]),
-                menus.start_runtime_menu(wizard_id),
+                render.start_runtime_text(
+                    data["title"], read_only=bool(data.get("read_only"))
+                ),
+                menus.start_runtime_menu(
+                    wizard_id, read_only=bool(data.get("read_only"))
+                ),
             )
         if step == "criteria":
             commands, manuals = parse_criteria(text)

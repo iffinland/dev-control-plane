@@ -39,6 +39,13 @@ from devmonitor_test_support import (  # noqa: E402
 
 PROMPT = "Implement the requested P2 behavior exactly."
 CRITERIA = "Build::python3 -m pytest -q\nmanual: Owner reviews the UI"
+HISTORICAL_READ_ONLY_AUDIT = (
+    "Perform a comprehensive read-only audit of NodeFM Station.\n"
+    "Inspect the current source code, Git history, existing tests and documentation.\n"
+    "Run safe, applicable tests and build checks.\n"
+    "Preserve all existing owner changes. Do not modify application source, "
+    "publish QDN resources, commit, push or perform wallet transactions."
+)
 
 
 def find_button(markup, text_fragment: str) -> str:
@@ -265,6 +272,39 @@ class StartWizardTests(ControlBase):
         args = self.invocations()[0]["args"]
         self.assertIn("--read-only", args)
         self.assertNotIn("--authorize-push", args)
+
+    def test_explicit_read_only_audit_request_preselects_the_toggle(self) -> None:
+        """The historical NodeFM prompt was started as a delivery job by mistake.
+
+        An explicit read-only audit plus a no-modification directive now
+        pre-selects read-only mode in the Telegram wizard, while remaining
+        visible and owner-overridable.
+        """
+
+        self.begin_start()
+        self.send_description(HISTORICAL_READ_ONLY_AUDIT)
+        self.assertIn("Read-only audit: on", self.api.sent[-1]["text"])
+        self.assertIn("Read-only audit: on", json.dumps(self.api.sent[-1]["markup"]))
+        self.choose_runtime("2h")
+        self.assertIn("read-only audit", self.api.edited[-1]["text"].lower())
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertIn("--read-only", args)
+        self.assertNotIn("--authorize-push", args)
+
+    def test_owner_can_override_inferred_read_only_mode(self) -> None:
+        self.begin_start()
+        self.send_description(HISTORICAL_READ_ONLY_AUDIT)
+        toggle = find_button(self.api.sent[-1]["markup"], "Read-only audit")
+        self.router.handle(callback_update(self.next_id(), toggle))
+        self.assertIn("Read-only audit: off", self.api.edited[-1]["text"])
+        runtime = find_button(self.api.edited[-1]["markup"], "2h")
+        self.router.handle(callback_update(self.next_id(), runtime))
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertNotIn("--read-only", args)
 
     def test_start_uses_cli_default_contract_without_weakening_overrides(self) -> None:
         confirm = self.advance_to_preview()

@@ -602,6 +602,98 @@ class StructuredEventTests(unittest.TestCase):
         self.assertIn("permission_rejection", {issue.kind for issue in detect.scan_events(payload)})
         self.assertEqual(detect.scan_events(payload, since_ms=2000), [])
 
+    def test_separator_only_auxiliary_probe_is_not_a_failure(self) -> None:
+        """Historical NodeFM false positive: ``ls ...; echo ---; ls ...``.
+
+        The command probed paths that did not exist and exited 2, but its only
+        output was the separator echoed by the command. That is not a project
+        build or test failure.
+        """
+
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 2},
+                                "input": {
+                                    "command": (
+                                        'ls -la /home/iffi/VsCodec-Projects/Qortium/ 2>/dev/null; '
+                                        'echo "---"; ls /home/iffi/VsCodec-Projects/Qortium/agents/ '
+                                        '2>/dev/null; echo "---"; ls /home/iffi/VsCodec-Projects/Qortium/docs/ '
+                                        "2>/dev/null"
+                                    )
+                                },
+                                "output": "---\n---\n",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(detect.scan_events(payload), [])
+
+    def test_separator_only_probe_in_console_log_is_not_a_failure(self) -> None:
+        log = (
+            '✗ ls -la /missing 2>/dev/null; echo "---"; ls /also-missing 2>/dev/null failed\n'
+            "---\n"
+        )
+        self.assertEqual(detect.scan_text(log), [])
+
+    def test_substantive_failure_with_separator_output_is_not_hidden(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "input": {"command": "npm run test"},
+                                "output": "---\n",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        issues = detect.scan_events(payload)
+        self.assertIn("failed_command", {issue.kind for issue in issues})
+        self.assertNotEqual(issues[0].excerpt, "---")
+        self.assertIn("npm run test", issues[0].excerpt)
+
+    def test_nonzero_command_without_output_still_fails(self) -> None:
+        payload = self.payload(
+            [
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "metadata": {"exit": 1},
+                                "input": {"command": "python3 tools/test_something.py"},
+                                "output": "",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        issues = detect.scan_events(payload)
+        self.assertIn("failed_command", {issue.kind for issue in issues})
+        self.assertIn("python3 tools/test_something.py", issues[0].excerpt)
+
     def test_scan_session_without_id_is_unavailable(self) -> None:
         self.assertIsNone(detect.scan_session(None))
 

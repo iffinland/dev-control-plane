@@ -465,18 +465,23 @@ def onboard_description_text(identity) -> str:
     )
 
 
-def onboard_runtime_text(title: str) -> str:
+def onboard_runtime_text(title: str, *, read_only: bool = False) -> str:
     return (
         "Choose maximum runtime\n\n"
         f"Task: {title}\n\n"
         "This is the wall-clock limit for the first attempt. "
         "Choose 1h, 2h, 4h or 8h.\n\n"
+        f"Read-only audit: {'on' if read_only else 'off'}\n"
+        "A read-only audit may inspect the repository but must not commit or "
+        "push; the completion contract verifies that nothing changed.\n\n"
         "Acceptance commands are discovered conservatively from known manifests "
         "and are not executed during onboarding."
     )
 
 
-def onboard_preview_text(identity, target, title: str, timeout_seconds: int) -> str:
+def onboard_preview_text(
+    identity, target, title: str, timeout_seconds: int, *, read_only: bool = False
+) -> str:
     return "\n".join(
         [
             "Confirm new project",
@@ -485,6 +490,7 @@ def onboard_preview_text(identity, target, title: str, timeout_seconds: int) -> 
             f"Target checkout: {target}",
             f"Title: {title}",
             f"Maximum runtime: {format_seconds(timeout_seconds)}",
+            f"Mode: {'read-only audit (no commit or push)' if read_only else 'development delivery'}",
             "",
             "On Confirm the repository is cloned (if needed), inspected without "
             "running its scripts, registered in the project registry with an "

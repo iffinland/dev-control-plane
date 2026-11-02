@@ -44,7 +44,10 @@ Control mode (explicit owner configuration only):
   commands, a custom timeout, a branch label, or a **read-only audit** toggle.
   A read-only audit uses the same isolated worktree but requires no commit,
   push or remote SHA; a commit in that mode fails the mandatory contract. The
-  mode is explicit and never inferred from task wording.
+  Telegram wizard pre-selects the toggle for an explicit "read-only audit" plus
+  an explicit no-modification directive, shows the mode in the preview, and
+  still lets the owner override it. The CLI never infers the mode from task
+  wording. New-project onboarding exposes the same toggle for its first job.
 - Exact confirmation preview and one-time confirmation.
 - Fixed-shape `dev start` invocation with `--no-notify --json` and the prompt on
   standard input. The monitor never passes `--contract-file` or an authorization

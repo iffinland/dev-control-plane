@@ -40,6 +40,9 @@ LEGACY_DIRTY_PARSER_REPAIR = "one-character-truncation-repaired"
 # These checks are not configurable for a new Workflow v3 job.  An explicit
 # contract file may add constraints (more evidence, narrower paths, extra
 # forbidden paths), but it may never turn a mandatory delivery check off.
+# A read-only contract is the one deliberate exception for ``commit``/``push``
+# as *delivery requirements*; the evaluator still runs the read-only
+# no-commit/no-push verification unconditionally.
 MANDATORY_REQUIREMENTS = (
     "skill_discovery",
     "freshness",
@@ -181,11 +184,24 @@ def validate_spec(spec: dict) -> None:
             raise ContractError("delivery_policy.remote must be a string")
 
 
-def ensure_mandatory(spec: dict) -> None:
-    """Reject an explicit contract that disables a mandatory delivery check."""
+def ensure_mandatory(spec: dict, *, read_only: bool | None = None) -> None:
+    """Reject an explicit contract that disables a mandatory delivery check.
+
+    ``commit`` and ``push`` describe delivery expectations. A read-only contract
+    legitimately does not require them, but the evaluator still verifies that no
+    commit or push occurred. All evidence and no-merge checks remain mandatory.
+    """
 
     require = spec.get("require") or {}
-    weakened = [key for key in MANDATORY_REQUIREMENTS if require.get(key) is False]
+    declared_read_only = (
+        bool(spec.get("read_only")) if read_only is None else bool(read_only)
+    )
+    exempt = {"commit", "push"} if declared_read_only else set()
+    weakened = [
+        key
+        for key in MANDATORY_REQUIREMENTS
+        if key not in exempt and require.get(key) is False
+    ]
     if weakened:
         raise ContractError(
             "completion contract may not disable mandatory checks: " + ", ".join(weakened)
@@ -271,6 +287,14 @@ def build_default_contract(
             auth[key] = _authorization_value(value)
     snapshot = _policy_snapshot(delivery_policy)
     policy_remote = (snapshot or {}).get("remote") if snapshot else None
+    require = {key: True for key in MANDATORY_REQUIREMENTS}
+    if read_only:
+        # A read-only job is not required to produce a commit or a push. The
+        # evaluator still runs the read-only no-commit/no-push verification
+        # below, so these flags describe delivery expectations, not whether the
+        # repository is checked.
+        require["commit"] = False
+        require["push"] = False
     contract = {
         "version": 1,
         "branch": branch or None,
@@ -282,7 +306,7 @@ def build_default_contract(
         # They are also forbidden so a job cannot silently absorb them.
         "forbidden_paths": dirty,
         "allowed_dirty_paths": dirty,
-        "require": {key: True for key in MANDATORY_REQUIREMENTS},
+        "require": require,
         "authorization": auth,
         "dirty_paths_parser": DIRTY_PATHS_PARSER_VERSION,
     }
@@ -339,7 +363,8 @@ def prepare_contract(
     if not isinstance(spec, dict):
         raise ContractError("completion contract must be a JSON object")
     validate_spec(spec)
-    ensure_mandatory(spec)
+    effective_read_only = bool(spec.get("read_only")) or bool(read_only)
+    ensure_mandatory(spec, read_only=effective_read_only)
     prepared = copy.deepcopy(spec)
     prepared.setdefault("version", 1)
     prepared.setdefault("dirty_paths_parser", DIRTY_PATHS_PARSER_VERSION)
@@ -388,15 +413,17 @@ def prepare_contract(
         declared_dirty = [str(item) for item in prepared.get("allowed_dirty_paths") or []]
         prepared["allowed_dirty_paths"] = list(dict.fromkeys([*declared_dirty, *dirty]))
     require = dict(prepared.get("require") or {})
-    for key in MANDATORY_REQUIREMENTS:
-        require[key] = True
-    prepared["require"] = require
     if read_only:
         prepared["read_only"] = True
-    if prepared.get("read_only"):
-        declared_read_only = True
-    else:
-        declared_read_only = False
+    declared_read_only = bool(prepared.get("read_only"))
+    for key in MANDATORY_REQUIREMENTS:
+        if declared_read_only and key in {"commit", "push"}:
+            # The evaluator always runs the read-only no-commit/no-push
+            # verification; these flags only say delivery is not expected.
+            require[key] = False
+        else:
+            require[key] = True
+    prepared["require"] = require
     auth = {key: False for key in AUTHORIZATION_KEYS}
     for key, value in (prepared.get("authorization") or {}).items():
         if key in auth:
@@ -1283,20 +1310,27 @@ def evaluate(job: dict, spec: dict | None, repo: Path | None = None) -> dict:
 
     require = spec.get("require") or {}
     authorization = spec.get("authorization") or {}
-    if require.get("commit", True):
+    if spec.get("read_only"):
+        # Even though read-only contracts do not require delivery, always verify
+        # that nothing was committed or pushed. A read-only job that changes the
+        # repository must fail rather than silently skip these checks.
         checks.extend(_commit_checks(repo_path, spec))
-    if require.get("push", True):
         checks.append(_push_check(repo_path, spec, branch, authorization))
-    elif authorization.get("push"):
-        checks.append(
-            {
-                "id": "remote_sha",
-                "label": "authorized development-branch push",
-                "status": "skipped",
-                "severity": "info",
-                "detail": "push verification disabled by contract",
-            }
-        )
+    else:
+        if require.get("commit", True):
+            checks.extend(_commit_checks(repo_path, spec))
+        if require.get("push", True):
+            checks.append(_push_check(repo_path, spec, branch, authorization))
+        elif authorization.get("push"):
+            checks.append(
+                {
+                    "id": "remote_sha",
+                    "label": "authorized development-branch push",
+                    "status": "skipped",
+                    "severity": "info",
+                    "detail": "push verification disabled by contract",
+                }
+            )
 
     statuses = {check["status"] for check in checks}
     if "failed" in statuses:

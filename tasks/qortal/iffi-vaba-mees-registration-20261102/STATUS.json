@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "project": "qortal/iffi-vaba-mees",
+  "task": "registration and cover-image diagnosis 2026-11-02",
+  "executing_agent": "DeepSeek",
+  "report_writer": "DeepSeek",
+  "state": "owner_validation_pending",
+  "state_revision": 1,
+  "previous_state": "implementing",
+  "updated_at_utc": "2026-11-02T08:47:00Z",
+  "next_actor": "owner",
+  "application": {
+    "repository": "iffinland/iffi-vaba-mees-QORTAL",
+    "branch": "main",
+    "commit": "64f55bf7b6f4a1a093f19413d3a985e61a9fad37"
+  },
+  "skills": {
+    "loaded": [
+      "skills/qortal/legacy-dapp-audit-repair/SKILL.md",
+      "skills/qortal/qortal-host-bridge-contract/SKILL.md",
+      "skills/shared/browser-thumbnail-generation/SKILL.md",
+      "skills/shared/workflow-v3-completion-contract/SKILL.md"
+    ],
+    "freshness": [
+      "legacy-dapp-audit-repair: candidate; source/metadata layers checked, real host reproduction not executed",
+      "qortal-host-bridge-contract: verified-reference; live gateway CSP and QDN metadata checked 2026-11-02",
+      "browser-thumbnail-generation: candidate; used only for decode/bounds analysis",
+      "workflow-v3-completion-contract: candidate; applied to this job's evidence and delivery checks"
+    ],
+    "created_or_updated": []
+  },
+  "handoff_sync": "pushed",
+  "authorization": {
+    "application_commit_push": false,
+    "handoff_commit_push": true,
+    "source": "Workflow v3 default contract; control-plane/control-plane policy automatic push to agent/*"
+  },
+  "evidence": [
+    "GitHub API repository identity: public, default_branch=main, pushed_at=2026-06-11T16:29:48Z",
+    "git clone and clean checkout at 64f55bf7b6f4a1a093f19413d3a985e61a9fad37",
+    "npm ci / npm run lint / npm run build exit 0 on an isolated clone",
+    "project_policy.resolve valid with origin -> iffinland/iffi-vaba-mees-QORTAL, agent/*, automatic push",
+    "devmonitor Registry: repo_available=True, docs_available=True, delivery_valid=True, job_eligible=True, slug=qortal-iffi-vaba-mees",
+    "Qortal read-only node status/search/status read-back; localhost 12391 and 24991 refused",
+    "live WEBSITE index/bundle compared with repository build; live is a different Qortal CMS application",
+    "source trace of 'Cover image could not be processed.' in blogService/projectService/lifeStoryService",
+    "control-plane unit tests 520 passed; validate_control_plane, validate_agent_permissions, validate_skills and validate_security passed"
+  ],
+  "missing_evidence": [
+    "real Qortal Hub/Developer Mode reproduction with the failing image file and user agent",
+    "exact source/build provenance of the live Qortal CMS bundle",
+    "owner decision on which source should publish WEBSITE/iffi vaba mees"
+  ],
+  "owner_acceptance": "pending",
+  "unattended": {
+    "enabled": true,
+    "agent": "opencode-development",
+    "guard_command": "opencode_guard.py run --timeout 7200s",
+    "timeout_seconds": 7200,
+    "stop_condition": "acceptance or timeout",
+    "checkpoints": [
+      "phase boundaries via opencode_guard.py check"
+    ],
+    "session_id": null,
+    "timed_out": false,
+    "cancellation_signal": null,
+    "resource_snapshot": "guard check PASS at start and phase boundary",
+    "acceptance_evidence": [
+      "520 unit tests passed",
+      "validators passed"
+    ]
+  },
+  "blocker": null,
+  "documentation": {
+    "read": [
+      "AGENTS.md",
+      "WORKFLOW.md",
+      "GIT-AND-HANDOFF.md",
+      "PROJECT-REGISTRY.md",
+      "ENVIRONMENT.md",
+      "docs/operations/DEV-WORKFLOW-V3.md",
+      "platforms/qortal/README.md",
+      "skills/README.md"
+    ],
+    "updated": [
+      "PROJECT-REGISTRY.md",
+      "acceptance-profiles.json",
+      "tasks/qortal/iffi-vaba-mees-registration-20261102/TASK.md",
+      "tasks/qortal/iffi-vaba-mees-registration-20261102/STATUS.json",
+      "/home/iffi/dev-workspace/docs/iffi-vaba-mees-QORTAL/audit/2026-11-02-registration-and-cover-image-diagnosis.md"
+    ],
+    "notes": "The central audit report is local-only; the control-plane handoff artifacts are committed and pushed."
+  },
+  "completion_contract": {
+    "configured": true,
+    "source": "default",
+    "required": true,
+    "path": "/home/iffi/.local/state/dev-control-plane/jobs/20261102T083541Z-register-qortal-cms-and-investig-44833fa6/evidence/TASK.md",
+    "state": "pending_final_harness_evaluation",
+    "failed_checks": [],
+    "pending_checks": [],
+    "remote": "dev-control-plane",
+    "remote_sha": "18d254aa8c94b610cdce05ef7cd0ac513c88caae"
+  },
+  "capability_harvest": {
+    "performed": true,
+    "result": "Project-specific registration and live-resource mismatch plus a source-level image-decode diagnosis. No reusable platform contract was newly proven; existing skills were used but not promoted.",
+    "skills_created_or_updated": []
+  },
+  "delivery": {
+    "commit": "18d254aa8c94b610cdce05ef7cd0ac513c88caae",
+    "pushed": true,
+    "remote": "dev-control-plane",
+    "remote_sha": "18d254aa8c94b610cdce05ef7cd0ac513c88caae",
+    "verified": true,
+    "notes": "commit/remote_sha identify the verified registration commit 18d254a; this STATUS update is the subsequent scoped handoff commit."
+  }
+}

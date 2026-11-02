@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from . import menus, render
 from .admission import (
@@ -173,6 +173,13 @@ class ControlResult:
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _attempt_number(job: Mapping[str, Any]) -> int:
+    try:
+        return int(job.get("attempt_number") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def validate_text(value: str, *, limit: int, field: str, allow_newlines: bool = False) -> str:
@@ -338,12 +345,13 @@ class ControlManager:
     def begin_cancel(self, job_id: str, user_id: int, chat_id: int) -> ControlResult:
         job_id = validate_job_id(job_id)
         job = self.jobs.job_status(job_id)
-        if str(job.get("state")) != "RUNNING" or not job.get("worker_alive"):
-            raise ControlError(
-                f"job {job_id} is not RUNNING with a live worker; nothing was signalled"
-            )
+        if str(job.get("state")) != "RUNNING":
+            raise ControlError(f"job {job_id} is not RUNNING; nothing was signalled")
         nonce = self.state.create_confirmation(
-            user_id, chat_id, "cancel_job", {"job_id": job_id}
+            user_id,
+            chat_id,
+            "cancel_job",
+            {"job_id": job_id, "attempt_number": _attempt_number(job)},
         )
         return ControlResult(
             render.cancel_preview_text(job),
@@ -354,6 +362,20 @@ class ControlManager:
     def perform_cancel(self, payload: dict[str, Any], decision) -> ControlResult:
         job_id = validate_job_id(_text(payload.get("job_id")))
         job = self.jobs.job_status(job_id)
+        expected_attempt = payload.get("attempt_number")
+        if expected_attempt is None:
+            raise ControlError(
+                "this cancellation confirmation has no attempt identity; open the job again"
+            )
+        try:
+            expected = int(expected_attempt)
+        except (TypeError, ValueError) as exc:
+            raise ControlError("the cancellation confirmation is malformed") from exc
+        if _attempt_number(job) != expected:
+            raise ControlError(
+                "this cancellation confirmation belongs to an earlier attempt; "
+                "open the job again"
+            )
         key = self.admission.project_key_for_job(job)
         try:
             with self.admission.reserve(key):
@@ -767,8 +789,8 @@ class ControlManager:
     def begin_resume(self, job_id: str, user_id: int, chat_id: int) -> ControlResult:
         job_id = validate_job_id(job_id)
         job = self.jobs.job_status(job_id)
-        if str(job.get("state")) == "RUNNING" and job.get("worker_alive"):
-            raise ControlError("this job is RUNNING with a live worker; it cannot be resumed")
+        if str(job.get("state")) == "RUNNING":
+            raise ControlError("this job is RUNNING; cancel it before resuming")
         data = {
             "job_id": job_id,
             "prompt": None,
@@ -899,8 +921,8 @@ class ControlManager:
 
     def _resume_preconditions(self, job: dict, request: ResumeRequest) -> None:
         state = str(job.get("state"))
-        if state == "RUNNING" and job.get("worker_alive"):
-            raise ControlError("this job is RUNNING with a live worker; it cannot be resumed")
+        if state == "RUNNING":
+            raise ControlError("this job is RUNNING; cancel it before resuming")
         if state == "SUCCESS" and not request.force:
             raise ControlError(
                 "this job already succeeded; enable Force rerun only if another attempt is intended"
@@ -994,13 +1016,11 @@ class ControlManager:
 
     def _job_menu(self, job_id: str, decision) -> dict:
         ref = self.state.get_or_create_job_ref(job_id, int(decision.chat_id or 0))
-        resumable = True
+        resumable = False
         cancellable = False
         try:
             job = self.jobs.job_status(job_id)
-            running = str(job.get("state")) == "RUNNING" and bool(job.get("worker_alive"))
-            resumable = not running
-            cancellable = running
+            resumable, cancellable = menus.job_action_flags(job)
         except JobError:
             pass
         return menus.job_menu(

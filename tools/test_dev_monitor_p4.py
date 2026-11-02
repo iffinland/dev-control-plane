@@ -837,7 +837,7 @@ class ControlFlowIntegrationTests(P4Base):
             state="FAILED",
         )
         write_fake_jobs(self.state_root, [job])
-        payload = {"job_id": job["id"]}
+        payload = {"job_id": job["id"], "attempt_number": job["attempt_number"]}
         with self.assertRaises((JobError, ControlError)):
             self.control.perform_cancel(payload, type("D", (), {"chat_id": CHAT_ID})())
         # The monitor itself never signals; the additive CLI revalidated and

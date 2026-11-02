@@ -7,9 +7,28 @@ re-authorizing the caller.
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 MAX_CALLBACK_BYTES = 64
+RUNNING_JOB_STATES = frozenset({"RUNNING"})
+RESUMABLE_JOB_STATES = frozenset(
+    {"SUCCESS", "FAILED", "BLOCKED", "TIMEOUT", "CANCELLED"}
+)
+
+
+def job_action_flags(job: Mapping[str, object]) -> tuple[bool, bool]:
+    """Resolve the supported job actions from the durable job state.
+
+    Raw ``dev start``/``dev resume`` records do not include the computed
+    ``worker_alive`` field, so action availability must not depend on it. A
+    RUNNING job always exposes cancellation; Workflow v3 re-verifies the exact
+    guard identity before signalling and reconciles a disappeared worker without
+    sending a signal. Only terminal states expose Resume, so a live attempt
+    cannot be duplicated. Callers still gate every action on control mode.
+    """
+
+    state = str(job.get("state") or "").upper()
+    return (state in RESUMABLE_JOB_STATES, state in RUNNING_JOB_STATES)
 
 
 def button(text: str, callback_data: str) -> dict:

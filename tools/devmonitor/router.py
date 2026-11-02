@@ -755,14 +755,12 @@ class Router:
             self._send(chat_id, text, markup)
 
     def _job_menu_for(self, payload: dict, ref: str) -> dict:
-        running = str(payload.get("state")) == "RUNNING" and bool(
-            payload.get("worker_alive")
-        )
+        resumable, cancellable = menus.job_action_flags(payload)
         return menus.job_menu(
             ref,
             control=self.config.control_enabled,
-            resumable=not running,
-            cancellable=running,
+            resumable=resumable,
+            cancellable=cancellable,
         )
 
     def _job_status_text(self, payload: dict) -> str:

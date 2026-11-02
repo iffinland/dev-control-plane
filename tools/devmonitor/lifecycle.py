@@ -228,13 +228,13 @@ class LifecycleNotifier:
         chat_id = self.config.notification_chat_id
         ref = self.state.get_or_create_job_ref(job_id, chat_id) if job_id else ""
         control = self.config.control_enabled
-        running = str(job.get("state")) == "RUNNING" and job.get("worker_alive") is True
+        resumable, cancellable = menus.job_action_flags(job)
         markup = (
             menus.job_menu(
                 ref,
                 control=control,
-                resumable=not running,
-                cancellable=running,
+                resumable=resumable,
+                cancellable=cancellable,
             )
             if ref
             else menus.back_to_main()

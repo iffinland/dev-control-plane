@@ -345,6 +345,138 @@ class ContinuationTests(MobileBase):
         self.assertEqual(self.invocations(), [])
 
 
+class JobActionButtonTests(MobileBase):
+    def _open_labels(self, state: str, *, drop_worker_alive: bool = False) -> list[str]:
+        job = make_job(
+            f"20261102T060000Z-action-{state.lower()}-abcdef12",
+            state=state,
+            title=f"{state} action job",
+            repo=str(self.project_repo),
+            notifications_enabled=False,
+        )
+        if drop_worker_alive:
+            # Raw dev start/resume output does not include the computed field.
+            job.pop("worker_alive", None)
+        write_fake_jobs(self.state_root, [job])
+        self.send(f"/job {job['id']}")
+        return [
+            item["text"]
+            for row in self.api.sent[-1]["markup"]["inline_keyboard"]
+            for item in row
+        ]
+
+    def test_running_job_shows_cancel_and_never_resume(self) -> None:
+        for drop_worker_alive in (False, True):
+            with self.subTest(drop_worker_alive=drop_worker_alive):
+                labels = self._open_labels(
+                    "RUNNING", drop_worker_alive=drop_worker_alive
+                )
+                self.assertIn("Cancel job", labels)
+                self.assertNotIn("Resume", labels)
+                self.assertIn("Queue instruction", labels)
+
+    def test_terminal_states_show_resume_and_never_cancel(self) -> None:
+        for state in ("SUCCESS", "FAILED", "BLOCKED", "CANCELLED", "TIMEOUT"):
+            with self.subTest(state=state):
+                labels = self._open_labels(state)
+                self.assertIn("Resume", labels)
+                self.assertNotIn("Cancel job", labels)
+                self.assertIn("Queue instruction", labels)
+
+
+class LifecycleJobActionTests(MobileBase):
+    def _raw_running_job(self) -> dict:
+        job = make_job(
+            "20261102T060000Z-lifecycle-actions-12345678",
+            state="RUNNING",
+            title="Lifecycle action job",
+            repo=str(self.project_repo),
+            notifications_enabled=False,
+        )
+        # This is the shape returned by dev start/resume before status_payload.
+        job.pop("worker_alive", None)
+        write_fake_jobs(self.state_root, [job])
+        return job
+
+    def _sent_labels(self) -> list[str]:
+        return [
+            item["text"]
+            for row in self.api.sent[-1]["markup"]["inline_keyboard"]
+            for item in row
+        ]
+
+    def test_started_notification_uses_cancel_for_raw_running_job(self) -> None:
+        job = self._raw_running_job()
+        self.notifier.notify_started(job, project_id="demo/project")
+        labels = self._sent_labels()
+        self.assertIn("Cancel job", labels)
+        self.assertNotIn("Resume", labels)
+        self.assertIn("Queue instruction", labels)
+
+    def test_resumed_notification_uses_cancel_for_raw_running_job(self) -> None:
+        job = self._raw_running_job()
+        self.notifier.notify_resumed(job)
+        labels = self._sent_labels()
+        self.assertIn("Cancel job", labels)
+        self.assertNotIn("Resume", labels)
+        self.assertIn("Queue instruction", labels)
+
+
+class CancellationSafetyTests(MobileBase):
+    def _running_job(self, *, attempts: int = 1) -> dict:
+        job = make_job(
+            "20261102T060000Z-cancel-safety-abcdef12",
+            state="RUNNING",
+            title="Cancel safety job",
+            repo=str(self.project_repo),
+            attempts=attempts,
+            notifications_enabled=False,
+        )
+        write_fake_jobs(self.state_root, [job])
+        return job
+
+    def _cancel_invocations(self) -> list[dict]:
+        return [item for item in self.invocations() if item["args"][:1] == ["cancel"]]
+
+    def test_confirm_replay_invokes_cancel_once(self) -> None:
+        job = self._running_job()
+        self.send(f"/cancel {job['id']}")
+        confirm = find_button(
+            self.api.sent[-1]["markup"], "Confirm: Cancel running job"
+        )
+        self.click(confirm)
+        self.click(confirm)
+        self.assertEqual(len(self._cancel_invocations()), 1)
+        self.assertIn("expired or already used", self.api.edited[-1]["text"])
+
+    def test_stale_confirmation_cannot_cancel_a_later_attempt(self) -> None:
+        job = self._running_job(attempts=1)
+        self.send(f"/cancel {job['id']}")
+        confirm = find_button(
+            self.api.sent[-1]["markup"], "Confirm: Cancel running job"
+        )
+        # Simulate the same job being resumed to attempt #2 before the stale
+        # confirmation is pressed.
+        write_fake_jobs(self.state_root, [self._running_job(attempts=2)])
+        self.click(confirm)
+        self.assertIn("earlier attempt", self.api.edited[-1]["text"])
+        self.assertEqual(self._cancel_invocations(), [])
+
+    def test_stale_job_button_cannot_cancel_a_finished_job(self) -> None:
+        job = self._running_job()
+        self.send(f"/job {job['id']}")
+        cancel = find_button(self.api.sent[-1]["markup"], "Cancel job")
+        finished = dict(job)
+        finished["state"] = "CANCELLED"
+        finished["worker_alive"] = False
+        expected = "2026-11-02T06:10:00Z"
+        finished["ended_at"] = expected
+        write_fake_jobs(self.state_root, [finished])
+        self.click(cancel)
+        self.assertIn("not RUNNING", self.api.edited[-1]["text"])
+        self.assertEqual(self._cancel_invocations(), [])
+
+
 class ResultSummaryTests(MobileBase):
     def _record(self, *, manual_verified: bool = False, state: str = "SUCCESS") -> dict:
         verification = {

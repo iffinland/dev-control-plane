@@ -736,7 +736,7 @@ criteria. Acceptance commands are intentionally executed by Workflow v3 with
 
 Resume is available for terminal or reconciled jobs. The monitor:
 
-- refuses if Workflow v3 reports the job `RUNNING` with a live worker;
+- refuses if Workflow v3 reports the job `RUNNING`; the owner must cancel it first;
 - refuses if a different job in the same project is active;
 - shows the job ID, title, attempt number, session ID, current blocker and any
   queued owner messages;
@@ -755,11 +755,11 @@ separately confirmed option.
 
 ### 5.7 Cancelling a job
 
-The current system has no cancel command. The proposed safe design is an additive
-`dev cancel <job-id> --json` in Workflow v3, implemented and tested in a separate
-authorized task:
+Cancellation uses the additive, tested `dev cancel <job-id> --json` in Workflow
+v3:
 
-1. Load the job and refuse unless it is `RUNNING` with a live worker.
+1. Load the job and refuse unless it is `RUNNING`. If the worker has already
+   disappeared, reconcile the job without sending a signal.
 2. Read the recorded `guard_pid`, `worker_pid` and, when present, attempt
    metadata.
 3. Verify `/proc/<guard_pid>/cmdline` identifies the Workflow v3 guard and the
@@ -776,9 +776,13 @@ authorized task:
    command criteria, preserve the working tree and session, write the report and
    notify if configured.
 
-Until that command exists and passes its tests, the monitor must not expose a
-cancel button in production. A monitor-side direct signal is explicitly rejected:
-it would duplicate dangerous process logic outside the tested guard boundary.
+The monitor exposes Cancel only in control mode and only for a `RUNNING` job.
+The monitor itself never signals a process: the tested guard boundary owns
+identity verification and signalling. Action availability is derived from the
+durable state, not from a computed `worker_alive` field that raw start/resume
+output does not include. The confirmation nonce is single-use and bound to the
+job and attempt, so a stale message or replayed callback cannot cancel a later
+attempt or cancel twice.
 
 Cancellation is not "delete the job". A cancelled job remains resumable with
 `dev resume`, exactly like a timeout or a failed attempt.

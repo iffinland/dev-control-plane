@@ -400,8 +400,12 @@ Running jobs remain independent of the monitor lifecycle.
 | `/help` | Commands, active mode and safety notes |
 
 Job actions are Refresh, Run log (preview), Worker log (preview), Report,
-Download report and, in control mode, Resume/Continue for a resumable job, Cancel
-job for a RUNNING job with a live worker, and Queue instruction for any job. Log
+Download report and, in control mode, Resume/Continue for a terminal job, Cancel
+job for a RUNNING job, and Queue instruction for any job. Action availability is
+derived from the durable job state, not from a computed liveness field that raw
+start/resume output does not contain. A RUNNING job therefore never offers
+Resume, and a terminal `SUCCESS`, `FAILED`, `BLOCKED`, `TIMEOUT` or `CANCELLED`
+job never offers Cancel. Log
 previews and log downloads are separate actions; the download buttons use the
 supported `dlr`/`dlw` callbacks. Document actions are open directory, preview
 text, download a redacted text copy and, only when explicitly enabled, a
@@ -542,8 +546,8 @@ job view -> Resume
 -> RUNNING: RESUMED notification, queued messages marked delivered, same job view
 ```
 
-A live RUNNING job is refused. A SUCCESS job requires the explicit "Allow new
-attempt" option; this prevents accidental repetition while keeping the existing
+A RUNNING job is refused and must be cancelled first. A SUCCESS job requires the
+explicit "Allow new attempt" option; this prevents accidental repetition while keeping the existing
 `--force` protection. An unknown session requires the explicit New session
 option. `--force` and `--new-session` are never added silently. The composed
 instruction is passed over standard input, not the process argument list. Queued
@@ -553,9 +557,9 @@ resume keeps them queued.
 ### 6.3 Cancel flow
 
 ```text
-job view -> Cancel job (only RUNNING with a live worker)
+job view -> Cancel job (RUNNING only)
 -> preview: exact job, attempt, worker/guard PIDs, safety explanation
--> one-time Confirm
+-> one-time Confirm bound to that job and attempt
 -> per-project admission lock
 -> dev cancel <job-id> --json
 -> Workflow v3 re-verifies /proc/<guard-pid>/cmdline
@@ -570,7 +574,10 @@ The monitor never sends a signal itself and never escalates to a name-based kill
 If the guard survives the bounded grace period, Workflow v3 reports
 `cancel_status: pending` and the monitor shows that result. A terminal job cannot
 be cancelled. If the worker has already disappeared, Workflow v3 reconciles the
-job without sending a signal.
+job without sending a signal. The confirmation nonce is single-use and bound to
+the job ID and attempt number, so a stale preview or replayed callback cannot
+cancel a later attempt or run the cancellation twice; the CLI re-checks the
+current state and exact guard identity.
 
 ### 6.4 Queued owner instructions
 
@@ -732,7 +739,7 @@ are written in one transaction instead of two separate commits.
 | Start refused: project busy | A job is running in that project. Wait for it to finish and start again. The monitor queues owner instructions for a job, not new starts; there is no scheduler. |
 | Start refused: global guard busy | Another heavyweight execution is running. The existing guard allows one at a time; wait for it to finish. |
 | Start refused: BLOCKED | Workflow v3 guard preflight refused. Read the sanitized blocker; no STARTED is sent. |
-| Resume refused: live RUNNING | The job has a live worker. Inspect it instead of starting a duplicate attempt. |
+| Resume refused: RUNNING | Cancel the running job first. Inspect it instead of starting a duplicate attempt. |
 | Resume refused: unknown session | Enable the explicit New session toggle after confirming session continuity is being abandoned. |
 | Resume refused: already SUCCESS | Enable "Allow new attempt" only if another attempt is intended. |
 | Duplicate STARTED/RESUMED | Inspect `event_cursors` and `notification_log`; delete monitor state only, never job state. |
@@ -745,7 +752,7 @@ are written in one transaction instead of two separate commits.
 | Callback spinner expired | The action still runs; the audit records `callback_ack` with `stale` or `transient`. Inspect the journal for `ack:batch` latency, not the job action. |
 | `update_transient` in audit | An outbound Telegram call failed after the action was attempted. The offset advanced and the same update is not replayed; repeat the read-only action if its response was lost. |
 | Document refused | Absolute paths, `..`, backslashes, percent encodings, hidden names, symlinks and sensitive names are refused by design. |
-| Cancel refused | The job is not RUNNING with a live worker, or the guard identity no longer matches. Inspect `/status`; never signal by name. |
+| Cancel refused | The job is no longer RUNNING, the confirmation belongs to an earlier attempt, or the guard identity no longer matches. Inspect `/status`; never signal by name. |
 | Cancel pending | Workflow v3 sent SIGTERM to the verified guard but it survived the grace period. No escalation is attempted; inspect status or retry `/cancel <job>`. |
 | Instruction is not live | Queued instructions are delivered only on the next resume by design. Open Resume to deliver them. |
 | `Request failed: unknown job action` | A log download used an unsupported callback. The supported log download actions are `dlr` (run) and `dlw` (worker); previews use `lr`/`lw`. |

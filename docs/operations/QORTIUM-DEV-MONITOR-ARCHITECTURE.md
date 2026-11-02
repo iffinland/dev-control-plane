@@ -554,7 +554,7 @@ surface and are never a substitute for authorization.
 | --- | --- | --- |
 | Main menu | `/start`, `/menu` | Jobs, Projects, Documents, Status, Help |
 | Jobs | `/jobs` | Active jobs first, then recent terminal jobs; project filter; pagination |
-| Job | job button | State, timing, attempt, PIDs, session, pending criteria, blocker, issues, queued messages; actions |
+| Job | job button | State, project, active-attempt and total wall-clock timing, attempt, PIDs, session, pending criteria, blocker, issues, result summary, queued messages; actions |
 | Projects | `/projects` | Registered projects with platform, repository status and docs link |
 | Documents | `/docs` | Allowlisted document roots, then directories and files |
 | Status | `/status [job]` | Compact status text; same renderer as the job view |
@@ -564,9 +564,10 @@ Suggested job actions:
 
 - Refresh
 - Auto-refresh on/off
-- Logs (run / worker)
+- Logs (run / worker) preview
+- Log download (separate `dlr`/`dlw` callbacks)
 - Report
-- Resume
+- Resume/Continue
 - Cancel (only when the cancel command exists and control mode is enabled)
 - Accept manual criteria (optional; explicit confirmation)
 - Queue owner instruction
@@ -744,8 +745,8 @@ Resume is available for terminal or reconciled jobs. The monitor:
 - invokes `dev resume <job-id> --json` with optional `--timeout` and `--prompt`;
 - never uses `--new-session` unless the owner explicitly confirms that session
   continuity is being abandoned;
-- never uses `--force` unless the owner explicitly confirms a successful job
-  should run again;
+- never uses `--force` unless the owner explicitly enables the clearly labelled
+  "Allow new attempt" option for a successful job;
 - sends `RESUMED` after the CLI returns a new attempt.
 
 If the session ID is unknown, v3 already refuses to attach to a random session.

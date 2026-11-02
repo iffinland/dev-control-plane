@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
-from . import auth, menus, render
+from . import auth, menus, render, summary
 from .admission import AdmissionManager
 from .api import (
     TelegramApi,
@@ -733,8 +734,20 @@ class Router:
         page = max(0, min(int(page), total_pages - 1))
         start = page * JOBS_PAGE_SIZE
         selected = jobs[start : start + JOBS_PAGE_SIZE]
-        refs = [(self.state.get_or_create_job_ref(job["id"], chat_id), _job_button(job)) for job in selected]
-        text = render.jobs_list_text(selected, page=page, total_pages=total_pages)
+        project_by_job = self._project_labels(jobs)
+        refs = [
+            (
+                self.state.get_or_create_job_ref(job["id"], chat_id),
+                render.job_button_label(job, project_by_job.get(str(job.get("id")))),
+            )
+            for job in selected
+        ]
+        text = render.jobs_list_text(
+            selected,
+            page=page,
+            total_pages=total_pages,
+            projects=project_by_job,
+        )
         markup = menus.jobs_menu(refs, page=page, total_pages=total_pages)
         if callback:
             self._edit(callback, decision, text, markup)
@@ -757,7 +770,19 @@ class Router:
             pending = self.state.count_pending_owner_messages(str(payload.get("id")))
         except Exception:  # noqa: BLE001 - status rendering must not fail
             pending = 0
-        return render.job_status_text(payload, queued_instructions=pending)
+        project = self._project_labels([payload]).get(str(payload.get("id")))
+        record: dict | None = None
+        try:
+            record = self.jobs.job_record(str(payload.get("id")))
+        except JobError:
+            record = None
+        result_summary = summary.summary_text(payload, record, project=project)
+        return render.job_status_text(
+            payload,
+            queued_instructions=pending,
+            project=project,
+            summary=result_summary,
+        )
 
     def _send_job(self, chat_id: int, ref: str, job_id: str, decision: auth.AuthDecision) -> None:
         payload = self.jobs.job_status(job_id)
@@ -1008,6 +1033,30 @@ class Router:
         self._edit(callback, decision, "Redacted text copy sent.", menus.back_to_main())
 
     # ---- job helpers -------------------------------------------------------------
+    def _project_labels(self, jobs: Sequence[dict]) -> dict[str, str]:
+        """Map job IDs to registered project IDs using the validated registry."""
+
+        try:
+            projects = list(self.registry.load())
+        except RegistryError:
+            return {}
+        by_repo = {
+            str(project.repo_real): project.project_id
+            for project in projects
+            if project.repo_real is not None
+        }
+        labels: dict[str, str] = {}
+        for job in jobs:
+            repo = str(job.get("repo") or "")
+            try:
+                real = str(Path(repo).expanduser().resolve())
+            except (OSError, ValueError):
+                real = repo
+            project_id = by_repo.get(real)
+            if project_id:
+                labels[str(job.get("id") or "")] = project_id
+        return labels
+
     def _resolve_job(self, identifier: str, chat_id: int) -> tuple[str, str]:
         ref = self.state.resolve_job_ref(identifier, chat_id)
         if ref:
@@ -1132,13 +1181,6 @@ class Router:
             update_id=decision.update_id,
             detail=self._safe(detail, 500) if detail else "",
         )
-
-
-def _job_button(job: dict) -> str:
-    state = str(job.get("state") or "UNKNOWN")
-    identifier = str(job.get("id") or "")
-    short = identifier[:8] if len(identifier) > 8 else identifier
-    return f"{state} {short}"
 
 
 def _int_arg(values: list[str], index: int, default: int) -> int:

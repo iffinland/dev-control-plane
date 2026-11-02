@@ -65,7 +65,10 @@ def job_menu(
 ) -> dict:
     rows = [
         [button("Refresh", f"j:{ref}:r"), button("Report", f"j:{ref}:p")],
-        [button("Run log", f"j:{ref}:lr"), button("Worker log", f"j:{ref}:lw")],
+        [
+            button("Preview run log", f"j:{ref}:lr"),
+            button("Preview worker log", f"j:{ref}:lw"),
+        ],
         [button("Download report", f"j:{ref}:dr")],
     ]
     if control:
@@ -84,8 +87,13 @@ def job_menu(
 def log_menu(ref: str, kind: str) -> dict:
     return keyboard(
         [
-            [button("Refresh", f"j:{ref}:{'lr' if kind == 'run' else 'lw'}")],
-            [button("Download log", f"j:{ref}:d{'r' if kind == 'run' else 'w'}")],
+            [button("Refresh preview", f"j:{ref}:{'lr' if kind == 'run' else 'lw'}")],
+            [
+                button(
+                    "Download log",
+                    f"j:{ref}:{'dlr' if kind == 'run' else 'dlw'}",
+                )
+            ],
             [button("Back to job", f"j:{ref}"), button("Main menu", "m")],
         ]
     )
@@ -162,6 +170,22 @@ def start_project_menu(wizard_id: str, projects: Sequence[object]) -> dict:
     return keyboard(rows)
 
 
+def start_runtime_menu(wizard_id: str) -> dict:
+    rows = [
+        [
+            button("1h", f"w:{wizard_id}:t:3600"),
+            button("2h", f"w:{wizard_id}:t:7200"),
+        ],
+        [
+            button("4h", f"w:{wizard_id}:t:14400"),
+            button("8h", f"w:{wizard_id}:t:28800"),
+        ],
+        [button("Advanced options", f"w:{wizard_id}:a")],
+        [button("Cancel", f"w:{wizard_id}:cancel")],
+    ]
+    return keyboard(rows)
+
+
 def wizard_cancel_menu(wizard_id: str) -> dict:
     return keyboard(
         [[button("Cancel wizard", f"w:{wizard_id}:cancel"), button("Main menu", "m")]]
@@ -192,7 +216,10 @@ def resume_preview_menu(
                 f"New session: {'on' if new_session else 'off'}",
                 f"w:{wizard_id}:ns",
             ),
-            button(f"Force rerun: {'on' if force else 'off'}", f"w:{wizard_id}:force"),
+            button(
+                f"Allow new attempt: {'on' if force else 'off'}",
+                f"w:{wizard_id}:force",
+            ),
         ],
         [button("Back to job", f"j:{job_ref}"), button("Cancel", f"w:{wizard_id}:cancel")],
     ]

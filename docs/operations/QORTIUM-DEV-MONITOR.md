@@ -1,8 +1,8 @@
 # Qortium Dev Monitor — P4 operations and activation
 
 Status: **P1 read-only observer, P2 authorized control, P3 cancellation plus
-queued owner messaging and P4 hardening are implemented. Default mode remains
-`read_only`; owner activation is manual.** A production systemd user unit is
+queued owner messaging, P4 hardening and the mobile-first start/result UX are
+implemented. Default mode remains `read_only`; owner activation is manual.** A production systemd user unit is
 stored in this repository. This task did not install, enable, restart or start
 it, and it did not modify the owner-local `telegram.json`.
 
@@ -30,17 +30,24 @@ Read-only mode (the default):
 
 Control mode (explicit owner configuration only):
 
-- Registered-project selection for job start.
-- Start wizard: title, prompt, mandatory acceptance criteria, timeout, optional
-  branch label, exact confirmation preview and one-time confirmation.
+- Registered-project selection for job start with three normal inputs: project,
+  task description and maximum runtime (1h, 2h, 4h or 8h). The title is derived
+  automatically. Acceptance criteria, context files and skills are loaded from
+  the project's verified acceptance profile; no phone-typed criteria, branch,
+  skill, agent or model inputs are required.
+- Optional advanced start options remain available for explicit acceptance
+  commands, a custom timeout or a branch label. They are separate from the
+  normal flow and never replace the profile silently.
+- Exact confirmation preview and one-time confirmation.
 - Fixed-shape `dev start` invocation with `--no-notify --json` and the prompt on
   standard input. The monitor never passes `--contract-file` or an authorization
   weakening flag: every monitor-started job receives the CLI's mandatory default
   completion contract. Push, protected-branch and merge authorization therefore
   remain separate owner decisions; without them a completed job is truthfully
   reported as `BLOCKED`, not `SUCCESS`.
-- Resume wizard with optional instruction, explicit `--new-session`/`--force`
-  toggles and one-time confirmation.
+- Continuation flow with optional instruction and explicit new-session or
+  another-attempt options. A completed (SUCCESS) job needs the clearly labelled
+  "Allow new attempt" option before it can continue.
 - Per-project admission locking plus global execution-guard awareness. Only one
   active monitor-managed job is admitted per project, and a running job anywhere
   is reported as global-guard busy rather than starting a doomed attempt.
@@ -392,12 +399,20 @@ Running jobs remain independent of the monitor lifecycle.
 | `/lock` | Re-lock control actions |
 | `/help` | Commands, active mode and safety notes |
 
-Job actions are Refresh, Run log, Worker log, Report, Download report and, in
-control mode, Resume for a resumable job, Cancel job for a RUNNING job with a live
-worker, and Queue instruction for any job. Document actions are open directory,
-preview text, download a redacted text copy and, only when explicitly enabled, a
+Job actions are Refresh, Run log (preview), Worker log (preview), Report,
+Download report and, in control mode, Resume/Continue for a resumable job, Cancel
+job for a RUNNING job with a live worker, and Queue instruction for any job. Log
+previews and log downloads are separate actions; the download buttons use the
+supported `dlr`/`dlw` callbacks. Document actions are open directory, preview
+text, download a redacted text copy and, only when explicitly enabled, a
 confirmed binary download. Callback data contains opaque server-side references,
 never paths, job IDs, prompts or user IDs.
+
+The jobs list identifies each button by a readable, shortened task title instead
+of status plus job ID. Each summary shows state, project, the latest attempt and
+active-attempt/total wall-clock time, plus the job date. Job IDs remain in the
+detailed job view. Active attempt runtime is shown separately from total elapsed
+time so an overnight pause is not mistaken for development time.
 
 Refresh always has visible feedback. When Telegram reports that the status text
 and buttons are unchanged, the monitor sends a short "No changes" message rather
@@ -409,11 +424,14 @@ place whenever it does change.
 ```text
 /start_job
 -> select registered project (server-side index)
--> title
--> prompt
--> at least one criterion: "Label::command" or "manual: text"
--> timeout (8h maximum)
--> optional branch label or /skip
+-> task description (plain language)
+-> maximum runtime: 1h / 2h / 4h / 8h (per attempt)
+   (optional Advanced options: explicit criteria, custom timeout, branch label)
+-> resolve the project's verified acceptance profile
+   -> .workflow/acceptance.json in the project, or
+      acceptance-profiles.json next to the project registry
+   -> fail closed with an explanation if no safe profile exists
+-> derive a readable title and load discovered instructions/skills/docs
 -> exact confirmation preview
 -> one-time Confirm
 -> per-project admission lock
@@ -427,6 +445,15 @@ place whenever it does change.
 -> BLOCKED/refusal: sanitized reason, no STARTED
 ```
 
+Acceptance profiles are explicit and never guessed. The normal flow does not
+invent a command from a filename, README or package manager. A missing, empty,
+malformed or path-escaping profile refuses the start before any CLI invocation.
+The project-local profile is preferred; the central file is the fallback. Each
+successful profile also contributes the control-plane contract, matching platform
+pack, project `AGENTS.md` (when present), `skills/README.md` and its listed
+skills/docs to the task prompt. The agent still performs the normal skill
+freshness check against current source and runtime.
+
 The monitor and direct `dev start` calls resolve the same policy from
 [PROJECT-REGISTRY.md](../../PROJECT-REGISTRY.md). A missing, ambiguous,
 non-GitHub or mismatched remote is refused; the monitor never selects
@@ -438,11 +465,68 @@ check. A green build, a passing test suite or an OpenCode exit `0` is never
 reported as `SUCCESS` when task-start evidence, the scoped commit, the
 authorized development-branch push or the verified remote SHA is missing.
 
+The job view also renders a concise, evidence-based result summary:
+
+- **Technical completion** is `VERIFIED`, `NOT VERIFIED` or `PENDING` from the
+  acceptance results and completion contract.
+- **Functional outcome** is `VERIFIED` only when explicit owner/manual
+  acceptance is recorded. Otherwise it is `NOT VERIFIED`, or `UNRESOLVED` when
+  a blocker or unresolved issue remains.
+- It also shows the actual changes, acceptance counts, GitHub delivery state and
+  unresolved items.
+
+A passing build, passing acceptance commands and a pushed commit are technical
+evidence only. They are never presented as proof that the owner's underlying bug
+is fixed. Full reports and logs remain available behind their existing actions.
+
 The monitor uses only the configured agent/model allowlists, a registered
 repository realpath, an integer timeout capped at eight hours and argument arrays
 with `shell=False`. Acceptance commands remain the one intentional shell surface:
 Workflow v3 runs them with `bash` in the selected repository, and the preview
 shows them before confirmation.
+
+### 6.1.1 Acceptance profiles and discovered context
+
+A profile has this shape (project-local paths are relative to the project
+checkout; central paths are relative to the control-plane checkout):
+
+```json
+{
+  "version": 1,
+  "commands": [
+    {"label": "Unit tests", "command": "npm test", "timeout_seconds": 1800},
+    {"label": "Build", "command": "npm run build", "timeout_seconds": 1800}
+  ],
+  "manual": [],
+  "docs": ["docs/ARCHITECTURE.md"],
+  "skills": ["skills/shared/workflow-v3-completion-contract/SKILL.md"]
+}
+```
+
+- `.workflow/acceptance.json` in the project is preferred.
+- `acceptance-profiles.json` next to `PROJECT-REGISTRY.md` is the central
+  fallback, keyed by project ID.
+- Paths must stay inside their root; absolute paths, `..` traversal, missing
+  files and hidden path segments are refused. A profile with no commands and no
+  manual criteria is invalid.
+- Profiles only select acceptance commands and context. They do not weaken the
+  mandatory completion contract, branch policy, push authorization, secrets
+  checks or confirmation gates.
+
+Example central entry:
+
+```json
+{
+  "profiles": {
+    "qortium/example": {
+      "commands": ["npm run test", "npm run build"],
+      "manual": [],
+      "docs": ["platforms/qortium/README.md"],
+      "skills": ["skills/shared/workflow-v3-completion-contract/SKILL.md"]
+    }
+  }
+}
+```
 
 ### 6.2 Resume flow
 
@@ -450,7 +534,7 @@ shows them before confirmation.
 job view -> Resume
 -> preview: current state, attempt, session, blocker, options
 -> optional instruction (composed and passed over stdin)
--> optional explicit New session or Force rerun toggle
+-> optional explicit New session or Allow new attempt option
 -> one-time Confirm
 -> per-project admission and global-guard check
 -> compose base instruction + queued owner messages
@@ -458,12 +542,13 @@ job view -> Resume
 -> RUNNING: RESUMED notification, queued messages marked delivered, same job view
 ```
 
-A live RUNNING job is refused. A SUCCESS job requires the explicit Force rerun
-toggle. An unknown session requires the explicit New session toggle. `--force`
-and `--new-session` are never added silently. The composed instruction is passed
-over standard input, not the process argument list. Queued messages are marked
-delivered only after Workflow v3 accepts the resume; a failed resume keeps them
-queued.
+A live RUNNING job is refused. A SUCCESS job requires the explicit "Allow new
+attempt" option; this prevents accidental repetition while keeping the existing
+`--force` protection. An unknown session requires the explicit New session
+option. `--force` and `--new-session` are never added silently. The composed
+instruction is passed over standard input, not the process argument list. Queued
+messages are marked delivered only after Workflow v3 accepts the resume; a failed
+resume keeps them queued.
 
 ### 6.3 Cancel flow
 
@@ -649,7 +734,7 @@ are written in one transaction instead of two separate commits.
 | Start refused: BLOCKED | Workflow v3 guard preflight refused. Read the sanitized blocker; no STARTED is sent. |
 | Resume refused: live RUNNING | The job has a live worker. Inspect it instead of starting a duplicate attempt. |
 | Resume refused: unknown session | Enable the explicit New session toggle after confirming session continuity is being abandoned. |
-| Resume refused: already SUCCESS | Enable the explicit Force rerun toggle only if another attempt is intended. |
+| Resume refused: already SUCCESS | Enable "Allow new attempt" only if another attempt is intended. |
 | Duplicate STARTED/RESUMED | Inspect `event_cursors` and `notification_log`; delete monitor state only, never job state. |
 | Service does not start | Run `systemctl --user status ...` and `journalctl --user -u ... -n 100 --no-pager`; then run `dev_monitor.py check`. |
 | `75` duplicate instance | Stop the foreground monitor or the other service instance first. Only one process may hold the lock. |
@@ -663,6 +748,7 @@ are written in one transaction instead of two separate commits.
 | Cancel refused | The job is not RUNNING with a live worker, or the guard identity no longer matches. Inspect `/status`; never signal by name. |
 | Cancel pending | Workflow v3 sent SIGTERM to the verified guard but it survived the grace period. No escalation is attempted; inspect status or retry `/cancel <job>`. |
 | Instruction is not live | Queued instructions are delivered only on the next resume by design. Open Resume to deliver them. |
+| `Request failed: unknown job action` | A log download used an unsupported callback. The supported log download actions are `dlr` (run) and `dlw` (worker); previews use `lr`/`lw`. |
 | Queued instruction remains queued | The resume was refused or failed. Fix the refusal and resume again; the queue is preserved. |
 | `Rate limit exceeded` | The per-user or per-chat action budget was reached. Wait for the rolling minute to pass; do not raise the limit just to bypass an unexpected burst. |
 | `start rate limit reached` | The hourly monitor-start cap was reached. Wait, or change `max_starts_per_hour` deliberately and restart the monitor. |

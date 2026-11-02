@@ -7,8 +7,9 @@ the read-only buttons instead.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from .redact import redact_text
 
@@ -126,6 +127,31 @@ def _short_id(value: object, limit: int = 8) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def short_title(value: object, limit: int = 42) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "(untitled)"
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit + 1)
+    if cut < max(12, limit // 2):
+        cut = limit
+    return text[:cut].rstrip(" ,.;:-") + "..."
+
+
+def _format_date(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return "-"
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return text[:16] + ("Z" if len(text) >= 16 else "")
+    return parsed.strftime("%Y-%m-%d %H:%MZ")
+
+
 def _attempt_count(job: dict) -> int:
     attempts = job.get("attempts")
     if isinstance(attempts, list):
@@ -136,31 +162,71 @@ def _attempt_count(job: dict) -> int:
         return 0
 
 
-def jobs_list_text(jobs: Sequence[dict], *, page: int, total_pages: int) -> str:
+def job_button_label(job: dict, project: str | None = None) -> str:
+    """Return a readable inline-button label for a job.
+
+    The title identifies the actual task; the state remains visible but never
+    replaces the title. Job IDs stay in the detailed job view.
+    """
+
+    state = str(job.get("state") or "UNKNOWN")
+    title = short_title(job.get("title"), 38)
+    label = f"{state} · {title}"
+    if len(label) > 59:
+        label = label[:58] + "…"
+    return label
+
+
+def jobs_list_text(
+    jobs: Sequence[dict],
+    *,
+    page: int,
+    total_pages: int,
+    projects: Mapping[str, str] | None = None,
+) -> str:
     if not jobs:
         return "No development jobs found."
+    projects = projects or {}
     lines = [f"Jobs (page {page + 1}/{total_pages})", ""]
     for job in jobs:
         state = str(job.get("state") or "UNKNOWN")
-        title = str(job.get("title") or "(untitled)")[:64]
+        title = short_title(job.get("title"), 64)
+        project = projects.get(str(job.get("id") or ""), "(unregistered)")
         attempt = job.get("attempt_number") or "-"
-        elapsed = format_seconds(job.get("elapsed_seconds"))
-        lines.append(f"{state:8} {_short_id(job.get('id')):12} attempt {attempt} {elapsed}")
+        active = format_seconds(job.get("attempt_elapsed_seconds"))
+        total = format_seconds(job.get("elapsed_seconds"))
+        date = _format_date(
+            job.get("attempt_started_at") or job.get("started_at")
+        )
+        runtime = (
+            f"attempt {attempt} · active {active} · total {total}"
+            if state == "RUNNING"
+            else f"attempt {attempt} · ran {active} · total {total}"
+        )
+        lines.append(f"{state} · {project}")
         lines.append(f"  {title}")
+        lines.append(f"  {runtime} · {date}")
     lines.append("")
     lines.append("Select a job for status, logs and report.")
     return "\n".join(lines)
 
 
-def job_status_text(payload: dict, *, queued_instructions: int = 0) -> str:
+def job_status_text(
+    payload: dict,
+    *,
+    queued_instructions: int = 0,
+    project: str | None = None,
+    summary: str | None = None,
+) -> str:
     state = str(payload.get("state") or "UNKNOWN")
     lines = [
         f"Job {_short_id(payload.get('id'), 20)}",
         f"Title: {payload.get('title') or '(untitled)'}",
         f"State: {state}",
+        f"Project: {project or '(unregistered)'}",
         f"Repo: {payload.get('repo') or '-'} ({payload.get('branch') or 'detached'})",
-        f"Elapsed: total {format_seconds(payload.get('elapsed_seconds'))} / "
-        f"attempt {format_seconds(payload.get('attempt_elapsed_seconds'))} / "
+        f"Runtime: active attempt {format_seconds(payload.get('attempt_elapsed_seconds'))}; "
+        f"total wall-clock {format_seconds(payload.get('elapsed_seconds'))}; "
         f"timeout {format_seconds(payload.get('timeout_seconds'))}",
         f"Attempt: #{payload.get('attempt_number') or 0} "
         f"({payload.get('attempt_started_at') or '-'} -> "
@@ -206,6 +272,8 @@ def job_status_text(payload: dict, *, queued_instructions: int = 0) -> str:
                 lines.append(f"  - {str(issue)[:200]}")
     if payload.get("blocker"):
         lines.append(f"Blocker: {payload['blocker']}")
+    if summary:
+        lines.extend(["", summary.strip()])
     notifications = payload.get("notifications") or []
     if notifications and isinstance(notifications[-1], dict):
         last = notifications[-1]
@@ -312,12 +380,26 @@ def start_project_text() -> str:
     )
 
 
-def start_title_text(project) -> str:
+def start_description_text(project) -> str:
     return (
-        "Start wizard: title\n\n"
-        f"Project: {project.project_id}\n"
-        "Send a short job title (maximum 120 characters).\n\n"
+        "Start a development job\n\n"
+        f"Project: {project.project_id} [{project.project.platform}]\n\n"
+        "What should be changed or fixed? Describe the task in plain language. "
+        "A readable job title is derived automatically.\n\n"
+        "Acceptance commands and project instructions are loaded from the project's "
+        "verified acceptance profile. You do not need to type them.\n\n"
         "Send /cancel or press Cancel to stop without starting a job."
+    )
+
+
+def start_runtime_text(title: str) -> str:
+    return (
+        "Choose maximum runtime\n\n"
+        f"Task: {title}\n\n"
+        "This is the wall-clock limit for each attempt, not a target. "
+        "Choose 1h, 2h, 4h or 8h.\n\n"
+        "Advanced options are optional: custom acceptance commands, a custom "
+        "timeout or a branch label."
     )
 
 
@@ -374,10 +456,10 @@ def start_preview_text(request) -> str:
         f"Project: {request.project_id}",
         f"Repository: {request.repo}",
         f"Title: {request.title}",
-        f"Branch label: {request.branch or '(detected)'}",
-        f"Timeout: {format_seconds(request.timeout_seconds)}",
-        f"Agent: {request.agent}",
-        f"Model: {request.model}",
+        f"Branch: {request.branch or '(current detected branch; push only if policy allows)'}",
+        f"Maximum runtime: {format_seconds(request.timeout_seconds)}",
+        f"Acceptance profile: {request.profile_source or 'explicit advanced criteria'}",
+        f"Auto-loaded context files: {len(request.context_paths)}",
         "",
         "Acceptance criteria (authoritative):",
         *_criteria_lines(request),
@@ -386,7 +468,9 @@ def start_preview_text(request) -> str:
         prompt_preview,
         "",
         "Press Confirm to invoke the existing `dev start` CLI. Acceptance commands "
-        "run with bash in the repository. Nothing is started until Confirm.",
+        "run with bash in the repository. Nothing is started until Confirm. A "
+        "passing build or test is technical evidence, not proof that the owner's "
+        "underlying bug is fixed.",
     ]
     return "\n".join(lines)
 
@@ -417,7 +501,7 @@ def resume_preview_text(job: dict, data: dict, pending: object = ()) -> str:
     if data.get("new_session"):
         flags.append("new session (session continuity abandoned)")
     if data.get("force"):
-        flags.append("force rerun (a SUCCESS job may run again)")
+        flags.append("allow another attempt after success")
     prompt = data.get("prompt")
     lines = [
         "Resume job",
@@ -429,15 +513,17 @@ def resume_preview_text(job: dict, data: dict, pending: object = ()) -> str:
         f"Session: {_short_id(job.get('session_id'), 16)}",
         f"Resumes so far: {job.get('resume_count') or 0}",
         f"Blocker: {job.get('blocker') or '-'}",
-        f"Options: {', '.join(flags) if flags else 'normal resume'}",
+        f"Options: {', '.join(flags) if flags else 'normal continuation'}",
         "",
-        "Resume instruction:",
+        "Continue this job with an optional instruction:",
         prompt or "(Workflow v3 default)",
         "",
         *_queued_lines(pending),
         "",
-        "Queued instructions are delivered on this resume, not injected live.",
-        "A job without a known OpenCode session requires the explicit New session toggle.",
+        "Queued instructions are delivered on this continuation, not injected live.",
+        "A completed (SUCCESS) job needs 'Allow another attempt' before it can continue;",
+        "this prevents accidental repetition. A job without a known OpenCode session",
+        "requires the explicit New session option.",
         "Confirm opens a final one-time confirmation. No attempt starts before that.",
     ]
     return "\n".join(lines)
@@ -451,7 +537,10 @@ def resume_confirmation_text(job: dict, request, pending_count: int = 0) -> str:
         f"Title: {job.get('title') or '(untitled)'}",
         f"Current state: {job.get('state') or 'UNKNOWN'}",
         f"New session: {'yes' if request.new_session else 'no'}",
-        f"Force rerun: {'yes' if request.force else 'no'}",
+        (
+            "Allow another attempt after success: "
+            f"{'yes - a new attempt will run' if request.force else 'no'}"
+        ),
         f"Timeout: {format_seconds(request.timeout_seconds) if request.timeout_seconds else '(existing)'}",
         f"Queued instructions included: {int(pending_count)}",
         f"Instruction: {request.prompt or '(Workflow v3 default)'}",
@@ -592,14 +681,18 @@ def lifecycle_resumed_text(job: dict) -> str:
     )
 
 
-def lifecycle_terminal_text(job: dict, state: str) -> str:
-    return (
-        f"Job {state}\n"
-        f"Job: {_short_id(job.get('id'), 20)}\n"
-        f"Title: {job.get('title') or '(untitled)'}\n"
-        f"Blocker: {job.get('blocker') or '-'}\n"
-        f"Elapsed: {format_seconds(job.get('elapsed_seconds') or job.get('duration_seconds'))}"
-    )
+def lifecycle_terminal_text(job: dict, state: str, summary: str | None = None) -> str:
+    lines = [
+        f"Job {state}",
+        f"Job: {_short_id(job.get('id'), 20)}",
+        f"Title: {job.get('title') or '(untitled)'}",
+        f"Blocker: {job.get('blocker') or '-'}",
+        f"Runtime: active attempt {format_seconds(job.get('attempt_elapsed_seconds'))}; "
+        f"total {format_seconds(job.get('elapsed_seconds') or job.get('duration_seconds'))}",
+    ]
+    if summary:
+        lines.extend(["", summary.strip()])
+    return "\n".join(lines)
 
 
 def lifecycle_alert_text(job: dict, kind: str, detail: str = "") -> str:

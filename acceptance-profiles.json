@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-02",
+  "description": "Verified acceptance commands for registered projects. A project may override this file with .workflow/acceptance.json in its own checkout. Commands run with bash in the selected repository; no command is guessed at job start.",
+  "profiles": {
+    "control-plane/control-plane": {
+      "source": "central verified profile 2026-11-02; commands are the repository validation surfaces",
+      "commands": [
+        {
+          "label": "Control-plane validation",
+          "command": "python3 tools/validate_control_plane.py",
+          "timeout_seconds": 600
+        },
+        {
+          "label": "Skills validation",
+          "command": "python3 tools/validate_skills.py",
+          "timeout_seconds": 600
+        },
+        {
+          "label": "Security scan",
+          "command": "python3 tools/validate_security.py",
+          "timeout_seconds": 600
+        },
+        {
+          "label": "Agent permission validation",
+          "command": "python3 tools/validate_agent_permissions.py --check",
+          "timeout_seconds": 600
+        },
+        {
+          "label": "Full applicable test suite",
+          "command": "python3 -m unittest discover -s tools -p 'test_*.py'",
+          "timeout_seconds": 3600
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "docs/operations/DEV-WORKFLOW-V3.md",
+        "docs/operations/QORTIUM-DEV-MONITOR.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortal/shadow-archives-webportal": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "Typecheck",
+          "command": "npm run typecheck",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Vitest suite",
+          "command": "npm test",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortal/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortal/qortal-video-bridge": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Frontend production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Server build",
+          "command": "npm run build:server",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortal/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortal/wordpress-to-qortal": {
+      "source": "central verified profile 2026-11-02; command corresponds to the documented project check script",
+      "commands": [
+        {
+          "label": "Project check suite",
+          "command": "npm run check",
+          "timeout_seconds": 3600
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortal/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortium/blogs": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Vitest suite",
+          "command": "npm test",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortium/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortium/my-private-room": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Vitest suite",
+          "command": "npm run test",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortium/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortium/qortium-united-community": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Vitest suite",
+          "command": "npm test",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortium/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    },
+    "qortium/nodefm-station": {
+      "source": "central verified profile 2026-11-02; commands correspond to current package.json scripts and project README",
+      "commands": [
+        {
+          "label": "ESLint",
+          "command": "npm run lint",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Vitest suite",
+          "command": "npm run test",
+          "timeout_seconds": 1800
+        },
+        {
+          "label": "Production build",
+          "command": "npm run build",
+          "timeout_seconds": 1800
+        }
+      ],
+      "manual": [],
+      "docs": [
+        "platforms/qortium/README.md"
+      ],
+      "skills": [
+        "skills/shared/workflow-v3-completion-contract/SKILL.md"
+      ]
+    }
+  }
+}

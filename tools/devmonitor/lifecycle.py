@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from . import menus, render
+from . import menus, render, summary
 from .config import MonitorConfig
 from .jobs import JobError, JobFacade
 from .projects import Registry, RegistryError
@@ -210,7 +210,12 @@ class LifecycleNotifier:
             status = self.jobs.job_status(job_id)
         except JobError:
             status = job
-        return self._send(job, render.lifecycle_terminal_text(status, state))
+        project = self._project_id(job, self._projects())
+        result_summary = summary.summary_text(status, record, project=project)
+        return self._send(
+            job,
+            render.lifecycle_terminal_text(status, state, result_summary),
+        )
 
     def _age_seconds(self, ended: object) -> float | None:
         stamp = _timestamp(ended)

@@ -8,6 +8,7 @@ model or timeout, and never starts jobs in tests by itself.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -25,6 +26,8 @@ from .projects import Registry, RegistryError, ValidatedProject, project_by_id
 from .redact import sanitize_control
 from .state import MonitorState
 
+from devjob import acceptance_profiles
+
 MAX_TITLE = 120
 MAX_PROMPT = 20000
 MAX_CRITERIA = 12
@@ -36,6 +39,7 @@ MAX_QUEUED_MESSAGES = 20
 MIN_TIMEOUT = 60
 MAX_TIMEOUT = 8 * 3600
 WIZARD_TTL = 3600
+RUNTIME_CHOICES = (3600, 7200, 14400, 28800)
 SKIP_VALUES = frozenset({"", "-", "skip", "/skip", "auto", "none", "default"})
 FOLLOW_UP_HEADER = (
     "The owner queued the following follow-up instructions through the authorized "
@@ -47,6 +51,63 @@ FOLLOW_UP_HEADER = (
 
 class ControlError(RuntimeError):
     """A user-correctable control-flow error."""
+
+
+def derive_title(description: str, limit: int = 80) -> str:
+    """Derive a readable, bounded title from the owner's task description."""
+
+    lines = [line.strip() for line in sanitize_control(description).splitlines() if line.strip()]
+    if not lines:
+        raise ControlError("task description must not be empty")
+    first = lines[0]
+    first = re.sub(r"^#{1,6}\s*", "", first)
+    first = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", first)
+    first = " ".join(first.split())
+    if not first:
+        raise ControlError("task description must not be empty")
+    if len(first) <= limit:
+        return first
+    cut = first.rfind(" ", 0, limit + 1)
+    if cut < max(20, limit // 2):
+        cut = limit
+    return first[:cut].rstrip(" ,.;:-") + "..."
+
+
+def _context_block(items: Sequence[acceptance_profiles.ContextItem]) -> str:
+    if not items:
+        return ""
+    lines = [
+        "",
+        "## Auto-discovered project context",
+        "",
+        "Read these existing instructions and load only matching skills before",
+        "implementing. Current source and runtime remain authoritative.",
+        "",
+    ]
+    for item in items:
+        lines.append(f"- {item.kind}: `{item.path}`")
+    lines.extend(
+        [
+            "",
+            "Use the project's existing discovery mechanisms. Do not invent test",
+            "commands or claim functional proof that the evidence does not support.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def compose_task_prompt(
+    description: str,
+    profile: acceptance_profiles.AcceptanceProfile,
+    context: Sequence[acceptance_profiles.ContextItem],
+) -> str:
+    """Build the normal-flow prompt from the owner description plus context."""
+
+    body = sanitize_control(description).strip()
+    if not body:
+        raise ControlError("task description must not be empty")
+    block = _context_block(context)
+    return (body + "\n" + block).strip() if block else body
 
 
 @dataclass(frozen=True)
@@ -61,6 +122,8 @@ class StartRequest:
     branch: str | None
     agent: str
     model: str
+    profile_source: str = ""
+    context_paths: tuple[str, ...] = ()
 
     def payload(self, wizard_id: str) -> dict[str, Any]:
         return {
@@ -75,6 +138,8 @@ class StartRequest:
             "branch": self.branch,
             "agent": self.agent,
             "model": self.model,
+            "profile_source": self.profile_source,
+            "context_paths": list(self.context_paths),
         }
 
 
@@ -375,6 +440,48 @@ class ControlManager:
             menus.start_project_menu(wizard_id, projects),
         )
 
+    def _profile_and_context(
+        self, project: ValidatedProject
+    ) -> tuple[acceptance_profiles.AcceptanceProfile, tuple[acceptance_profiles.ContextItem, ...]]:
+        try:
+            profile = acceptance_profiles.resolve_profile(
+                project_id=project.project_id,
+                platform=project.project.platform,
+                repo=project.repo_real or project.project.repo_path,
+                registry_path=self.registry.path,
+            )
+            context = acceptance_profiles.discover_context(
+                profile, platform=project.project.platform
+            )
+        except acceptance_profiles.ProfileError as exc:
+            raise ControlError(str(exc)) from exc
+        return profile, context
+
+    def _selected_project(self, data: dict[str, Any]) -> ValidatedProject:
+        project_id = validate_text(data.get("project_id"), limit=200, field="project")
+        project = project_by_id(self._projects(), project_id)
+        if project is None or not project.job_eligible or project.repo_real is None:
+            raise ControlError("the selected project is no longer job-eligible")
+        return project
+
+    def _normal_start_request(self, data: dict[str, Any]) -> StartRequest:
+        project = self._selected_project(data)
+        profile, context = self._profile_and_context(project)
+        description = validate_text(
+            data.get("description"),
+            limit=MAX_PROMPT,
+            field="task description",
+            allow_newlines=True,
+        )
+        data["title"] = derive_title(description)
+        data["prompt"] = compose_task_prompt(description, profile, context)
+        data["command_criteria"] = [list(item) for item in profile.command_criteria]
+        data["manual_criteria"] = list(profile.manual)
+        data["profile_source"] = profile.source
+        data["context_paths"] = [str(item.path) for item in context]
+        data["branch"] = None
+        return self._start_request(data)
+
     def start_callback(
         self, wizard: dict[str, Any], action: str, parts: Sequence[str], decision
     ) -> ControlResult:
@@ -407,11 +514,37 @@ class ControlManager:
                 }
             )
             self.state.update_wizard(
-                wizard_id, user_id, chat_id, step="title", data=data, ttl_seconds=WIZARD_TTL
+                wizard_id, user_id, chat_id, step="prompt", data=data, ttl_seconds=WIZARD_TTL
             )
             return ControlResult(
-                render.start_title_text(project),
+                render.start_description_text(project),
                 menus.wizard_cancel_menu(wizard_id),
+            )
+        if action == "t":
+            if str(wizard.get("step")) not in {"runtime", "prompt"}:
+                raise ControlError("runtime selection is not available at this step")
+            try:
+                timeout_seconds = int(parts[0]) if parts else 0
+            except (TypeError, ValueError) as exc:
+                raise ControlError("invalid runtime selection") from exc
+            if timeout_seconds not in RUNTIME_CHOICES:
+                raise ControlError("runtime must be one of 1h, 2h, 4h or 8h")
+            data = dict(wizard["data"])
+            data["timeout_seconds"] = timeout_seconds
+            request = self._normal_start_request(data)
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="preview", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return self._start_preview(wizard_id, request, user_id, chat_id)
+        if action == "a":
+            if str(wizard.get("step")) not in {"runtime", "preview", "prompt"}:
+                raise ControlError("advanced options are not available at this step")
+            data = dict(wizard["data"])
+            self.state.update_wizard(
+                wizard_id, user_id, chat_id, step="criteria", data=data, ttl_seconds=WIZARD_TTL
+            )
+            return ControlResult(
+                render.start_criteria_text(), menus.wizard_cancel_menu(wizard_id)
             )
         raise ControlError("unknown start-wizard action")
 
@@ -422,28 +555,29 @@ class ControlManager:
         data = dict(wizard["data"])
         step = str(wizard["step"])
 
-        if step == "title":
-            data["title"] = validate_text(text, limit=MAX_TITLE, field="title")
+        if step in {"prompt", "title"}:
+            # "title" is accepted only for a wizard created by an older monitor.
+            description = validate_text(
+                text,
+                limit=MAX_PROMPT,
+                field="task description",
+                allow_newlines=True,
+            )
+            data["description"] = description
+            data["title"] = derive_title(description)
             self.state.update_wizard(
-                wizard_id, user_id, chat_id, step="prompt", data=data, ttl_seconds=WIZARD_TTL
+                wizard_id, user_id, chat_id, step="runtime", data=data, ttl_seconds=WIZARD_TTL
             )
             return ControlResult(
-                render.start_prompt_text(), menus.wizard_cancel_menu(wizard_id)
-            )
-        if step == "prompt":
-            data["prompt"] = validate_text(
-                text, limit=MAX_PROMPT, field="prompt", allow_newlines=True
-            )
-            self.state.update_wizard(
-                wizard_id, user_id, chat_id, step="criteria", data=data, ttl_seconds=WIZARD_TTL
-            )
-            return ControlResult(
-                render.start_criteria_text(), menus.wizard_cancel_menu(wizard_id)
+                render.start_runtime_text(data["title"]),
+                menus.start_runtime_menu(wizard_id),
             )
         if step == "criteria":
             commands, manuals = parse_criteria(text)
             data["command_criteria"] = [list(item) for item in commands]
             data["manual_criteria"] = list(manuals)
+            if not data.get("prompt") and data.get("description"):
+                data["prompt"] = str(data["description"])
             self.state.update_wizard(
                 wizard_id, user_id, chat_id, step="timeout", data=data, ttl_seconds=WIZARD_TTL
             )
@@ -523,6 +657,18 @@ class ControlManager:
                 f"branch {branch!r} is outside the project development pattern "
                 f"{policy.branch_pattern}; automatic push is not authorized"
             )
+        profile_source = data.get("profile_source") or ""
+        if profile_source:
+            profile_source = validate_text(
+                profile_source, limit=300, field="acceptance profile source"
+            )
+        context_paths = data.get("context_paths") or []
+        if not isinstance(context_paths, (list, tuple)):
+            raise ControlError("stored context paths are malformed")
+        context = tuple(
+            validate_text(item, limit=4096, field="context path")
+            for item in context_paths
+        )
         return StartRequest(
             project_id=project.project_id,
             repo=str(project.repo_real),
@@ -534,6 +680,8 @@ class ControlManager:
             branch=branch,
             agent=agent,
             model=model,
+            profile_source=profile_source,
+            context_paths=context,
         )
 
     def _start_preview(
@@ -561,6 +709,8 @@ class ControlManager:
             "branch": payload.get("branch"),
             "agent": payload.get("agent"),
             "model": payload.get("model"),
+            "profile_source": payload.get("profile_source"),
+            "context_paths": payload.get("context_paths"),
         }
         request = self._start_request(data)
         key = request.project_id

@@ -7,7 +7,7 @@ description: Use when starting, reviewing or resuming any Workflow v3 developmen
 
 - Platform: `shared`
 - Maturity: `candidate`
-- Last checked: `2026-11-01`
+- Last checked: `2026-11-02`
 - Owner: shared capability library
 
 ## Use when
@@ -122,14 +122,32 @@ resume.
    retroactive contract. Contract success never turns a failed acceptance
    criterion into success.
 
+8. **Resolve acceptance commands, never invent them.** A phone/monitor start
+   uses a verified project profile: `<repo>/.workflow/acceptance.json` first,
+   then `acceptance-profiles.json` next to the project registry, keyed by
+   project ID. The profile is explicit JSON with commands and optional manual
+   criteria/context. A missing, malformed, empty, absolute, traversal or
+   missing-file context path fails closed before `dev start`. Do not infer a
+   test command from a filename, README or package manager. The profile only
+   supplies criteria/context; it cannot disable the mandatory contract,
+   delivery policy, branch protection, secrets checks or confirmations.
+9. **Separate technical completion from functional outcome.** Technical
+   completion is `VERIFIED`/`NOT VERIFIED`/`PENDING` from acceptance results and
+   the contract. Functional outcome is `VERIFIED` only with explicit
+   owner/manual acceptance, otherwise `NOT VERIFIED`, or `UNRESOLVED` with a
+   blocker/unresolved issue. A build, test suite and pushed commit are never
+   proof that the owner's underlying bug is fixed. Keep full reports/logs behind
+   their optional actions.
+
 ## Freshness and compatibility gate
 
 Before reusing this skill, read the current
 [`contract.py`](../../../tools/devjob/contract.py), the job schema in
 [`runner.py`](../../../tools/devjob/runner.py) and the operating doc. Run
 `python3 tools/test_completion_contract.py`,
-`python3 tools/test_project_delivery_policy.py` and
-`python3 tools/test_dev_cli.py`. If the schema, check names, remote-resolution
+`python3 tools/test_project_delivery_policy.py`,
+`python3 tools/test_dev_cli.py` and
+`python3 tools/test_dev_monitor_mobile_ux.py`. If the schema, check names, remote-resolution
 rules or state mapping changed, update this skill and its index entry. The contract is a policy layer,
 not an OS sandbox: wrappers, interpreters and SSH can do more than a command
 pattern suggests.

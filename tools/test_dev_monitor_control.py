@@ -33,6 +33,7 @@ from devmonitor_test_support import (  # noqa: E402
     make_config,
     make_job,
     message_update,
+    write_acceptance_profile,
     write_fake_jobs,
 )
 
@@ -70,6 +71,17 @@ class ControlBase(unittest.TestCase):
             f"| `demo/project` | Qortal | `{self.project_repo}` | Yes | Pending | `{self.docs}/` | "
             "`origin` | `demo/project` | `agent/*` | `yes` |\n",
             encoding="utf-8",
+        )
+        write_acceptance_profile(
+            self.registry_file,
+            "demo/project",
+            [
+                {
+                    "label": "Build",
+                    "command": "python3 -m pytest -q",
+                    "timeout_seconds": 600,
+                }
+            ],
         )
         self.state_root = self.root / "state"
         self.fake_dev = install_fake_dev(self.root)
@@ -143,14 +155,18 @@ class ControlBase(unittest.TestCase):
     def send_text(self, value: str) -> None:
         self.router.handle(message_update(self.next_id(), value))
 
-    def advance_to_preview(self, criteria: str = CRITERIA) -> str:
+    def send_description(self, value: str = PROMPT) -> None:
+        self.send_text(value)
+
+    def choose_runtime(self, label: str = "2h") -> None:
+        callback = find_button(self.api.sent[-1]["markup"], label)
+        self.router.handle(callback_update(self.next_id(), callback))
+
+    def advance_to_preview(self) -> str:
         self.begin_start()
-        self.send_text("P2 control job")
-        self.send_text(PROMPT)
-        self.send_text(criteria)
-        self.send_text("2h")
-        self.send_text("/skip")
-        return find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+        self.send_description()
+        self.choose_runtime("2h")
+        return find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
 
     def confirm(self, callback_data: str) -> None:
         self.router.handle(callback_update(self.next_id(), callback_data))
@@ -175,7 +191,10 @@ class StartWizardTests(ControlBase):
         self.assertEqual(args[0], "start")
         self.assertIn("--repo", args)
         self.assertEqual(args[args.index("--repo") + 1], str(self.project_repo.resolve()))
-        self.assertEqual(args[args.index("--title") + 1], "P2 control job")
+        self.assertEqual(
+            args[args.index("--title") + 1],
+            "Implement the requested P2 behavior exactly.",
+        )
         self.assertEqual(args[args.index("--prompt-file") + 1], "-")
         self.assertEqual(args[args.index("--project") + 1], "demo/project")
         self.assertEqual(args[args.index("--registry") + 1], str(self.registry_file))
@@ -187,12 +206,14 @@ class StartWizardTests(ControlBase):
         )
         self.assertEqual(
             [args[index + 1] for index, item in enumerate(args) if item == "--manual-criterion"],
-            ["Owner reviews the UI"],
+            [],
         )
         self.assertEqual(args[args.index("--timeout") + 1], "7200s")
         self.assertEqual(args[args.index("--agent") + 1], "opencode-development")
         self.assertEqual(args[args.index("--model") + 1], "deepseek/deepseek-flash")
-        self.assertEqual(records[0]["stdin"], PROMPT)
+        self.assertTrue(records[0]["stdin"].startswith(PROMPT))
+        self.assertIn("Auto-discovered project context", records[0]["stdin"])
+        self.assertIn("AGENTS.md", records[0]["stdin"])
         self.assertTrue(any("STARTED" in item["text"] for item in self.api.sent))
         self.assertTrue(any("Job started" in item["text"] for item in self.api.edited))
 
@@ -225,18 +246,16 @@ class StartWizardTests(ControlBase):
             "`upstream` | `demo/second` | `agent/*` | `yes` |\n",
             encoding="utf-8",
         )
+        write_acceptance_profile(self.registry_file, "demo/second")
         self.registry = Registry(self.registry_file, (self.projects,))
         self.control.registry = self.registry
         self.router.registry = self.registry
         self.router.handle(message_update(1, "/start_job"))
         callback = find_button(self.api.sent[-1]["markup"], "demo/second")
         self.router.handle(callback_update(self.next_id(), callback))
-        self.send_text("Second project job")
         self.send_text(PROMPT)
-        self.send_text(CRITERIA)
-        self.send_text("2h")
-        self.send_text("/skip")
-        confirm = find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+        self.choose_runtime("2h")
+        confirm = find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
         self.confirm(confirm)
         args = self.invocations()[0]["args"]
         self.assertEqual(args[args.index("--project") + 1], "demo/second")
@@ -266,13 +285,33 @@ class StartWizardTests(ControlBase):
         self.assertEqual(len(self.invocations()), 1)
         self.assertIn("expired or already used", self.api.edited[-1]["text"])
 
-    def test_missing_acceptance_criteria_is_refused_before_cli(self) -> None:
+    def test_missing_task_description_is_refused_before_cli(self) -> None:
         self.begin_start()
-        self.send_text("Title")
-        self.send_text(PROMPT)
         self.send_text("   ")
         self.assertIn("Input rejected", self.api.sent[-1]["text"])
         self.assertEqual(self.invocations(), [])
+
+    def test_advanced_flow_preserves_explicit_criteria_and_branch(self) -> None:
+        self.begin_start()
+        self.send_text(PROMPT)
+        advanced = find_button(self.api.sent[-1]["markup"], "Advanced options")
+        self.router.handle(callback_update(self.next_id(), advanced))
+        self.send_text(CRITERIA)
+        self.send_text("90m")
+        self.send_text("agent/test/advanced")
+        confirm = find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+        self.confirm(confirm)
+        args = self.invocations()[0]["args"]
+        self.assertEqual(args[args.index("--timeout") + 1], "5400s")
+        self.assertEqual(args[args.index("--branch") + 1], "agent/test/advanced")
+        self.assertEqual(
+            [args[index + 1] for index, item in enumerate(args) if item == "--criterion"],
+            ["Build::python3 -m pytest -q"],
+        )
+        self.assertEqual(
+            [args[index + 1] for index, item in enumerate(args) if item == "--manual-criterion"],
+            ["Owner reviews the UI"],
+        )
 
     def test_tampered_project_index_is_refused(self) -> None:
         self.router.handle(message_update(1, "/start_job"))

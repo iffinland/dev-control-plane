@@ -52,6 +52,7 @@ from devmonitor_test_support import (  # noqa: E402
     make_config,
     make_job,
     message_update,
+    write_acceptance_profile,
     write_fake_jobs,
 )
 
@@ -94,6 +95,7 @@ class P4Base(unittest.TestCase):
             "`origin` | `demo/project` | `agent/*` | `yes` |\n",
             encoding="utf-8",
         )
+        write_acceptance_profile(self.registry_file, "demo/project")
         self.state_root = self.root / "state"
         self.fake_dev = install_fake_dev(self.root)
         extra = {"terminal_grace_seconds": 0}
@@ -164,12 +166,10 @@ class P4Base(unittest.TestCase):
 
     def advance_to_preview(self) -> str:
         self.begin_start()
-        self.send_text("P4 hardening job")
         self.send_text(PROMPT)
-        self.send_text(CRITERIA)
-        self.send_text("2h")
-        self.send_text("/skip")
-        return find_button(self.api.sent[-1]["markup"], "Confirm: Create job")
+        runtime = find_button(self.api.sent[-1]["markup"], "2h")
+        self.router.handle(callback_update(self.next_id(), runtime))
+        return find_button(self.api.edited[-1]["markup"], "Confirm: Create job")
 
     def invocations(self) -> list[dict]:
         path = self.state_root / "fake_invocations.jsonl"

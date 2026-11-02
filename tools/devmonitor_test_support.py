@@ -425,6 +425,48 @@ def install_fake_dev(root: Path) -> Path:
     return path
 
 
+def write_acceptance_profile(
+    registry_path: Path,
+    project_id: str,
+    commands: list[dict] | None = None,
+    *,
+    manual: list[str] | None = None,
+    path: Path | None = None,
+) -> Path:
+    """Write a central acceptance profile next to the test registry."""
+
+    target = path or (registry_path.parent / "acceptance-profiles.json")
+    existing = {}
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = {}
+    profiles = existing.get("profiles") if isinstance(existing, dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles[project_id] = {
+        "source": "test verified profile",
+        "commands": commands
+        if commands is not None
+        else [
+            {
+                "label": "Build",
+                "command": "python3 -m pytest -q",
+                "timeout_seconds": 600,
+            }
+        ],
+        "manual": list(manual or []),
+        "docs": [],
+        "skills": [],
+    }
+    target.write_text(
+        json.dumps({"version": 1, "profiles": profiles}, indent=2),
+        encoding="utf-8",
+    )
+    return target
+
+
 def write_fake_jobs(state_root: Path, jobs: list[dict]) -> None:
     state_root.mkdir(parents=True, exist_ok=True)
     (state_root / "fake_jobs.json").write_text(json.dumps({job["id"]: job for job in jobs}), encoding="utf-8")

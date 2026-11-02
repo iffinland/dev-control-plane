@@ -49,6 +49,7 @@ execution at a time.
 | Cancel tests | `tools/test_dev_cancel.py` | Verified guard identity, SIGTERM, refusal and resumability with test-owned processes |
 | Completion contract | `tools/devjob/contract.py` | Machine-checked task-start evidence, scoped commit, authorization, push and remote SHA |
 | Project delivery policy | `tools/devjob/project_policy.py` | Validated per-project remote, GitHub repository, `agent/*` branch pattern and automatic-push authorization |
+| Acceptance profiles | `tools/devjob/acceptance_profiles.py`, `acceptance-profiles.json` | Explicit project commands/context for the phone start flow; fail-closed discovery |
 | Contract tests | `tools/test_completion_contract.py` | Contract evidence, scope, protected-branch, merge, secret-path and remote-SHA regressions |
 | Policy tests | `tools/test_project_delivery_policy.py` | Multiple project remotes, missing/ambiguous/mismatched configuration, unauthorized branches and failed pushes |
 | Guard tests | `tools/test_opencode_guard.py` | Timeout, cancellation, lock, PID file and safety tests |
@@ -170,6 +171,41 @@ not stop the job; tmux is not required.
 The default timeout and the hard maximum are both **8 hours**. Per-attempt
 timestamps and exit codes are recorded in `job.json`; resume starts a new
 attempt with a fresh maximum.
+
+## Acceptance profiles for the Telegram start flow
+
+The Telegram Dev Monitor's normal start flow derives acceptance criteria from a
+verified project profile instead of asking the owner to type commands on a phone.
+Resolution order:
+
+1. `<repository>/.workflow/acceptance.json` (project-owned, preferred);
+2. `acceptance-profiles.json` next to `PROJECT-REGISTRY.md`, keyed by project ID.
+
+A profile is explicit JSON with `commands` (string or
+`{label, command, timeout_seconds}` objects), optional `manual` criteria and
+optional `docs`/`skills` context paths. Paths must stay inside their root.
+Missing, malformed, empty or unsafe profiles fail closed before any `dev start`
+invocation; the monitor never invents a test command from repository contents.
+The profile only supplies acceptance commands and discovery context. Every new
+job still receives the mandatory default completion contract, the project
+delivery policy and the same push/branch protections.
+
+The normal phone flow is project -> task description -> runtime (1h, 2h, 4h or
+8h) -> confirmation. Advanced options remain available for explicit criteria, a
+custom timeout or a branch label.
+
+## Result summary versus functional proof
+
+`dev status` and the Telegram job view distinguish:
+
+- technical completion (`VERIFIED`/`NOT VERIFIED`/`PENDING`) from acceptance
+  commands and the completion contract;
+- functional outcome (`VERIFIED` only with explicit owner/manual acceptance,
+  otherwise `NOT VERIFIED`, or `UNRESOLVED` with unresolved issues).
+
+A green build, passing tests and a pushed SHA are technical evidence. They are
+not reported as proof that the user's underlying bug is fixed. Full reports and
+logs remain available separately.
 
 ## Example files
 
